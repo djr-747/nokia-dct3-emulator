@@ -733,7 +733,10 @@
     }
     function buildShell(def) {
       shellHost.innerHTML = "";                   // detaches #lcd if it lived here — re-added below
-      var s = Math.min(1, SHELL_MAX_W / def.w);
+      // Fit the phone to BOTH a max width and ~92% of the viewport height, so tall
+      // candybars (3310/3410) don't overflow the page.
+      var maxH = (window.innerHeight || 800) * 0.92;
+      var s = Math.min(1, SHELL_MAX_W / def.w, maxH / def.h);
       var root = document.createElement("div");
       root.className = "shell-root";
       root.style.width = def.w + "px"; root.style.height = def.h + "px";
@@ -776,9 +779,26 @@
       (def.zones || []).forEach(function (zz) {
         var b = document.createElement("button");
         b.className = "shell-zone" + (zz.key === "pwr" ? " pwr" : "");
-        b.style.left = zz.left + "px"; b.style.top = zz.top + "px";
-        b.style.width = zz.w + "px"; b.style.height = zz.h + "px";
-        b.style.borderRadius = zz.r || "50%";
+        if (zz.path && zz.path.length) {
+          // Vector hit-zone (angled/perspective photos, e.g. 3310/3410): each node is
+          // [x, y, inX, inY, outX, outY]; use the anchor points. Position a button at the
+          // node bounding box and clip its hit-area to the polygon through the anchors.
+          var xs = zz.path.map(function (n) { return n[0]; });
+          var ys = zz.path.map(function (n) { return n[1]; });
+          var minX = Math.min.apply(null, xs), minY = Math.min.apply(null, ys);
+          var maxX = Math.max.apply(null, xs), maxY = Math.max.apply(null, ys);
+          b.style.left = minX + "px"; b.style.top = minY + "px";
+          b.style.width = (maxX - minX) + "px"; b.style.height = (maxY - minY) + "px";
+          var poly = zz.path.map(function (n) {
+            return (n[0] - minX) + "px " + (n[1] - minY) + "px";
+          }).join(",");
+          b.style.webkitClipPath = "polygon(" + poly + ")";
+          b.style.clipPath = "polygon(" + poly + ")";
+        } else {
+          b.style.left = zz.left + "px"; b.style.top = zz.top + "px";
+          b.style.width = zz.w + "px"; b.style.height = zz.h + "px";
+          b.style.borderRadius = zz.r || "50%";
+        }
         b.setAttribute("aria-label", zz.key);
         bindZone(b, zz.key);
         root.appendChild(b);
