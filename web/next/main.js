@@ -1032,6 +1032,11 @@
         }
         if (n < 2048) break;
       }
+      // Cap latency: the emulator produces PCM in per-frame bursts and can run ahead,
+      // so the queue can grow and delay tones (button → long-buffered beep). Keep only
+      // a small cushion; drop the oldest samples so audio tracks the action.
+      var LAT_CAP = PCM_PRIME * 2;              // ~85 ms @ 48 kHz
+      if (pcmqHead - pcmqTail > LAT_CAP) pcmqTail = pcmqHead - LAT_CAP;
     }
 
     function audioStart() {
