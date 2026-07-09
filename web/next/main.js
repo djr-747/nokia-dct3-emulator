@@ -338,6 +338,7 @@
     //  so their UI toggles don't need re-application.)
     // -------------------------------------------------------------
     function reapplyPostBoot() {
+      flushPCM();                     // clear stale audio from the previous model/boot
       if (chkSim && C.setSim)         applyToggle(C.setSim, chkSim.checked);
       if (chkCharger && C.setCharger) applyToggle(C.setCharger, chkCharger.checked);
       if (chkRecover && C.setRecover) applyToggle(C.setRecover, chkRecover.checked);
@@ -1037,6 +1038,13 @@
       // a small cushion; drop the oldest samples so audio tracks the action.
       var LAT_CAP = PCM_PRIME * 2;              // ~85 ms @ 48 kHz
       if (pcmqHead - pcmqTail > LAT_CAP) pcmqTail = pcmqHead - LAT_CAP;
+    }
+
+    // Discard queued audio + drain the wasm ring — called after every (re)boot and
+    // model swap so a beep/tone from the previous session can't bleed into the new one.
+    function flushPCM() {
+      pcmqHead = pcmqTail = 0; pcmFrac = 0; pcmPrimed = false; pcmLast = 0;
+      try { if (C.pcmRead) while (C.pcmRead(2048) === 2048) { /* drain */ } } catch (_) {}
     }
 
     function audioStart() {
