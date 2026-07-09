@@ -33,10 +33,10 @@ The full API + the port map + a hand-assembled (no-compiler) stub are described 
 ## Getting your code to run
 
 `dbgcon.h` gives you the *API*; you still need your code executing inside the firmware. Two
-routes, both covered in ``:
+routes:
 
-1. **C overlay** — compile your patch (incl. `dbgcon.h`) with the NokiX SDK ARM toolchain
-   (`ref/NokiX-all-retrohack/sdk/`) and inject it. Cleanest.
+1. **C overlay** — compile your patch (incl. `dbgcon.h`) with an ARM cross-toolchain
+   (e.g. the NokiX SDK) and inject it. Cleanest.
 2. **Hand-assembled stub** — no compiler: graft a few instructions with the NokiX runner
    (`tools/nokix/`: `CREATE` the stub into free flash, redirect a call with `FINDBL`/`SETBL`).
 
