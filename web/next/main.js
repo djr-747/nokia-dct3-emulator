@@ -348,7 +348,29 @@
       if (C.setSimPin)        tryDo("setSimPin",        function () { C.setSimPin(1234); });
     }
 
+    // Fetch a raw .fls into MEMFS at /fw.fls. Used for firmware-free hosting
+    // (no fw baked into dct3.data) and by the model switcher below.
+    function loadFwToMemfs(url) {
+      return fetch(url).then(function (r) {
+        if (!r.ok) throw new Error("fetch " + url + " -> " + r.status);
+        return r.arrayBuffer();
+      }).then(function (ab) { mod.FS.writeFile("/fw.fls", new Uint8Array(ab)); });
+    }
+
+    // Public switch API for a model menu (e.g. retro-phone): swap the .fls,
+    // reboot, and re-mount the shell for the newly-detected model.
+    window.dct3SwapFirmware = function (url) {
+      return loadFwToMemfs(url).then(function () {
+        tryDo("fw-swap", function () { C.boot(); reapplyPostBoot(); applyModel(); });
+      }, function (e) { showError("fw-swap", e); });
+    };
+
     welcomeReady.then(function () {
+      // Firmware-free hosting: fetch the configured default image into MEMFS
+      // before the first boot. No-op when a fw was preloaded via dct3.data.
+      return (window.DCT3_DEFAULT_FW && mod.FS && mod.FS.writeFile)
+        ? loadFwToMemfs(window.DCT3_DEFAULT_FW) : null;
+    }).then(function () {
       setStatus("Booting…");
       try { C.boot(); }
       catch (e) {
