@@ -1,0 +1,52 @@
+/*
+	dump_symbols.nrx — emit `<NAME> = <DEC_ADDR>` for every NokiX locator name.
+
+	The list of names to try is passed in via the `SYMNAMES` env var
+	(whitespace-separated, set by the wrapper before invoking nokix).
+	Names that locate() can't resolve (model-specific, version-mismatched,
+	build-absent, requires-side-effects-we-don't-have, etc.) are skipped
+	silently — we keep a single `skipped` counter and report at the end.
+
+	Output is plain-text, one symbol per line:
+		<NAME>=<DECIMAL_ADDR>
+
+	The wrapper parses this into a YAML for tools/symbols/.
+
+	Designed to be byte-cheap on misses — locate() short-circuits on cached
+	values and bails fast on bad fws; running 500 names completes in <1s.
+*/
+
+names = getenv("SYMNAMES")
+if names="" then do
+	say "ERROR: SYMNAMES env var is empty — set it to a space-separated list of locator names"
+	return 1
+end
+
+say "# nokix dump_symbols — fw=" || getenv("sys/firmware_type") || " " || getenv("sys/firmware_version") || " id=" || getenv("sys/firmware_id")
+say "# names attempted: " words(names)
+
+ok = 0
+skip = 0
+
+do i=1 to words(names)
+	n = word(names, i)
+	signal on syntax name catch_locate
+	addr = locate(n)
+	signal off syntax
+	if addr="" then do
+		skip = skip + 1
+	end
+	else do
+		say n"="addr
+		ok = ok + 1
+	end
+	iterate
+
+catch_locate:
+	signal off syntax
+	skip = skip + 1
+end
+
+say "# resolved: " ok
+say "# skipped:  " skip
+return 0

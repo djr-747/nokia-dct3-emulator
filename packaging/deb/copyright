@@ -1,0 +1,30 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: dct3-emu
+Source: https://github.com/djr-747/nokia-dct3-emu
+
+Files: *
+Copyright: 2026 Dan Richardson <djrichardson747@gmail.com>
+License: proprietary-beta
+ Confidential beta software. Copyright (C) 2026 Dan Richardson
+ <djrichardson747@gmail.com>. All rights reserved.
+ .
+ Licensed to: @LICENSEE@ (named beta tester).
+ .
+ This build is provided to the named beta tester above for private evaluation
+ only. You may NOT copy, redistribute, re-share, upload, publish, sublicense, or
+ otherwise make it available to any third party, in whole or in part. No licence
+ or right to redistribute is granted. Please delete all copies on request or when
+ testing ends.
+
+Files: usr/lib/dct3-emu/*
+Comment:
+ The emulator links a vendored ARM core derived from mGBA
+ (https://mgba.io), which is licensed under the Mozilla Public License 2.0.
+ The TMS320C54x DSP co-simulation core (GPL-2.0) is NOT part of this build —
+ it is compiled out of the 3310-only release.
+License: MPL-2.0
+ This Source Code Form is subject to the terms of the Mozilla Public License,
+ v. 2.0. A copy of the MPL is available at https://mozilla.org/MPL/2.0/.
+
+No firmware is included. Nokia DCT3 firmware images are copyright Nokia and are
+not distributed with this package; the user supplies their own dump.

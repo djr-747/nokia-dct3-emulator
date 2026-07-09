@@ -1,0 +1,11 @@
+
+# ---- archived on 2026-06-05 23:25 ----
+# NB: [addresses] header is required so disfw's load_symbols picks entries up.
+
+[addresses]
+0x003B2940 MMI_STARTUP_SEQUENCER  # registers dialog set [23:06]
+0x003B29A2 DSPREADY_GATE_READ  # ldrb [0x13B528]==0 - dialog - 0x3E42C8 [23:06]
+0x003458DE DSP_STATUS_STRUCT_INIT  # zeroes 0x13B528 DSP-status struct [23:06]
+0x00345DFC DSP_READY_HANDLER  # DSP-mailbox handler sets 0x13B528 to 1 at 0x345E34 NEVER invoked in emu no inbound DSP msg [23:06]
+0x003E042A DSP_MBOX_DISPATCH  # gates call to DSP_READY_HANDLER on HPI status regs 0x010674 0x010908 0x010B9C 0x0103E0 nonzero [23:06]
+0x003E4272 PWROFF_FATAL_SINK  # generic power-off WDT=0 routine spin 0x3E42C8 new downstream barrier at 1.8M after DSP-ready fix [23:24]

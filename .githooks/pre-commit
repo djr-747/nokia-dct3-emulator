@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Firmware guard: refuse to commit copyrighted firmware/EEPROM/flash images.
+staged=$(git diff --cached --name-only)
+bad=$(echo "$staged" | grep -iE '\.(fls|mcu|ppm|pmm)$|(^|/)web/dct3\.data$' || true)
+if [ -n "$bad" ]; then
+  echo "ERROR: refusing to commit firmware/flash artifacts:" >&2
+  echo "$bad" >&2
+  echo "These are copyrighted and must never enter this repo. Unstage them." >&2
+  exit 1
+fi

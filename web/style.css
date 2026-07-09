@@ -1,0 +1,343 @@
+:root {
+  --lcd-bg: #aec48e;      /* classic Nokia greenish LCD */
+  --panel:  #20232a;
+  --line:   #333;
+  --key:    #3a3f48;
+  --key-br: #4c525d;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: #15171b;
+  color: #ddd;
+  font: 15px/1.4 system-ui, -apple-system, sans-serif;
+}
+
+/* ---- top bar ---- */
+.topbar { text-align: center; padding: 1rem 1rem .25rem; }
+h1 { font-weight: 600; margin: 0; }
+h1 small {
+  font-size: .5em; color: #888; letter-spacing: .14em;
+  text-transform: uppercase; margin-left: .5em;
+}
+#status {
+  color: #9c9; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  min-height: 1.4em; margin: .35em 0 0; font-size: 13px;
+}
+
+/* ---- four-column dashboard: firmware | config | phone | diagnostics ---- */
+.layout {
+  display: grid;
+  grid-template-columns: minmax(210px, 250px) minmax(220px, 280px) auto minmax(280px, 1fr);
+  gap: 18px;
+  align-items: start;
+  max-width: 1500px;
+  margin: 0 auto;
+  padding: .5rem 1rem 2rem;
+}
+@media (max-width: 1300px) {
+  /* drop to config | phone | diagnostics; firmware spans the full width on top */
+  .layout { grid-template-columns: minmax(220px, 280px) auto minmax(280px, 1fr); }
+  .fw-panel { grid-column: 1 / -1; }
+  .fw-list { max-height: 240px; }
+}
+@media (max-width: 980px) {
+  .layout { grid-template-columns: 1fr; justify-items: center; }
+  .panel { width: 100%; max-width: 520px; }
+  .fw-list { max-height: 300px; }
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.panel h2 {
+  margin: 0 0 12px; font-size: 14px; color: #cfd4da;
+  text-transform: uppercase; letter-spacing: .09em;
+  border-bottom: 1px solid var(--line); padding-bottom: 8px;
+}
+.group { margin-bottom: 16px; }
+.group:last-child { margin-bottom: 0; }
+.group h3 {
+  margin: 0 0 7px; font-size: 11px; color: #8a93a0; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .06em;
+}
+
+/* ---- control rows (left panel) ---- */
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; margin-bottom: 6px; }
+.controls:last-child { margin-bottom: 0; }
+.controls button, .panel button, .model-pick select {
+  padding: 6px 11px; color: #e3e3e3; background: var(--key);
+  border: 1px solid var(--key-br); border-radius: 7px; cursor: pointer; font-size: 13px;
+}
+.controls button:hover, .panel button:hover { background: #454b56; }
+.controls label, .tuning label { color: #aab; display: inline-flex; align-items: center; gap: 6px; }
+.val { color: #ddd; font-variant-numeric: tabular-nums; font-size: 12px; }
+
+.tuning { display: flex; flex-direction: column; gap: 7px; font-size: 12px; color: #aab; }
+.tuning label { display: flex; }
+.tuning input[type=range] { flex: 1; min-width: 90px; }
+.tuning .val { min-width: 64px; text-align: right; }
+.tuning input[type=text] { background:#15171b; color:#ddd; border:1px solid var(--key-br); border-radius:5px; padding:2px 5px; }
+
+/* ============================ CENTER: PHONE ============================ */
+.phone-col { display: flex; flex-direction: column; align-items: center; }
+
+.model-pick { margin-bottom: 12px; color: #aab; font-size: 13px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.model-pick label { display: inline-flex; align-items: center; gap: 4px; }
+.model-pick select { font-size: 14px; }
+
+.phone {
+  width: 300px;
+  padding: 20px 18px 22px;
+  background: linear-gradient(#34373f, #24262c);
+  border: 1px solid #3c4049;
+  border-radius: 30px;
+  box-shadow: 0 10px 34px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.05);
+}
+
+#lcd {
+  image-rendering: pixelated;        /* crisp scaled pixels */
+  width: 252px; height: auto;        /* fixed display width; height tracks the canvas
+                                        aspect (84×48 3310, 96×65 3410, …) automatically */
+  background: var(--lcd-bg);
+  border: 10px solid #11140d;
+  border-radius: 6px;
+  display: block;
+  margin: 0 auto 18px;
+}
+
+/* ---- keypad: built by main.js as a unified 3-column grid (mirrors the GUI) ----
+   The nav band (soft keys / up-down / send-end) sits in the same grid as the digits;
+   Family A's volume keys stack to the left of the LCD in .side-vol. */
+.lcd-row { display: flex; align-items: center; justify-content: center; gap: 10px; }
+.side-vol { display: flex; flex-direction: column; gap: 8px; }
+
+/* base key look — light key faces with BLACK legends (real-phone style) */
+.key {
+  color: #111; background: #c9cdd4; border: 1px solid #aab0ba;
+  border-radius: 8px; cursor: pointer; user-select: none; font-size: 15px;
+  font-weight: 600; padding: 12px 0; text-align: center;
+}
+.key:hover { background: #d7dbe1; }
+.key.down, .key:active { background: #9aa0a8; transform: translateY(1px); }
+
+/* the 3-column grid below the LCD */
+.pad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  width: 252px;
+  margin: 16px auto 0;
+}
+.padcell { display: flex; }
+.padcell .key { flex: 1; }
+.padcell.empty { visibility: hidden; }
+
+.key.nav { font-size: 14px; }
+
+/* soft keys: just a line ( --- ), no text */
+.key.softkey { color: transparent; }
+.key.softkey::after {
+  content: ""; display: block; width: 56%; height: 3px; margin: 1px auto;
+  background: #111; border-radius: 2px;
+}
+
+/* send (green) / end (red) call keys — coloured irrespective of the keypad
+   backlight, and they keep their colour on hover/press too. */
+.key.send, body.kbd-lit .key.send { background: #1f9d4d; border-color: #178a40; }
+.key.send:hover { background: #25ad57; }
+.key.end,  body.kbd-lit .key.end  { background: #d23b3b; border-color: #b22f2f; }
+.key.end:hover  { background: #e04646; }
+.key.send.down, .key.send:active { background: #18803d; }
+.key.end.down,  .key.end:active  { background: #b22f2f; }
+/* hang-up = the call receiver rotated down */
+.key.end .hangup { display: inline-block; transform: rotate(133deg); }
+
+.side-vol .key.vol { width: 44px; padding: 14px 0; font-weight: 700; }
+
+.hint { color: #777; font-size: 12px; margin: 14px 0 0; text-align: center; max-width: 300px; }
+
+/* ---- device shell (realistic photo body, built by main.js) ----------------
+   #shell holds a scaled body box (.shell-root) at the design's native px size;
+   the photo is the body, masked light layers glow the translucent glyphs amber
+   when the keypad backlight is on, and transparent .shell-zone buttons sit over
+   each physical key. The live #lcd canvas is moved onto .shell-lcd. */
+.shell-host { display: none; }                 /* shown only in shell mode */
+body.shell-mode .shell-host { display: block; }
+body.shell-mode .phone { display: none; }      /* the photo IS the body */
+.shell-root {
+  position: relative;
+  transform-origin: top left;
+  -webkit-user-select: none; user-select: none; touch-action: none;
+}
+.shell-root img.shell-photo {
+  display: block; width: 100%; height: 100%;
+  pointer-events: none; -webkit-user-drag: none; user-select: none;
+}
+.shell-light {                                  /* amber light through the glyph mask */
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 3; background: var(--shell-light, #ffc24d);
+  mix-blend-mode: screen;                       /* no opacity transition: LEDs are hard on/off */
+  -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+  /* mask registration nudge (design px offset + per-axis stretch), tuned live by the editor */
+  -webkit-mask-size: calc(var(--mask-sx, 1) * 100%) calc(var(--mask-sy, 1) * 100%);
+  mask-size: calc(var(--mask-sx, 1) * 100%) calc(var(--mask-sy, 1) * 100%);
+  -webkit-mask-position: var(--mask-x, 0px) var(--mask-y, 0px);
+  mask-position: var(--mask-x, 0px) var(--mask-y, 0px);
+}
+.shell-light.bloom { opacity: calc(var(--light-on, 0) * var(--light-bloom, .85)); filter: blur(var(--light-blur, 2.4px)); }
+.shell-light.sharp { opacity: var(--light-on, 0); }
+.shell-glow {                                   /* free-form backlight pool (no glyph mask) */
+  position: absolute; pointer-events: none; z-index: 3;
+  background: var(--shell-light, #ffc24d); mix-blend-mode: screen;
+  opacity: calc(var(--light-on, 0) * var(--light-bloom, .85));
+  filter: blur(var(--light-blur, 2.4px));      /* no opacity transition: LEDs are hard on/off */
+}
+.shell-lcd {                                    /* green panel hiding the photo's screen */
+  position: absolute; overflow: hidden; z-index: 2;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--lcd, #689058); box-shadow: inset 0 1px 6px rgba(0,0,0,.22);
+}
+/* the shared #lcd canvas, re-seated on the shell: no grid border/sizing here */
+body.shell-mode .shell-lcd #lcd {
+  border: 0; border-radius: 0; margin: 0; background: transparent;
+}
+.shell-zone {
+  position: absolute; box-sizing: border-box; cursor: pointer; z-index: 4;
+  border: 1px solid var(--hz-border, transparent);
+  background: var(--hz-bg, transparent); touch-action: none;
+}
+.shell-zone.pwr { z-index: 5; }
+.shell-zone.active { background: rgba(0,0,0,.16); }
+
+/* ---- shell editor (⚙ Edit dropdown) — affordances scoped to the active layer --- */
+body.edit-zones  .shell-zone { cursor: move; border-color: rgba(255,60,110,.95); background: rgba(255,60,110,.16); }
+body.edit-screen .shell-lcd  { cursor: move; outline: 2px dashed rgba(22,214,255,.7); }
+/* glow regions: grabbable + outlined while editing the key mask (fill only shows when lit) */
+body.edit-mask .shell-glow { pointer-events: auto; cursor: move; outline: 1px dashed rgba(255,196,77,.95); }
+body.edit-zones  .shell-zone::after,
+body.edit-mask   .shell-glow::after,
+body.edit-screen .shell-lcd::after {          /* bottom-right resize handle */
+  content: ""; position: absolute; right: 0; bottom: 0; width: 13px; height: 13px;
+  box-sizing: border-box; background: #16d6ff; border: 2px solid #04121a;
+  cursor: nwse-resize; z-index: 6;
+}
+body.edit-zones  .shell-zone.selected,
+body.edit-mask   .shell-glow.selected,
+body.edit-screen .shell-lcd.selected {
+  border-color: #16d6ff; background: rgba(22,214,255,.20);
+  box-shadow: 0 0 0 2px #16d6ff; outline-color: #16d6ff;
+}
+/* glyph-mask handle frame: bright dashed border (visual) + two grabbable corner grips.
+   Grips sit just inside the corners so they can't be clipped by the body box. */
+.shell-mask-frame { position: absolute; box-sizing: border-box; pointer-events: none; z-index: 6;
+  display: none; border: 2px dashed #16d6ff; box-shadow: 0 0 0 1px rgba(0,0,0,.5); }
+body.edit-mask .shell-mask-frame { display: block; }
+.shell-mask-frame .mask-grip { position: absolute; width: 20px; height: 20px; box-sizing: border-box;
+  background: #16d6ff; border: 2px solid #04121a; pointer-events: auto; touch-action: none; }
+.shell-mask-frame .mask-move { left: 0; top: 0; border-radius: 50%; cursor: move; }
+.shell-mask-frame .mask-size { right: 0; bottom: 0; cursor: nwse-resize; }
+/* ---- vector (bézier) key-shape editor ------------------------------------- */
+/* in shape mode the keys read as filled silhouettes (clip-path shows the shape) */
+body.edit-shape .shell-zone { cursor: pointer; border: 0; background: rgba(22,214,255,.14); }
+.shell-vector { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 8; display: none; overflow: visible; }
+body.edit-shape .shell-vector.active { display: block; }
+.shell-vector .vec-outline { fill: none; stroke: #16d6ff; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.shell-vector .vec-hit { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: copy; }
+.shell-vector .vec-hline { stroke: rgba(22,214,255,.55); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.shell-vector .vec-ctrl { fill: #0a0f16; stroke: #16d6ff; stroke-width: 1.6; pointer-events: auto; cursor: grab; vector-effect: non-scaling-stroke; }
+.shell-vector .vec-anchor { fill: #16d6ff; stroke: #04121a; stroke-width: 1.6; pointer-events: auto; cursor: move; vector-effect: non-scaling-stroke; }
+.shell-vector .vec-anchor.sel { fill: #ffd24d; }
+.shell-edit-readout { width: 300px; margin-top: 6px; min-height: 14px; font: 11px/1.4 ui-monospace, Menlo, Consolas, monospace; color: #9fd0e6; }
+/* ---- backlight ('bglight') overlay editor — aligned label/control grid -------- */
+.shell-light-editor { width: 300px; margin-top: 6px; display: flex; flex-direction: column; gap: 5px;
+  font: 11px/1.4 ui-monospace, Menlo, Consolas, monospace; color: #9fd0e6; }
+.shell-light-editor .sle-row { display: grid; grid-template-columns: 74px 1fr; align-items: center; gap: 8px; }
+.shell-light-editor .sle-row > input[type=range] { width: 100%; }
+.shell-light-editor .sle-inline { display: flex; align-items: center; gap: 8px; }
+.shell-light-editor .sle-sub { margin-top: 2px; opacity: .7; font-size: 10px; }
+.shell-light-editor input[type=color] { width: 28px; height: 18px; padding: 0; border: 0; background: none; }
+.shell-export-modal { display: none; position: fixed; inset: 0; z-index: 1000; background: rgba(6,12,20,.66); align-items: center; justify-content: center; }
+.shell-export-modal .sx-box { background: #0f1722; border: 1px solid #2b3a4d; border-radius: 8px; width: min(680px,92vw); padding: 14px; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+.shell-export-modal .sx-head { color: #cfd8e3; font-size: 12px; margin-bottom: 8px; }
+.shell-export-modal .sx-head code { color: #9ad; }
+.shell-export-modal textarea { width: 100%; height: 360px; resize: vertical; box-sizing: border-box; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; background: #0a0f16; color: #d6e2f0; border: 1px solid #2b3a4d; border-radius: 6px; padding: 10px; }
+.shell-export-modal .sx-actions { margin-top: 10px; display: flex; gap: 8px; justify-content: flex-end; }
+
+.debug-tools { margin-top: 18px; width: 300px; }
+.debug-tools h3 { margin: 0 0 7px; font-size: 11px; color: #8a93a0; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+.debug-tools input[type=text] { background:#15171b; color:#ddd; border:1px solid var(--key-br); border-radius:5px; padding:2px 5px; }
+
+/* ============================ RIGHT: DIAGNOSTICS ============================ */
+.diag-panel .diag-lbl { display: block; margin: 12px 0 4px; color: #aab; font-size: 13px; }
+.diag-panel .diag-lbl:first-of-type { margin-top: 0; }
+.diag-panel input[type=text], #diag-addrs, #trace-pcs, #msglog-addr {
+  font-family: ui-monospace, Menlo, monospace; background:#15171b; color:#cdd;
+  border:1px solid var(--key-br); border-radius:5px; padding:3px 6px; max-width: 100%;
+}
+.diag-panel button { margin-left: 6px; padding: 1px 9px; font-size: 12px; }
+.msglog-presets { margin: 8px 0 0; font-size: 12px; color: #8a93a0; }
+.msglog-presets button { margin-left: 6px; }
+#msglog-out, #diag-out, #timers-out {
+  user-select: text; -webkit-user-select: text; cursor: text;
+  white-space: pre; overflow-x: auto; margin: 4px 0 0;
+  background: #15171b; border: 1px solid var(--line); border-radius: 6px;
+  padding: 6px 8px; font-size: 12px; min-height: 1.4em;
+}
+#timers-out { color: #cdd6a0; }     /* timer readout: subtle green, like the LCD */
+
+/* ===================== FAR LEFT: FIRMWARE INVENTORY ===================== */
+.fw-panel { position: sticky; top: 8px; }
+#fw-search {
+  width: 100%; margin-bottom: 8px; padding: 5px 8px;
+  background: #15171b; color: #ddd; border: 1px solid var(--key-br);
+  border-radius: 6px; font-size: 12px;
+}
+.fw-legend { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-bottom: 10px; }
+.fw-list {
+  max-height: 70vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 3px;
+  margin: 0 -4px; padding: 0 4px;
+}
+.fw-list .fw-hint { color: #8a93a0; font-size: 12px; line-height: 1.5; }
+.fw-list .fw-hint code { color: #cdd6a0; background:#15171b; padding:1px 4px; border-radius:4px; }
+
+/* per-model group header */
+.fw-group {
+  margin: 10px 0 3px; font-size: 11px; font-weight: 700; color: #8a93a0;
+  text-transform: uppercase; letter-spacing: .06em;
+  position: sticky; top: 0; background: var(--panel); padding: 2px 0;
+}
+.fw-group:first-child { margin-top: 0; }
+
+/* one firmware row */
+.fw-item {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 6px 8px; border: 1px solid transparent; border-radius: 7px;
+  cursor: pointer; background: #1a1d23;
+}
+.fw-item:hover { background: #232730; border-color: var(--key-br); }
+.fw-item.active { background: #1f3326; border-color: #2f7d4d; }
+.fw-item.loading { opacity: .6; cursor: progress; }
+.fw-item .fw-title { font-size: 12.5px; color: #dfe3e8; line-height: 1.25; word-break: break-word; }
+.fw-item.active .fw-title { color: #b7f0c8; }
+.fw-item .fw-meta { font-size: 11px; color: #7f8794; font-variant-numeric: tabular-nums; }
+.fw-item .fw-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* state badges */
+.fw-badge {
+  font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  padding: 1px 6px; border-radius: 10px; border: 1px solid transparent; white-space: nowrap;
+}
+.fw-badge.boots    { background: #14361f; color: #6fe39a; border-color: #2f7d4d; }
+.fw-badge.no-boot  { background: #3a1414; color: #ff9b9b; border-color: #8a2f2f; }
+.fw-badge.cosim    { background: #2a2238; color: #c8a8ff; border-color: #5a3f8a; }
+.fw-badge.ee       { background: #2b2410; color: #e3c46f; border-color: #7d652f; }
+.fw-badge.untested { background: #20232a; color: #8a93a0; border-color: #3a3f48; }

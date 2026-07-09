@@ -1,0 +1,92 @@
+# 3410 NHM-2 v5.46 (fw-id c3bc5705) — hand-curated + promoted overlay.
+# Multi-model bring-up; see docs/3410-bringup.md.
+firmware:
+  id: c3bc5705
+  file: firmware/Nokia 3410 NHM-2 v5.46 (assembled).fls
+  model: 3410
+  version: 05.46
+  type: NHM-2
+
+addresses:
+  # ---- promoted from scratch on 2026-06-02 22:15 ----
+  SELFTEST_CCONT_CHIPID:            { addr: 0x0038899C, source: overlay, role: "boot self-test: CCONT reg3 chip-ID, wants (v&0xFC)==0xB0 else 0xFD [22:02]" }
+  SELFTEST_RESULT_TBL:              { addr: 0x0017FAE0, source: overlay, role: "boot self-test results table; [idx]=0x00 pass / 0xFD fail / 0xFF not-run [22:02]" }
+  SELFTEST_CUR_INDEX:               { addr: 0x0017FEC1, source: overlay, role: "current self-test index byte; tests store result at RESULT_TBL[this] [22:02]" }
+  EEPROM_INIT:                      { addr: 0x003F8E7C, source: overlay, role: "EEPROM driver init; early boot (0x20018A->0x3B3CD6->here) scans+reads active block [22:07]" }
+  EEPROM_BLK_SCAN:                  { addr: 0x003F1392, source: overlay, role: "EEPROM driver: scans 64KB blocks for the active-block magic [22:07]" }
+  EEPROM_REC_READ:                  { addr: 0x003F75CA, source: overlay, role: "EEPROM driver: reads active-block record bytes (parser) [22:07]" }
+  EEPROM_ACTIVE_BLK:                { addr: 0x005FC000, source: overlay, role: "active EEPROM block (runtime); magic EEPROM at +6, records follow [22:07]" }
+  EEPROM_BLOCK_DESC_TBL:            { addr: 0x001255F0, source: overlay, role: "EEPROM block descriptor table; entry{addr@+0, state/size@+4}, 24B stride, blocks 0x570000-0x5FE000 [22:12]" }
+  EEPROM_BLOCKS_VALIDATE:           { addr: 0x003874E2, source: overlay, role: "reads 8 EEPROM blocks via DESC_TBL; all-0xFFFF(virgin) -> sets invalid flags (entry+0x38=1, [0x387 flags]|=2) [22:12]" }
+  # ---- promoted from scratch on 2026-06-02 22:49 ----
+  SELFTEST_GROUP_DISPATCH:          { addr: 0x003DE2D8, source: overlay, role: "master self-test group dispatcher; r4=enable bitmask (arg low byte), runs tests via 0x2F8642 by #; skipped tests stay 0xFF [22:49]" }
+  SELFTEST_RUN_BY_NUM:              { addr: 0x002F8642, source: overlay, role: "runs a self-test by number (r0=test#); #7 -> CCONT chip-ID 0x38899C [22:49]" }
+  SELFTEST_TBL_INIT:                { addr: 0x00388AD8, source: overlay, role: "inits self-test results table 0x17FAE0 to all-0xFF at boot [22:49]" }
+  SELFTEST_ENABLE_TBL:              { addr: 0x004C53A0, source: overlay, role: "dispatcher gates on this (entry!=0xFF -> alt path); candidate test-enable/config table [22:49]" }
+  SELFTEST_TBL2:                    { addr: 0x0012E5EC, source: overlay, role: "secondary self-test results table written by SELFTEST_GROUP_DISPATCH [22:49]" }
+  # ---- promoted from scratch on 2026-06-02 22:56 ----
+  MMI_READY_FLAG:                   { addr: 0x0017FE3D, source: overlay, role: "MMI readiness flag; bit7 SET=ready, CLEAR=CONTACT SERVICE. base 0x17FDD0+0x6D [22:56]" }
+  CONTACT_SERVICE_GATE:             { addr: 0x00260A26, source: overlay, role: "reads MMI_READY_FLAG bit7; clear -> renders CONTACT/SERVICE strings (0x260C30) [22:56]" }
+  READINESS_DEMOTE:                 { addr: 0x0035A348, source: overlay, role: "clears MMI_READY_FLAG bit7 (flag&=0x7F) then re-evals via 0x3B3D94 + reset-reason [0x17FEB5]; does NOT re-set bit7 here [22:56]" }
+  READINESS_CHECK:                  { addr: 0x003B3D94, source: overlay, role: "readiness check called by READINESS_DEMOTE; r0=0 gates the reset-reason branch [22:56]" }
+  MMI_STATE_STRUCT:                 { addr: 0x0017FDD0, source: overlay, role: "MMI/readiness state struct base; +0x6D=ready flag, +0x72=counter [22:56]" }
+  # ---- promoted from scratch on 2026-06-02 22:59 ----
+  READINESS_REEVAL:                 { addr: 0x003B3D00, source: overlay, role: "service-entry/readiness re-eval; calls READINESS_DEMOTE, writes [0x2000C]=0x0A (IRQ disable), stages reason 4; loop over subsystem checks [22:59]" }
+  # ---- promoted from scratch on 2026-06-03 07:50 ----
+  MMI_SERVICE_STATE_TBL:            { addr: 0x004A39C4, source: overlay, role: "MMI state/dialog handler table {handler,params,flags}x12B; entry0=READINESS_REEVAL service-entry [23:04]" }
+  MMI_TASK_SCHED_INIT:              { addr: 0x002F8DFC, source: overlay, role: "builds 23-rec runtime CB pool + 3 parallel tables (0x4A39C4 static + 0x114778 runtime), stores tbl ptr [0x112958] [23:33]" }
+  RDY_CHK1_CALL_FFS:                { addr: 0x003E1DF0, source: overlay, role: "readiness chk1: call-active(0x3D0D08 reads [0x121DDF/0x121DE0/0x129524]) AND FFS-idle(0x328DBC: [0x12DD0C+28]==0 && +36==0) [23:33]" }
+  RDY_CHK2_SELFTEST:                { addr: 0x00361618, source: overlay, role: "readiness chk2: 0x3E560A reads [0x12ADB1] nibble + scans 5 records [0x12ADE0+20] for nonzero (self-test/hw result) [23:33]" }
+  RDY_CHK4_SELFTEST_RESULT:         { addr: 0x00393FCC, source: overlay, role: "readiness chk4: 0x393F6C switch on [0x17FDBC] (SELFTEST_RESULT_TBL+0x2DC) state-machine; returns ready only for certain values [23:33]" }
+  RDY_CHK5_FLAG_12DFB0:             { addr: 0x0038B620, source: overlay, role: "readiness chk5: ready iff [0x12DFB0]==0 [23:33]" }
+  RDY_CHK6_ALWAYS1:                 { addr: 0x002EB338, source: overlay, role: "readiness chk6: stub, returns 1 (always ready) [23:33]" }
+  RDY_CHK7_FLAG_12DFB2:             { addr: 0x0038B6FA, source: overlay, role: "readiness chk7: ready iff [0x12DFB2]!=1 [23:33]" }
+  READINESS_FLAG_FN:                { addr: 0x002DD2D0, source: overlay, role: "reads [0x11F9EB]/[0x12287B] subsystem-ready flags [23:37]" }
+  SELFTEST_RESULT_STRUCT:           { addr: 0x0012CB8C, source: overlay, role: "base of boot self-test result struct, 0x12CBBA is +0x2E readiness byte [23:37]" }
+  RDY3_GATE_BYTE:                   { addr: 0x0012CBBA, source: overlay, role: "born-0 never-written-in-boot, RDY_CHK3 needs !=0 - SERVICE [23:42]" }
+  LOCALMODE_SESSION_SETUP:          { addr: 0x003A2BF0, source: overlay, role: "sets local-mode flags [0x12643C]/[0x12643D]=1 on test-session establish [23:47]" }
+  LOCALMODE_MSG_DISPATCH:           { addr: 0x002CDAEC, source: overlay, role: "walks test-cmd handler table 0x4A38D4 - never runs in normal boot [23:47]" }
+  LOCALMODE_TEST_HANDLER:           { addr: 0x002CE3F8, source: overlay, role: "second test-msg handler using table base 0x4A3934 [23:47]" }
+  READINESS_FLAG_TABLE:             { addr: 0x0012E268, source: overlay, role: "9-byte readiness flag table [0x12E268..0x12E270]; aggregator sets per-subsystem byte; NEVER set on 3410 boot (no sender fires) [00:09]" }
+  POST_READY_COMPLETION:            { addr: 0x003D6128, source: overlay, role: "fires when all 9 readiness flags set; TASK_SEND task=1 msg=21 (byte-identical to 3310 0x2E72B8) [00:09]" }
+  TASK_SEND:                        { addr: 0x002F8A0C, source: overlay, role: "RTOS task_send (3410); POST_READY calls with task=1 msg=21 [00:09]" }
+  DRAW_CHARS:                       { addr: 0x003F8870, source: overlay, role: "draw chars (3410 analog of 3310 0x2F0184) [00:09]" }
+  SELFTEST_RESULT_RESET:            { addr: 0x0021F3BC, source: overlay, role: "dispatch tbl 0x4A3AA8 ~msg0x1E; ZEROES [0x12CBBA] + struct (writes 0 NOT 1, verified); also posts ready-code19 to aggregator; NEVER dispatched on 3410. NOT the non-zero producer [00:14]" }
+  SUBSYS13_INIT:                    { addr: 0x00221FE8, source: overlay, role: "subsystem-13 init; reports ready code 13 to aggregator (bl 0x293378 @0x222016); dispatched via tbl 0x4A3A60 desc 0x02602A0A; NEVER entered on 3410 = real stall (upstream of [0x12CBBA]) [00:19]" }
+  BOOTSTAGE_DRAW_SEND_0x32:         { addr: 0x003B59E2, source: overlay, role: "boot-stage fn: DRAW_CHARS(0x6D11)+TASK_SEND(task=1,msg=0x32); 3410-only stage absent on 3310 [00:27]" }
+  BOOTSTAGE_0x32_NOTREADY:          { addr: 0x003B5AFA, source: overlay, role: "not-ready branch from 0x32 gate; sibling 0x3B5AFC draws 0x6D12 + sends msg=0x33 (re-eval) [00:27]" }
+  BOOTSTAGE_DRAW_SEND_0x17:         { addr: 0x003D5F76, source: overlay, role: "common boot-stage: DRAW_CHARS(0x7201)+TASK_SEND(task=1,msg=0x17); last stage shared with 3310 (0x2E70FE) [00:27]" }
+  SELFTEST_VERDICT_BYTE:            { addr: 0x0012E8E1, source: overlay, role: "selftest/readiness byte; set=2 @~177K; gates the 0x32 ready stage (cmp #2) [00:27]" }
+  SUBSYS_READY_REPORT:              { addr: 0x00393FEC, source: overlay, role: "ready-report shim: subsys id in r0 -> 0x3BEF46(r0=1,r1=id); 0x32 PASS reports id 7 [00:27]" }
+  SELFTEST_RDY_FLAG_CBBA:           { addr: 0x0012CBBA, source: overlay, role: "CHK3 sub1 byte; RAM-default 0, never written by boot; setter via selftest dispatch table 0x21F78C [00:37]" }
+  SELFTEST_REPORT_TASK:             { addr: 0x0021F3E0, source: overlay, role: "self-test result-reporting task body; writes result bytes via field-addr tbl 0x21F78C on result msg-ids; NEVER RUNS [00:50]" }
+  SELFTEST_REPORT_MSG_SWITCH:       { addr: 0x0021F600, source: overlay, role: "msg-id switch in report task; switches 119A/119B/11F8/1F/2A/11FB; reads queue via 0x2F8ABC [00:50]" }
+  SELFTEST_QUEUE_READ:              { addr: 0x002F8ABC, source: overlay, role: "scheduler queue-read for current dispatched task index at 0x112948+1 [00:50]" }
+  SELFTEST_FIELD_ADDR_TBL:          { addr: 0x0021F78C, source: overlay, role: "word table of RAM result-byte addrs by test-num; 11FAB8/122881/12CBB9 etc [00:50]" }
+  SCHED_QUEUE_POST:                 { addr: 0x002F8F24, source: overlay, role: "cooperative-scheduler enqueue r0=taskQidx r1=msgptr; ring 1134F0+idx*28 [00:50]" }
+  SCHED_QUEUE_POST2:                { addr: 0x002F8948, source: overlay, role: "sibling queue-post r0=task r1=msg; task19 self-test queue never receives [00:50]" }
+  SELFTEST_STATUS_REQ:              { addr: 0x0033D9CE, source: overlay, role: "builds msg 0x11A2 posts task 19 via 0x2F8948; NEVER FIRES no callers [00:50]" }
+  SELFTEST_VERDICT_CLASSIFIER:      { addr: 0x003D5F9E, source: overlay, role: "task=1 bootstage classifier; reads selftest result, routes verdict 0/1/2/3/5 (5=not-ready) [00:59]" }
+  RDY_CHK3_THREE_INPUT:             { addr: 0x0033D9A8, source: overlay, role: "AND of [0x12CBBA]!=0 AND fn0x2DD2D0!=0 AND [0x122883]!=0; returns 0 on 3410 (all three never written) -> the failing readiness gate [01:20]" }
+  TASK1_MSG_0x32_NOTREADY:          { addr: 0x003B59F6, source: overlay, role: "msg-0x32 ASIC-not-ready handler: writes only 0x08 to [0x20020]/[0x20024], re-sends 0x32 (the stuck loop) [05:55]" }
+  ANALOG_SEND_0x4C:                 { addr: 0x00394560, source: overlay, role: "task18 self-send msg 0x4C (gated on analog state byte==4); 0x4C never dispatched -> no 0x4D ack [05:55]" }
+  READINESS_SUBSTATE_WRITER:        { addr: 0x0025CEC0, source: overlay, role: "writes [0x17FE46]=3 (not-ready) when HW-readiness probe 0x3A9AF0 returns -1 [05:55]" }
+  READINESS_REEVAL_DEMOTE:          { addr: 0x0035A340, source: overlay, role: "re-eval that masks bit7 of [0x17FE3D] down to 0x08 when substate!=ready [05:55]" }
+  BYTESUM16:                        { addr: 0x003A9AF0, source: overlay, role: "generic helper: r0=ptr r1=count -> returns (sum of count bytes)&0xFFFF in r0. NOT a checksum-vs-stored; pure 16-bit byte-sum. RE 2026-06-03 [06:08]" }
+  MMI_READY_CKSUM_GATE:             { addr: 0x0025CEB4, source: overlay, role: "readiness gate: cksum=~BYTESUM16(0x17FDD0,0x70)&0xFFFF; cmp vs stored u16 [0x17FE40]; EQ->ready path (0x25CEF4), NE->not-ready: [0x17FE46]=3,[0x17FAEB]=0,demote bit7 of [0x17FE3D]. RE 2026-06-03 [06:08]" }
+  MMI_STATE_CKSUM_SLOT:             { addr: 0x0017FE40, source: overlay, role: "stored u16 checksum of MMI state struct 0x17FDD0[0..0x6F]; struct+0x70. Runtime=0x0000, NEVER written by boot. PASS needs ==0xFFFF when body all-zero [06:08]" }
+  MMI_READY_SUBSTATE:               { addr: 0x0017FE46, source: overlay, role: "readiness substate byte (struct+0x76); set=3 not-ready by MMI_READY_CKSUM_GATE fail path [06:08]" }
+  dsp_uploaded_flag:                { addr: 0x0012BA10, source: overlay, role: "DSP code-block upload-complete flag [06:30]" }
+  DSP_MSG_PUMP:                     { addr: 0x00348A20, source: overlay, role: "DSP message-pump analog of 3310 0x2BB430 - sets [0x12BA10]=1 at 0x348A4A gated on [0x100E4]==0 [06:30]" }
+  DSP_UPLOADED_SET:                 { addr: 0x00348A4A, source: overlay, role: "writer mov r0,1 strb [0x12BA10] [06:30]" }
+  DSP_UPLOADED_GET:                 { addr: 0x003B39E0, source: overlay, role: "accessor ldrb [0x12BA10] ret - analog of 3310 0x2E0B20 [06:30]" }
+  SUBSYS_STARTER:                   { addr: 0x003B3B9E, source: overlay, role: "subsystem-starter analog of 3310 0x2E0B26 - reads [0x12BA10] bails to 0x3B3C16 if not 1 - emits msg 0x16 [06:30]" }
+  SIM_GATE_DISP49:                  { addr: 0x00300264, source: overlay, role: "disp49 SIM-gate eval (analog 3310 0x29EAC0); reads CALL_STATUS, selects insert-SIM vs standby/bypass [07:27]" }
+  CALL_STATUS:                      { addr: 0x0017FB96, source: overlay, role: "SIM-gate struct base (analog 3310 0x11FCFE); status [base+0x46]=0x17FBDC [07:27]" }
+  sim_gate_sel:                     { addr: 0x0017FBD0, source: overlay, role: "disp49 SIM-gate selector HALFWORD (base+0x3A; analog 3310 byte 0x11FD1B); bypass=low byte 0x17FBD1=0x06 [07:27]" }
+  READINESS_AGGREGATOR:             { addr: 0x00293378, source: overlay, role: "event-driven readiness aggregator; r0=subsys code 11..20 sets [0x12E268+idx]=1; all 9 -> POST_READY (analog 3310 0x278670) [07:50]" }
+  # ---- promoted from scratch on 2026-06-03 10:57 ----
+  KEYMAP_NORM:                      { addr: 0x004C5130, source: overlay, role: "keypad normal keycode table 25 entries row*5+col [08:54]" }
+  KEYPAD_KEYCODE_LOOKUP:            { addr: 0x003E496E, source: overlay, role: "indexes KEYMAP_NORM by row*5+col [08:54]" }
+  KEYPAD_MATRIX_SCAN:               { addr: 0x003DEE1C, source: overlay, role: "drives cols reads rows [08:54]" }
+  KEYPAD_ISR:                       { addr: 0x002E484C, source: overlay, role: "stores raw code to 0x12EA85 [08:54]" }

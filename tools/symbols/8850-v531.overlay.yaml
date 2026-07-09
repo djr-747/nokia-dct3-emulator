@@ -1,0 +1,26 @@
+# 8850 NSM-2 v5.31 (fw-id 7f61ef73) — hand-curated + promoted overlay.
+# Multi-model bring-up; merged with 8850-v531.nokix.yaml at lookup time
+# (this file wins on name conflicts). See docs/8850-boot-HANDOFF.md.
+firmware:
+  id: 7f61ef73
+  file: firmware/FuBu8850 v5.31 (PPM C).fls
+  model: 8850
+  version: 05.31
+  type: NSM-2
+
+addresses:
+  # ---- promoted from scratch on 2026-06-03 10:58 ----
+  MMI_READY_VERDICT:                { addr: 0x0013FDE1, source: overlay, role: "DSP self-test verdict/MMI-ready byte struct 0x13FD78+0x69 bit2=ST-pending bit7=MMI-ready analog 3310 0x11FF15 [08:11]" }
+  DSP_UPLOADED:                     { addr: 0x00135664, source: overlay, role: "DSP code-block-done flag set 1 by IRQ4 ISR 0x2CB44E gate for shared block-ack IRQ4 analog 3310 0x11038C [08:11]" }
+  DSP_IRQ4_ISR:                     { addr: 0x002CB418, source: overlay, role: "IRQ4 DSP mailbox ISR sets DSP_UPLOADED 0x135664 when reply reg 0x100E4==0 [08:11]" }
+  VERDICT_BIT2_WRITER:              { addr: 0x00240B60, source: overlay, role: "sets MMI_READY_VERDICT bit2 ST-pending after streaming self-test request to DSP bl 0x284E28 [08:11]" }
+  RDY_CHK3_FLAG:                    { addr: 0x00137516, source: overlay, role: "readiness CHECK-3 flag gated by 0x2CC7B2 in readiness task 0x2F6DA0 written only once DSP responder replies [08:11]" }
+  KEYMAP_NORM:                      { addr: 0x0033F504, source: overlay, role: "keypad normal-scan keycode table 25 entries row*5+col [08:52]" }
+  KEYMAP_SPEC:                      { addr: 0x0033F520, source: overlay, role: "keypad special-scan keycode table POWER at idx4 [08:52]" }
+  KEYPAD_DECODE:                    { addr: 0x0030540A, source: overlay, role: "keypad scan+decode reads raw via 0x3015C0 indexes KEYMAP_NORM [08:52]" }
+  KEYPAD_RAW_READ:                  { addr: 0x003015C0, source: overlay, role: "raw keypad IO reader cols 0x2002A rowdir 0x200A8 [08:52]" }
+  # ---- promoted from scratch on 2026-06-03 11:17 ----
+  REBOOT_FN:                        { addr: 0x00309D66, source: overlay, role: "universal reboot fn r0=reason persists to REBOOT_REASON writes 0x20001 bit2 then spins analog 3310 0x2EEBAE [11:17]" }
+  REBOOT_REASON:                    { addr: 0x0013FED0, source: overlay, role: "RAM byte reboot_fn persists reset reason to analog 3310 0x11FF94 [11:17]" }
+  REASON_SETTER:                    { addr: 0x002F6E6C, source: overlay, role: "standalone reason-stamp leaf strb r0 to REBOOT_REASON analog 3310 0x2E0ED8 [11:17]" }
+  FATAL_HANDLER:                    { addr: 0x0030CA9C, source: overlay, role: "ARM fatal-exception entry resolves via shared sig [11:17]" }

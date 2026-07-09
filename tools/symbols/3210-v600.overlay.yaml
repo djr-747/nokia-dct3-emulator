@@ -1,0 +1,83 @@
+# Hand-curated symbols for the Nokia 3210 (NSE-8) v6.00 — the 3210 had NO symbol
+# store before 2026-06-20, so every bring-up round re-derived the same addresses.
+# This seeds the store with the cluster verified during the CONTACT SERVICE /
+# battery-ADC work (commit 8ef5a86) so disfw/lookup annotate the 3210 directly.
+#
+# Addresses are RUNTIME (flash base 0x200000; file offset = addr - 0x200000).
+# Add entries via `tools/symbols/scratch.py 3210-v600 add 0xADDR NAME role...`
+# then `promote`. Re-run tools/symbols/gen_symbols_txt.py 3210-v600 after editing.
+#
+# Verified against: firmware/Nokia 3210 NSE-8 v6.00 A.fls (fw-id 8b943dd7 — the
+# 3210 header is NOT at 0x1FC, so the id is a whole-image FNV-1a; "NSE-8" string
+# match). See docs/ + the 3210 bring-up memory for the narrative.
+
+firmware:
+  id: 8b943dd7
+  file: firmware/Nokia 3210 NSE-8 v6.00 A.fls
+  model: 3210
+  version: 06.00
+
+addresses:
+  # --- CONTACT SERVICE / startup-screen state machine (RESOLVED 2026-06-20) ---
+  CS_DISPLAY_GATE:        { addr: 0x00237B52, source: overlay, role: "CONTACT SERVICE display decision: ldr=0x11FE68; ldrb [0x69+r5]=[0x11FED1]; lsr#7; bcs — bit7 SET=standby, CLEAR=draw 'CONTACT SERVICE'" }
+  CS_STRING_INLINE:       { addr: 0x00237CC4, source: overlay, role: "inline ASCII 'CONTACT\\0SERVICE\\0' (NOT a PPM string); loaded PC-rel @0x237B62" }
+  CS_VERDICT_BIT7_SET:    { addr: 0x0023475C, source: overlay, role: "sole writer that SETS [0x11FED1] bit7 (one-shot boot grace token)" }
+  STARTUP_SM_PROCEED_EVAL:{ addr: 0x0029BC70, source: overlay, role: "startup-screen proceed eval: consumes [0x11FED1] bit7 (@0x29BC8A), does proceed-to-running ONLY IF [0x112448]==0 (gate @0x29BC92)" }
+  STARTUP_SM_DISPATCH:    { addr: 0x00237ADE, source: overlay, role: "startup-screen SM bit-dispatch on [0x11FED1]; bit2 set -> [0x11FC6F]=15 RUNNING @0x237AF8" }
+  VERDICT_BUILDER:        { addr: 0x002346B2, source: overlay, role: "verdict/cksum builder over [0x11FE68] struct (5110 0x22EC10 twin)" }
+  SCREEN_READY_GATE:      { addr: 0x00236DC4, source: overlay, role: "MMI screen-ready gate (5110 0x231148 twin); reads [0x11FED1]" }
+
+  # --- Battery / CCONT A/D — THE CONTACT SERVICE root cause (RESOLVED 2026-06-20) ---
+  CHARGE_STATE_FN:        { addr: 0x002A8FF2, source: overlay, role: "charge-state fn (entry); contains the BTEMP gate; caller 0x2A92DC" }
+  BTEMP_GATE:             { addr: 0x002A90AC, source: overlay, role: "BTEMP gate: read CCONT A/D ch4 (0x2B52CC); cmp#26 @0x2A90B0; <26 -> [0x112448]=0 PROCEED else =2 STUCK(CONTACT SERVICE)" }
+  CCONT_AD_READER:        { addr: 0x002B52CC, source: overlay, role: "CCONT A/D reader: r0=logical channel; returns 10-bit value (descriptor tbl 0x2E2DA8)" }
+  CHARGE_STATE_GETTER:    { addr: 0x002A9368, source: overlay, role: "ldrb r0,[0x112448]; mov pc,lr — charge/battery-fault state getter" }
+  BTEMP_CLASSIFIER:       { addr: 0x002B4F2E, source: overlay, role: "BTEMP classifier: cmp#39 blt=normal(144) else fault(0x141)" }
+  BSI_READER:             { addr: 0x002A68C6, source: overlay, role: "BSI reader — CCONT logical ch1; recognised-pack interpolation" }
+  VBATT_BOOT_READER:      { addr: 0x002A84B0, source: overlay, role: "VBATT boot reader (5-sample avg), CCONT logical ch0" }
+  VBATT_WINDOW_GATE:      { addr: 0x00270848, source: overlay, role: "VBATT window gate [0x2BE..0x314] (accept) @0x2708A6" }
+  VCHAR_PRESENT_TEST:     { addr: 0x002B0860, source: overlay, role: "VCHAR charger-present test: cmp#100 bgt=present @0x2B0866" }
+  CH_MAP_TABLE:           { addr: 0x002E2D74, source: overlay, role: "flash: per-quantity->channel map {00 04 05 06 07 03 02 01} (3310 is ..01 02)" }
+  CCONT_DESC_TABLE:       { addr: 0x002E2DA8, source: overlay, role: "flash: CCONT A/D channel descriptor table (reg<<3|4 encoding)" }
+
+  # --- Power-on / reason (committed 38a73cf; cross-mapped 2026-06-20) ---
+  POWERON_CLASSIFIER:     { addr: 0x002AF0AE, source: overlay, role: "reason-10 power-on classifier: reads CCONT reg 0x0E; bit7->RTC-alarm, bit2->mode1, bit1->mode2(normal PWR)" }
+  REASON_SETTER_3210:     { addr: 0x002A9278, source: overlay, role: "sets cold reason [0x11FF41]=0x0A from [0x020001] bit0" }
+  REBOOT_REASON_SETTER:   { addr: 0x002A936E, source: overlay, role: "strb r0,[0x11FF50] — stages reboot reason" }
+
+  # --- Boot coordinator (task 1) + readiness (off-by-one corrected 2026-06-20) ---
+  BOOT_COORD_LOOP:        { addr: 0x00270C8C, source: overlay, role: "boot coordinator (task 1) loop; jump-table 0x270CA8" }
+  BOOT_COORD_RECV:        { addr: 0x00270E1C, source: overlay, role: "coordinator TASK_RECV + sub-state store -> [0x1123EF]" }
+  LAUNCH_SUBDISPATCH:     { addr: 0x002701C0, source: overlay, role: "coordinator sub-state dispatch (reads [0x1123EE/EF])" }
+  READINESS_AGGREGATOR:   { addr: 0x002520EC, source: overlay, role: "readiness aggregator (11 flags [0x112280..8A]); completes ~4.28M; 3310 0x278670 twin" }
+  READINESS_AGG_COMPLETE: { addr: 0x002AF208, source: overlay, role: "aggregator completion call (post all-ready)" }
+  TASK_SEND_3210:         { addr: 0x0026A354, source: overlay, role: "TASK_SEND primitive (3310 0x29921C twin)" }
+
+  # --- Power-up readiness SEQUENCER (the remaining blank-screen gate) ---
+  READINESS_SEQUENCER:    { addr: 0x002A92FC, source: overlay, role: "power-up readiness sequencer (re-poll); PASS 0x2A934C, not-ready/spin 0x2A933A/0x2A9344; 3310 IDLE_LOOP_BACK 0x2E0E32 twin" }
+  READINESS_CHECK3:       { addr: 0x0028FF14, source: overlay, role: "readiness check-3: needs [0x111C93]!=0 (+ [0x10DCAE]=1/[0x10D1C0]=0/[0x10DCB0]); 3310 0x2BA304 twin. THE remaining gate" }
+  MEAS_TASK_BODY:         { addr: 0x00208134, source: overlay, role: "broker-driven measurement task body; sets alive-flag [0x111C93] (3310 0x21D610, sub-id 0x4B43->3210 0x4943); NEVER RUNS on 3210" }
+
+  # --- DSP upload ---
+  DSP_UPLOADED_SETTER:    { addr: 0x00290C9A, source: overlay, role: "DSP-block-loader setter: strb r4,[r8] r8=0x110C2C (= .dsp_uploaded)" }
+
+  # ---- promoted from scratch on 2026-06-20 10:42 ----
+  SOFTFLOAT_I2F:                    { addr: 0x002B64FC, source: overlay, role: "soft-float int-to-float IEEE bias 0x9E [10:42]" }
+  SOFTFLOAT_FMUL:                   { addr: 0x002B59E0, source: overlay, role: "soft-float multiply [10:42]" }
+  SOFTFLOAT_FADD:                   { addr: 0x002B5446, source: overlay, role: "soft-float add [10:42]" }
+  SOFTFLOAT_F2I:                    { addr: 0x002B63CC, source: overlay, role: "soft-float float-to-int [10:42]" }
+  BATT_CHAR_STRUCT:                 { addr: 0x0011FDE0, source: overlay, role: "battery-characterisation struct base +52 BSI gain +56 BSI offset +100 recog +102 BTEMP-class +114 pack-type [10:42]" }
+  BATT_TASKSEND_19:                 { addr: 0x002A689C, source: overlay, role: "no-fault ch4-lt-26 path TASK_SEND task19 msg 0x44 [10:42]" }
+ram:
+  STARTUP_VERDICT:        { addr: 0x0011FED1, source: overlay, role: "startup-screen display verdict (struct 0x11FE68+0x69): bit7=standby/CONTACT-SERVICE gate, bit3/bit2=proceed-to-running. = profile .verdict" }
+  STARTUP_CFG_STRUCT:     { addr: 0x0011FE68, source: overlay, role: "startup-screen config struct base (EEPROM/NVRAM-backed; descriptor @flash ~0x2827E4)" }
+  CHARGE_FAULT_STATE:     { addr: 0x00112448, source: overlay, role: "charge/battery-fault state: 0=battery OK (PROCEED), 2=fault/no-charge (stuck). Set by BTEMP_GATE, read by CHARGE_STATE_GETTER" }
+  COORD_SUBSTATE:         { addr: 0x001123EF, source: overlay, role: "boot coordinator (task 1) sub-state byte. (prior rounds watched 0x1123EE — OFF BY ONE.) Reaches 0x15 ~4.28M" }
+  MEAS_TASK_ALIVE:        { addr: 0x00111C93, source: overlay, role: "measurement-task alive flag ([struct 0x111C64]+0x2F); check-3 needs !=0; NEVER set on 3210 = blank-screen gate" }
+  POWERON_REASON:         { addr: 0x0011FF41, source: overlay, role: "power-on reason: 0x0A=normal cold PWR-key boot (from [0x020001] bit0)" }
+  REBOOT_REASON:          { addr: 0x0011FF50, source: overlay, role: "staged reboot reason" }
+  RUNNING_FLAG:           { addr: 0x0011FC6F, source: overlay, role: "=15 when MMI reaches RUNNING/standby; never reaches 15 while blank (3310 [0x111731] twin)" }
+  DSP_UPLOADED:           { addr: 0x00110C2C, source: overlay, role: "DSP-upload-complete cell (= profile .dsp_uploaded)" }
+
+messages:
+  MEAS_TASK_SUBSCRIPTION: { id: 0x4943, role: "broker subscription id of the measurement task that sets [0x111C93] (3310 analogue = 0x4B43)" }

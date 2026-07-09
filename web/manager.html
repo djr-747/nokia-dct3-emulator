@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DCT3 Firmware Manager</title>
+<style>
+  :root { --bg:#15181d; --panel:#1d2026; --panel2:#23272f; --line:#333a44;
+          --ink:#d7dde6; --dim:#8a93a0; --accent:#7fd1a8; --warn:#e0a96d; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;
+         background:var(--bg); color:var(--ink); }
+  header { padding:10px 16px; border-bottom:1px solid var(--line);
+           display:flex; align-items:baseline; gap:12px; }
+  header h1 { font-size:15px; margin:0; font-weight:600; }
+  header .sub { color:var(--dim); font-size:12px; }
+  .wrap { display:grid; grid-template-columns:200px 150px 1fr; gap:1px;
+          background:var(--line); height:calc(100vh - 46px); }
+  .col { background:var(--panel); overflow:auto; }
+  .col h2 { font-size:11px; text-transform:uppercase; letter-spacing:.08em;
+            color:var(--dim); margin:0; padding:8px 12px; position:sticky; top:0;
+            background:var(--panel); border-bottom:1px solid var(--line); }
+  .row { padding:7px 12px; cursor:pointer; border-bottom:1px solid #2a2f37;
+         display:flex; justify-content:space-between; gap:8px; }
+  .row:hover { background:var(--panel2); }
+  .row.sel { background:#2c3a33; color:#fff; box-shadow:inset 3px 0 0 var(--accent); }
+  .row .meta { color:var(--dim); font-size:11px; }
+  .build { background:var(--panel); padding:16px 18px; overflow:auto; }
+  .build h2 { position:static; border:0; padding:0 0 4px; }
+  .pick { margin:14px 0; }
+  .pick label { display:block; color:var(--dim); font-size:11px;
+                text-transform:uppercase; letter-spacing:.06em; margin-bottom:5px; }
+  .opts { display:flex; flex-wrap:wrap; gap:6px; }
+  .opt { padding:6px 11px; border:1px solid var(--line); border-radius:5px;
+         background:var(--panel2); cursor:pointer; }
+  .opt:hover { border-color:var(--accent); }
+  .opt.sel { background:var(--accent); color:#10130f; border-color:var(--accent);
+             font-weight:600; }
+  .opt small { display:block; color:inherit; opacity:.7; font-size:10px; }
+  .mod { display:inline-block; background:#5a3a1e; color:var(--warn); border:1px solid var(--warn);
+         border-radius:3px; padding:0 4px; font-size:9px; font-weight:700; letter-spacing:.04em; }
+  .opt.sel .mod { background:#10130f; }
+  .actions { margin-top:18px; display:flex; gap:10px; align-items:center; }
+  button { font:inherit; padding:9px 16px; border-radius:6px; border:1px solid var(--line);
+           background:var(--panel2); color:var(--ink); cursor:pointer; }
+  button.primary { background:var(--accent); color:#10130f; border-color:var(--accent);
+                   font-weight:600; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .out { margin-top:16px; padding:12px; background:var(--panel2);
+         border:1px solid var(--line); border-radius:6px; white-space:pre-wrap;
+         color:var(--dim); min-height:48px; }
+  .out .ok { color:var(--accent); }
+  .out .warn { color:var(--warn); }
+  .prov { margin-top:12px; font-size:11px; color:var(--dim); }
+  .prov code { color:var(--ink); }
+  a.dl { display:none; }
+  .empty { padding:24px 14px; color:var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>DCT3 Firmware Manager</h1>
+  <span class="sub">browse the harvested FIASCO source base · assemble a bootable .fls on demand</span>
+</header>
+<div class="wrap">
+  <div class="col" id="models"><h2>Model</h2><div class="empty">loading…</div></div>
+  <div class="col" id="versions"><h2>Version</h2></div>
+  <div class="build" id="build">
+    <div class="empty">Pick a model, then a version.</div>
+  </div>
+</div>
+<a class="dl" id="dl"></a>
+<script src="manager.js"></script>
+</body>
+</html>

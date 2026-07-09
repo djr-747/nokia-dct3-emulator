@@ -1,0 +1,25 @@
+# Hand-curated symbols for 5210 NSM-5 v5.40 — addresses NokiX's LOCATE_*.rx
+# macros don't know about, plus bring-up RE findings promoted from scratch.
+# Merged with 5210-v540.nokix.yaml at lookup time (this file wins on conflicts).
+#
+# Adding an entry: include `role:` (one line, plain text). `source: overlay`.
+# Re-run tools/symbols/symbols_check.py after editing.
+#
+# Verified against: firmware/Nokia 5210 NSM-5 v5.40 A.fls (fw-id 0b7825e7 —
+# hash of the 32-byte canonical MCU version header at offset 0x1FC).
+
+firmware:
+  id: 0b7825e7
+  file: firmware/Nokia 5210 NSM-5 v5.40 A.fls
+  model: 5210
+  version: 05.40
+  type: NSM-5
+
+addresses:
+  # ---- promoted from scratch on 2026-06-05 23:25 ----
+  MMI_STARTUP_SEQUENCER:            { addr: 0x003B2940, source: overlay, role: "registers dialog set [23:06]" }
+  DSPREADY_GATE_READ:               { addr: 0x003B29A2, source: overlay, role: "ldrb [0x13B528]==0 - dialog - 0x3E42C8 [23:06]" }
+  DSP_STATUS_STRUCT_INIT:           { addr: 0x003458DE, source: overlay, role: "zeroes 0x13B528 DSP-status struct [23:06]" }
+  DSP_READY_HANDLER:                { addr: 0x00345DFC, source: overlay, role: "DSP-mailbox handler sets 0x13B528 to 1 at 0x345E34 NEVER invoked in emu no inbound DSP msg [23:06]" }
+  DSP_MBOX_DISPATCH:                { addr: 0x003E042A, source: overlay, role: "gates call to DSP_READY_HANDLER on HPI status regs 0x010674 0x010908 0x010B9C 0x0103E0 nonzero [23:06]" }
+  PWROFF_FATAL_SINK:                { addr: 0x003E4272, source: overlay, role: "generic power-off WDT=0 routine spin 0x3E42C8 new downstream barrier at 1.8M after DSP-ready fix [23:24]" }

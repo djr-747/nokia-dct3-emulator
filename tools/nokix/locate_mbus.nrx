@@ -1,0 +1,25 @@
+/*
+	locate_mbus.nrx — walk the MBUS.rx BL chain to find pn_mbus_send_frame.
+	Usage: nokix -m <model> <fw.fls> locate_mbus.nrx
+	Emits one "NAME=DECADDR" line per resolved symbol.
+*/
+
+pn_task = locate("pn_task")
+say "pn_task="pn_task
+
+/* mirror of MBUS.rx lines 39-43: */
+findbl pn_task;     a1=rc; getbl a1; r1=rc
+findb  r1;          a2=rc; getb  a2; r2=rc
+findbl r2;          a3=rc; getbl a3; r3=rc
+findbl r3;          a4=rc; getbl a4; r4=rc
+
+say "step1_bl_site="a1
+say "step1_target="r1
+say "step2_b_site="a2
+say "step2_target="r2
+say "step3_bl_site="a3
+say "step3_target="r3
+say "step4_bl_site="a4
+say "pn_mbus_send_frame="r4
+
+return 0

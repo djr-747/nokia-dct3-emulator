@@ -1,0 +1,12 @@
+name: no-firmware
+on: [push, pull_request]
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject tracked firmware
+        run: |
+          hits=$(git ls-files | grep -iE '\.(fls|mcu|ppm|pmm)$|web/dct3\.data' || true)
+          if [ -n "$hits" ]; then echo "Firmware committed:"; echo "$hits"; exit 1; fi
+          echo "clean: no firmware tracked"

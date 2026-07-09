@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Nokia 3310 Emulator
+GenericName=DCT3 Phone Emulator
+Comment=Boot a Nokia 3310 firmware image (beta)
+Exec=dct3-emu
+Terminal=true
+Categories=Emulator;Utility;
+Keywords=nokia;3310;dct3;phone;emulator;

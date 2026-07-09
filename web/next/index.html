@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nokia 3310 — in your browser</title>
+  <script>document.write('<link rel="stylesheet" href="style.css?v=' + Date.now() + '">');</script>
+  <!-- Per-model phone shells (photo + hit-zones + glyph mask), shared with /web/.
+       We're one level deeper, so tell the loader to resolve unit + asset URLs with
+       a "../" prefix; then pull in the registry (parser-blocking, before main.js). -->
+  <script>window.DCT3_SHELL_PREFIX = "../";</script>
+  <script>document.write('<scr' + 'ipt src="../shells/shells.js?v=' + Date.now() + '"></scr' + 'ipt>');</script>
+</head>
+<body>
+  <!-- Top-of-page error banner. Shown by main.js when anything throws.
+       Always rendered first so even an early init failure has somewhere to land. -->
+  <div id="err-banner" class="err-banner" hidden>
+    <div class="err-row">
+      <strong class="err-title">Something went wrong</strong>
+      <button id="err-close" class="err-close" type="button" aria-label="Dismiss">&times;</button>
+    </div>
+    <pre id="err-text" class="err-text"></pre>
+    <p class="err-hint">The emulator may keep running; reload the page to start fresh. If this is reproducible, copy the text above and file an issue.</p>
+  </div>
+
+  <header class="topbar">
+    <h1>Nokia 3310 <small>in your browser</small></h1>
+    <p id="status" class="status">Loading the emulator&hellip;</p>
+  </header>
+
+  <main class="stage">
+
+    <!-- ============================ WELCOME ============================ -->
+    <!-- Shown once on first load. Tells the visitor what they're looking at
+         in three sentences. Dismissed on click; localStorage suppresses on
+         later visits.
+         The button uses an INLINE onclick (calling a global exposed by
+         main.js) instead of addEventListener. This sidesteps every
+         class of binding-timing or event-delegation bug: it just works
+         the moment the DOM is parsed, regardless of when main.js runs. -->
+    <div id="welcome" class="welcome" hidden onclick="window.__dct3OverlayClick &amp;&amp; __dct3OverlayClick(event)">
+      <div class="welcome-card" onclick="event.stopPropagation()">
+        <h2>This is a real Nokia 3310 <span class="welcome-tag">v2</span></h2>
+        <p>Every pixel comes from the original firmware running cycle-accurately on an emulated ARM7 core. The boot animation, the menus, Snake &mdash; all of it is the phone's own code executing in your browser.</p>
+        <p class="welcome-press">Press the green key to boot &rarr;</p>
+        <button id="welcome-dismiss" type="button"
+                onclick="window.__dct3DismissWelcome &amp;&amp; __dct3DismissWelcome()">
+          Got it &mdash; boot the phone
+        </button>
+      </div>
+    </div>
+
+    <!-- ============================ PHONE ============================ -->
+    <div class="phone" id="phone">
+      <!-- Realistic device shell (photo body + hit-zones), mounted by main.js from
+           the shared shells/ registry when one exists for the detected model. The
+           live #lcd canvas is reseated onto its screen. Falls back to the .chassis
+           grid below when no shell is registered (e.g. registry failed to load). -->
+      <div id="shell" class="shell-host"></div>
+
+      <!-- The chassis is the fallback rounded slab + grid keypad (used only when no
+           shell is available for the model). -->
+      <div class="chassis">
+        <div class="brand">NOKIA</div>
+        <canvas id="lcd" class="lcd" width="84" height="48" aria-label="Phone screen"></canvas>
+
+        <!-- Nav + soft keys. Single-nav layout (3310-style).
+             Each button carries a layout class (navarrow-up / -down)
+             so the CSS grid can place them by class instead of via
+             `:nth-of-type`, which doesn't filter by class and would
+             silently fall back to auto-placement. -->
+        <div class="navi">
+          <button class="key softline" data-row="4" data-col="3" aria-label="Menu / select"></button>
+          <button class="key navarrow navarrow-up"   data-row="0" data-col="1" aria-label="Up">&#9650;</button>
+          <button class="key navarrow navarrow-down" data-row="1" data-col="1" aria-label="Down">&#9660;</button>
+          <button class="key auxkey"   data-row="0" data-col="4" aria-label="Clear">C</button>
+        </div>
+
+        <!-- 4x3 numeric pad. -->
+        <div class="keys">
+          <div class="row">
+            <button class="key" data-row="1" data-col="2">1</button>
+            <button class="key" data-row="1" data-col="3">2</button>
+            <button class="key" data-row="4" data-col="1">3</button>
+          </div>
+          <div class="row">
+            <button class="key" data-row="2" data-col="4">4</button>
+            <button class="key" data-row="2" data-col="3">5</button>
+            <button class="key" data-row="2" data-col="2">6</button>
+          </div>
+          <div class="row">
+            <button class="key" data-row="3" data-col="4">7</button>
+            <button class="key" data-row="3" data-col="3">8</button>
+            <button class="key" data-row="3" data-col="2">9</button>
+          </div>
+          <div class="row">
+            <button class="key" data-row="4" data-col="4">*</button>
+            <button class="key" data-row="0" data-col="2">0</button>
+            <button class="key" data-row="4" data-col="2">#</button>
+          </div>
+        </div>
+      </div>
+
+      <p class="hint">Keyboard: 0&ndash;9 * # &nbsp;&middot;&nbsp; &uarr;&darr; &nbsp;&middot;&nbsp; Enter = Menu &nbsp;&middot;&nbsp; Backspace = Clear</p>
+    </div>
+
+    <!-- ============================ QUICK CONTROLS ============================ -->
+    <!-- Visitor-friendly. Power, sound, speed. Nothing scary. -->
+    <div class="quick">
+      <div class="power-wrap">
+        <button id="btn-power" class="quick-btn" title="Tap = Profiles menu. Hold ~3 s = power off. Hold 15 s = force reboot (CCONT hardware reset on real devices).">&#9211; Power</button>
+        <small class="power-hint">Hold 15 s to force reboot</small>
+      </div>
+      <label class="quick-toggle">
+        <input type="checkbox" id="chk-audio"> &#128266; Sound
+      </label>
+      <label class="quick-range">
+        Speed
+        <input type="range" id="sl-speed" min="25" max="400" step="25" value="100">
+        <span id="out-speed" class="val">1.0&times;</span>
+      </label>
+      <button id="btn-devtools" class="quick-btn linkish" type="button">Show developer tools</button>
+    </div>
+
+    <!-- ============================ DEVELOPER TOOLS ============================ -->
+    <!-- Hidden by default. Held inert and visually collapsed via the .dev-open
+         class on <body>. The deep debug surface (RAM watch, PC traces, msglog,
+         replay JSON, EEPROM merge, firmware load, etc.) stays in the legacy
+         /web/ build — this panel only exposes the toggles a curious visitor
+         might actually want. -->
+    <section id="devtools" class="devtools" hidden>
+      <h2>Developer tools</h2>
+
+      <div class="dev-group">
+        <h3>Boot</h3>
+        <!-- Reboot button retired: hold ⏻ Power for 15 s instead (matches the
+             CCONT hardware force-reset behaviour on real devices). -->
+        <label><input type="checkbox" id="chk-bypass"> Bypass SIM</label>
+        <label><input type="checkbox" id="chk-skip-seclock"> Disable FAID</label>
+        <label><input type="checkbox" id="chk-recover" checked> Auto-recover from crashes</label>
+      </div>
+
+      <div class="dev-group">
+        <h3>Hardware</h3>
+        <label><input type="checkbox" id="chk-charger"> Charger connected</label>
+        <label><input type="checkbox" id="chk-sim" checked> SIM inserted</label>
+        <label class="dev-range">
+          Battery
+          <input type="range" id="sl-battery" min="384" max="704" step="8" value="704">
+          <span id="out-battery" class="val"></span>
+        </label>
+      </div>
+
+      <div class="dev-group">
+        <h3>Firmware</h3>
+        <label class="fw-pick">
+          Load a raw .fls image
+          <input type="file" id="fw-file" accept=".fls,.bin,application/octet-stream">
+        </label>
+        <p id="fw-name" class="fw-name">Built-in: Nokia 3310 NR1 v5.79</p>
+        <p class="dev-note">Pick a raw ~2 MB DCT3 dump to boot it here. The matching device shell is selected automatically.</p>
+      </div>
+
+      <div class="dev-group">
+        <h3>Where to go next</h3>
+        <p class="dev-note">For the full debug surface (RAM watch, PC traces, replay JSON, EEPROM merge, crash reports) see the legacy UI at <a href="../">../</a>.</p>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Cache-bust dev assets and load shared emulator from the parent /web/. -->
+  <script>
+    (function () {
+      var v = Date.now();
+      // Emscripten asks for "dct3.wasm" / "dct3.data" relative to the page
+      // that loaded dct3.js. We're one level deeper than the legacy UI, so
+      // every asset path needs "../" in front. The cache-bust query stays.
+      window.__DCT3_LOCATE = function (p) { return "../" + p + "?v=" + v; };
+
+      function load(src) {
+        return new Promise(function (res, rej) {
+          var s = document.createElement("script");
+          s.src = src; s.onload = res;
+          s.onerror = function () { rej(new Error("Failed to load " + src)); };
+          document.body.appendChild(s);
+        });
+      }
+
+      // Load order matters: dct3.js defines the Module factory; main.js
+      // calls it. Both load failures surface in the error banner via the
+      // global onerror handler registered at the top of main.js.
+      load("../dct3.js?v=" + v)
+        .then(function () { return load("main.js?v=" + v); })
+        .catch(function (err) {
+          // Fallback if main.js itself didn't load — wire the banner here so
+          // the user sees the failure instead of a silent blank page.
+          var b = document.getElementById("err-banner");
+          var t = document.getElementById("err-text");
+          var s = document.getElementById("status");
+          if (t) t.textContent = String(err && err.stack || err);
+          if (b) b.hidden = false;
+          if (s) s.textContent = "Failed to load.";
+        });
+    })();
+  </script>
+</body>
+</html>

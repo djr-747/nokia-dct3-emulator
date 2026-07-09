@@ -1,0 +1,19 @@
+/*
+	locate_one.nrx — resolve a single locator name (passed as script arg).
+
+	Usage: nokix -m <model> <fw.fls> locate_one.nrx <NAME>
+
+	Emits exactly one line on success:
+		<NAME>=<DEC_ADDR>
+	On miss, locate() calls fail() and nokix exits non-zero.
+*/
+
+parse arg name
+if name="" then do
+	say "ERROR: pass the symbol name as the script argument"
+	return 1
+end
+addr = locate(name)
+if addr="" | addr=0 then return 2
+say name"="addr
+return 0

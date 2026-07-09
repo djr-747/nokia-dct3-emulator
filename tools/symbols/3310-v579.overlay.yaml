@@ -1,0 +1,387 @@
+# Hand-curated symbols for 3310 v5.79 — addresses, message IDs, and RAM
+# byte roles that NokiX's LOCATE_*.rx macros don't know about. Merged with
+# 3310-v579.nokix.yaml at lookup time (this file wins on name conflicts).
+#
+# Adding an entry: include `role:` to describe semantics (one line, plain
+# text — quoted only if it contains `,` or `}`). Add `docs:` with the doc
+# path that explains the finding. `source` is always `overlay` here.
+#
+# Schema notes:
+#   addresses:  one entry per LR/RAM/code address we've named ourselves
+#               (or want to overlay onto NokiX's label).
+#   messages:   per-msg-ID semantic table (key = MSG_NAME, id = u16).
+#   ram:        same shape as addresses; kept separate for organisational
+#               clarity even though lookup.py treats them identically.
+#
+# Verified against: firmware/Factory Reset 3310 NR1 v5.79.fls (fw-id eabb539e —
+# hash of the 32-byte canonical MCU version header at offset 0x1FC, EEPROM-
+# agnostic; matches flash/My 3310 NR1 v5.79.fls and any code-identical reset).
+# Re-run tools/symbols/symbols_check.py after editing.
+
+firmware:
+  id: eabb539e
+  file: flash/My 3310 NR1 v5.79.fls
+  model: 3310
+  version: 05.79
+  type: NHM-5
+
+addresses:
+  # --- Reset / fault chain (docs/watchdog-reset-3310.md, docs/dsp-reset-chain-3310-v579.md) ---
+  REBOOT_FN:                       { addr: 0x002EEBAE, source: overlay, role: "universal reboot fn (noreturn; r0=reason)" }
+  FATAL_HANDLER:                   { addr: 0x002F0BA4, source: overlay, role: "ARM exception vector trampoline -> reason 5" }
+  CCONT_RESET_WDT:                 { addr: 0x002EEB94, source: overlay, role: "chip-level WDT kicker (aka NokiX DEV_RESET_WATCHDOGS)" }
+  REASON_SETTER:                   { addr: 0x002E0ED8, source: overlay, role: "strb r0,[=reboot_reason]; bx lr — stages reset reason" }
+  RESET_POSTER:                    { addr: 0x002E0F20, source: overlay, role: "post reset request (task 1 msg 0x1B + ch 28 msg 0x7D)" }
+  RESET_CLASSIFIER_BOOT:           { addr: 0x002E0D5C, source: overlay, role: "boot-time reset-cause classifier (reads [0x20001])" }
+  RESET_CLASSIFIER_RUNTIME:        { addr: 0x00223A78, source: overlay, role: "runtime reset-cause reader (returns 107/101/persisted)" }
+  SELFTEST_DIRECT_RESET:           { addr: 0x002D1EBA, source: overlay, role: "self-test fault direct reset (writes [0x20001]=4)" }
+  BROKER_FAULT_NOTIFIER:           { addr: 0x002D724C, source: overlay, role: "send task 17 msg 0x44 + assert_log(0x5B06)" }
+
+  # --- SWDSP/DSP-reset chain (was SIM-fatal) (docs/dsp-reset-chain-3310-v579.md) ---
+  SWDSP_STAGER:                { addr: 0x002D11F4, source: overlay, role: "DSP-reset stager — scenario→reason mapper (1→0x68 SWDSP, 3→0x73); calls REASON_SETTER + RESET_POSTER. Reached via task-4 MDI/DSP receiver (SWDSP / DSP-watchdog reset, reason 0x68)" }
+  CHARGE_HEARTBEAT_HELPER:         { addr: 0x002D7146, source: overlay, role: "charge-task idle assert(0x5B0F) — heartbeat ~1s — NOT SIM" }
+  ASSERT_LOG:                      { addr: 0x002EDD4A, source: overlay, role: "generic assert_log(code:r0, data:r1) — broker pubsub publish" }
+  BROKER_DELIVER:                  { addr: 0x002EABE8, source: overlay, role: "broker DELIVER — builds event block, sends to subscriber task's mailbox; 0 hits until [0x11FF28]=1" }
+  BROKER_GATE:                     { addr: 0x002EABC0, source: overlay, role: "broker GATE — drops event unless [0x11FF28]!=0 AND subscription bitmap [0x11FF4C+(id>>11)] bit set" }
+  BROKER_DECODE:                   { addr: 0x002BACEC, source: overlay, role: "broker msg-id decoder (task-4 dispatch path)" }
+
+  # --- RTOS scheduler + IPC (docs/task-map-3310.md, [[nokix-sigfind-task-map]]) ---
+  START_ENGINE:                    { addr: 0x0029966C, source: overlay, role: "RTOS bootstrap" }
+  TASKS_INIT:                      { addr: 0x00299510, source: overlay, role: "create the 24 tasks from TASKS_INIT_TABLE" }
+  READY_QUEUE_INSERT:              { addr: 0x00298A98, source: overlay, role: "ready-queue priority insert ([node+12]=pri)" }
+  TASK_RECV_BLOCKING:              { addr: 0x002992D4, source: overlay, role: "blocking get from current task's mailbox (= NokiX GET_TASK_MESSAGE)" }
+  TASK_SEND:                       { addr: 0x0029921C, source: overlay, role: "send msg to task (= NokiX SEND_TASK_MESSAGE)" }
+  TASK_SEND_IRQ:                   { addr: 0x002997B0, source: overlay, role: "IRQ-context twin of TASK_SEND" }
+
+  # --- The 24 RTOS task entry points (docs/task-map-3310.md) ---
+  TASK_0_IDLE:                     { addr: 0x002E0E04, source: overlay, role: "task 0 — startup/idle (the running thread)" }
+  TASK_1_KEYPAD:                   { addr: 0x00290730, source: overlay, role: "task 1 — keypad" }
+  # NOTE: canonical task names cross-referenced from the Nokia 3330 emulator x86 decomp
+  # (priority + role match across the shared task table). 3330 has 15 of the 24 3310 tasks.
+  TASK_2_LOC:                      { addr: 0x002444D8, source: overlay, role: "task 2 — LOC_TASK (broker consumer; switch on msg[3] event high-byte; 3330 prio 0x0F)" }
+  TASK_2_DISPATCHER:               { addr: 0x002442B4, source: overlay, role: "task 2's msg-dispatch sub (10-entry jump table at 0x2442E0; case-DA = WDT kick)" }
+  TASK_3_MDI_SENDER:               { addr: 0x002E9F6C, source: overlay, role: "task 3 — MDI_SENDER_TASK (dormant on boot; 3330 prio 0x0B match)" }
+  TASK_4_MDI_RECEIVER:             { addr: 0x002EDB04, source: overlay, role: "task 4 — MDI_RECEIVER_TASK (3330 prio 0x0A); in 3310 receives broker msg 0xE4 = MDI/DSP fault → stages SWDSP reset 0x68 (was mislabeled SIM-fatal)" }
+  TASK_5_UI:                       { addr: 0x002E8900, source: overlay, role: "task 5 — UI_TASK (3330 prio 0x78); large stack 0x1388; dispatcher 0x2E4492 reads [0x11FD08]" }
+  TASK_6_TONE:                     { addr: 0x002C9F6C, source: overlay, role: "task 6 — TONE_TASK (3330 prio 0x38); NOT the window compositor (older speculation refuted)" }
+  TASK_7_PN:                       { addr: 0x002DA734, source: overlay, role: "task 7 — PN_TASK / Phone-Number (3330 prio 0x0C); hosts standby/idle UI; recv filter at 0x2DA738 checks [0x110550]==240" }
+  TASK_8_SIM:                      { addr: 0x002AC6E0, source: overlay, role: "task 8 — SIM driver region (3310-specific; 3330 idx 8 = FBUS_TASK prio 0x10E ≠ 3310 prio 0x0E)" }
+  TASK_17_CHARGE:                  { addr: 0x0022A578, source: overlay, role: "task 17 — charging state machine (recipient of broker-fault msg 0x44)" }
+  TASK_19_BACKGROUND:              { addr: 0x0029D0F4, source: overlay, role: "task 19 — busiest @ idle (~216 msg/boot — background/timer)" }
+  TASK_21_BROKER_EVENT:            { addr: 0x002EAE44, source: overlay, role: "task 21 — event broker region (0x2EAxxx subscribe/publish/deliver)" }
+
+  # --- Task-2 broker reboot re-issue (the SWDSP/DSP-reset catch caller) ---
+  TASK2_REBOOT_REISSUE_SITE:       { addr: 0x002444C8, source: overlay, role: "bl REBOOT_FN(r0=[reboot_reason]) — supervisor overflow path" }
+
+  # --- DSP boot handshake ([[dsp-readiness-flags]], [[dsp-mcu-interface]]) ---
+  DSP_MAILBOX_HANDLER:             { addr: 0x002BCEF0, source: overlay, role: "IRQ4 handler — DSP mailbox dispatch" }
+  DSP_ISR_BOOTREADY:               { addr: 0x002CB418, source: overlay, role: "DSP ISR that sets [0x135664] dsp-ready-2 flag" }
+
+  # --- SIM I/O (docs/sim-subsystem-3310.md) ---
+  SIM_INIT:                        { addr: 0x002D49C8, source: overlay, role: "SIM driver init" }
+  SIM_RESET:                       { addr: 0x002D455E, source: overlay, role: "SIM card reset (ATR re-deliver)" }
+  SIM_FIQ6_ISR:                    { addr: 0x002D490E, source: overlay, role: "FIQ6 — SIM UART RX/TX events" }
+  SIM_RECEIVE:                     { addr: 0x002D4A06, source: overlay, role: "sim_receive — pull bytes from SIM RX FIFO" }
+  SIM_TRANSMIT:                    { addr: 0x002D460E, source: overlay, role: "sim_transmit — push bytes to SIM TX" }
+  SIM_RECOG_TIMEOUT_FIRES:         { addr: 0x002AF240, source: overlay, role: "SIM recognition retry timeout fires (counter [0x11FD08] >= 185)" }
+
+  # --- PPM string lookup (docs/security-code-3310.md, [[ppm-string-tracer]]) ---
+  GET_STRING:                      { addr: 0x002BBFAC, source: overlay, role: "get_string(id) -> nokstr ptr (v5.79 — NokiX locator misses)" }
+  W_GET_STRING:                    { addr: 0x002BBCB8, source: overlay, role: "wide get_string variant" }
+
+  # --- Timer + interrupt dispatch (docs/watchdog-reset-3310.md §3) ---
+  FIQ_DISPATCH_LOOP:               { addr: 0x002E6FBE, source: overlay, role: "FIQ dispatcher — reads [0x20008]&~[0x2000A], runs handlers" }
+  FIQ8_CT_TIMER_HANDLER:           { addr: 0x002E6DD4, source: overlay, role: "FIQ8 ct_timer 100Hz handler — increments [0x11139C] centisec" }
+  FIQ5_TIMER1_HANDLER:             { addr: 0x002E4418, source: overlay, role: "FIQ5/Timer1-overflow handler — drives soft-timer/LED-timeout walk" }
+  LED_TIMEOUT_WALKER:              { addr: 0x00298F68, source: overlay, role: "soft-timer LIST walk — ages timeouts, turns backlight off" }
+
+  # --- MMI / display ([[project-state]] session 7-9) ---
+  WINDOW_MGR_FN:                   { addr: 0x002A9FF8, source: overlay, role: "window manager — sole framebuffer allocator" }
+  CREATE_WIN_HANDLER:              { addr: 0x0026DFEE, source: overlay, role: "msg 0x4C3A (create-window) handler" }
+  STANDBY_APP_DISPATCH:            { addr: 0x002E5D96, source: overlay, role: "standby app proc (table 0x324AFC)" }
+  MMI_MSG_ROUTER:                  { addr: 0x002E9332, source: overlay, role: "MMI message router (v6.39 = 0x2E9896)" }
+
+  # ---- promoted from scratch on 2026-05-27 13:00 ----
+  BUSY_DELAY:                      { addr: 0x002EF9E4, source: overlay, role: "spin-wait used by reboot_fn [13:00]" }
+  # ---- promoted from scratch on 2026-05-27 13:01 ----
+  FATAL_RESUME_THUMB:               { addr: 0x002F0BC8, source: overlay, role: "transition point in fatal handler [13:01]" }
+  # ---- promoted from scratch on 2026-05-27 13:46 ----
+  IRQ2_CCONT_TOPHALF:               { addr: 0x002E9A32, source: overlay, role: "IRQ2 top-half — ack MAD latch + enqueue(task1, msg=0x51); runs every CCONT cascade incl RTC-MIN [13:45]" }
+  CCONT_BOTTOM_HALF_PUBLISHER:      { addr: 0x002E8DD0, source: overlay, role: "task-1 bottom-half — read CCONT 0x0E pending, ACK, publish per-int 0x7901-0x7906 via 0x2EACDC [13:45]" }
+  CLOCK_TICK_PUBLISHER:             { addr: 0x002C8A60, source: overlay, role: "clock-tick handler — fires every RTC-MIN; loads r0=0x46BC, bl 0x2E87C8 (publish time-changed) [13:45]" }
+  GET_DATETIME:                     { addr: 0x002C8A6C, source: overlay, role: "display getter — calls GET_TIMESTAMP 0x2CB588, formats; 0 hits at idle unless minute-change consumer runs [13:45]" }
+  CONSUME_ROUTING_BYTE:             { addr: 0x002CB622, source: overlay, role: "gate on [0x11149A] bit 5 (=0x20 set at boot); pass-through path to CLOCK_TICK_PUBLISHER [13:45]" }
+  EVENT_PUBLISH_HELPER:             { addr: 0x002E87C8, source: overlay, role: "build 16B event block, store event_id (r0<<16), dispatch via 0x2E8808 [13:45]" }
+  BROKER_ROUTER:                    { addr: 0x002EACAA, source: overlay, role: "publish-side router: 0x2EACAA(0, event_id, 0) — calls BROKER_GATE then BROKER_DELIVER [13:45]" }
+  BROKER_PUBLISH:                   { addr: 0x002EACDC, source: overlay, role: "thunk to BROKER_ROUTER — wraps publish call with (0, event_id, 0); analog of 3330 publish_wrapper@0x53ed4c [13:45]" }
+  BROKER_REGISTER:                  { addr: 0x002EAD12, source: overlay, role: "subscribe register: [0x11FF28]=enable + memcpy 32B bitmap -> [0x11FF4C]; 4 callers in 0x243xxx all dormant [13:45]" }
+  DEFERRED_TASK_DECODER:            { addr: 0x002EA8A8, source: overlay, role: "per-int decoder: msg-0x5DC=INT0 0x5DE=INT2 0x5E1=INT5 0x5E2=INT6 — gates clock advance [13:45]" }
+  CLOCK_ADVANCE_HANDLER:            { addr: 0x002EA914, source: overlay, role: "INT5/0x5E1 handler — gated on dialog [0x10E5F4] in {43,112,119}; posts msg 0x49C4 redraw [13:45]" }
+  READINESS_AGGREGATOR:             { addr: 0x00278670, source: overlay, role: "9-flag readiness aggregator at [0x11156C..+8]; 9th set triggers post-ready 0x2E72B8 [13:45]" }
+  POST_READY_COMPLETION:            { addr: 0x002E72B8, source: overlay, role: "post-ready — sends msg 21 to task 1 (only); fan-out to tasks 5/6/17/19 happens downstream [13:45]" }
+  SUBSCRIBE_ENGINE:                 { addr: 0x00278E50, source: overlay, role: "subscribe engine — final hop into BROKER_REGISTER (0x2EAD12); 0 hits in dormant boot [13:45]" }
+  OPCODE_DISPATCHER:                { addr: 0x00264E14, source: overlay, role: "70-caller opcode dispatcher; jump-table 0xFB4..0xFCB → 10 subsystem-init fns → SUBSCRIBE_ENGINE [13:45]" }
+  STATE_FANOUT:                     { addr: 0x00265588, source: overlay, role: "task-14 sub-state dispatcher (per [0x10B1FC+i]); 18-state jump table [13:45]" }
+  TASK_RECV_LOOP:                   { addr: 0x00267024, source: overlay, role: "generic recv loop used by task 14 (and similar) — blocks when mailbox empty [13:45]" }
+  TASK_14_ENTRY:                    { addr: 0x00267700, source: overlay, role: "task 14 entry — readiness flag [0x111570]=1, 8x fan-out STATE_FANOUT(0..7) all bail at state=0, blocks on recv [13:46]" }
+  RAND_LCG:                         { addr: 0x002F0BCC, source: overlay, role: "ANSI-C LCG seed*0x41C64E6D+0x3039 ; seed = [0x111864]; return (seed<<1)>>17 [13:46]" }
+  SRAND_LCG:                        { addr: 0x002F0BE0, source: overlay, role: "stores r0 -> [0x111864]; called once at boot from 0x297AE2 via time-fn 0x2CB588 [13:46]" }
+  GET_TIMESTAMP:                    { addr: 0x002CB588, source: overlay, role: "time-fn — checks clock-valid [0x111497]==0x2A; if valid → time-of-day; else → const 0x7FFFFFFF (drives deterministic RNG) [13:46]" }
+  HW_RTC_READ:                      { addr: 0x002E9B80, source: overlay, role: "reads CCONT day/hr/min/sec via remap table 0x32E878 (logical 0x09-0x0C -> phys 0x07-0x0A) → elapsed seconds [13:46]" }
+  broker_enable_flag:               { addr: 0x0011FF28, source: overlay, role: "0=broker disabled (events dropped at gate); set by BROKER_REGISTER 0x2EAD12 (0 callers dormant boot) [13:46]" }
+  broker_subscription_bitmap:       { addr: 0x0011FF4C, source: overlay, role: "32-byte bitmap of subscribed event ids; written by BROKER_REGISTER; all-zero in dormant boot [13:46]" }
+  dispatch_index_byte:              { addr: 0x0011FD08, source: overlay, role: "OVERLOADED: (a) FEATURE_DISPATCHER 0x2E4492 reads as index into DISPATCHERS_TABLE 0x321EA0 (slot 23 = DEFERRED_TASK_DECODER); (b) SIM_RECOG_TIMEOUT_FIRES @0x2AF5D4 reads as retry counter overflow-checked vs 185. Stuck at 0x08 in SIM-absent boot. 19 literal-pool refs across fw." }
+  routing_byte_gate:                { addr: 0x0011149A, source: overlay, role: "CONSUME_ROUTING_BYTE gate; bit 0x20 set at boot (passes RTC-tick to CLOCK_TICK_PUBLISHER) [13:46]" }
+  clock_valid_flag:                 { addr: 0x00111497, source: overlay, role: "0x2A = clock SW-base is valid (gate for srand(time)) [13:46]" }
+  sw_clock_base:                    { addr: 0x00111494, source: overlay, role: "16B software clock struct base; +16 = SW time-of-day base seconds [13:46]" }
+  active_dialog_id:                 { addr: 0x0010E5F4, source: overlay, role: "CLOCK_ADVANCE_HANDLER gate: standby-clock-redraw fires only when dialog id in {43,112,119} [13:46]" }
+  readiness_flag_table:             { addr: 0x0011156C, source: overlay, role: "9-byte readiness-flag table (READINESS_AGGREGATOR writes one per ready msg); all 1s = post-ready fires [13:46]" }
+  rand_seed:                        { addr: 0x00111864, source: overlay, role: "ANSI-C LCG seed (RAND_LCG); seeded once from GET_TIMESTAMP (=0x7FFFFFFF in emu since clock-valid never sets) [13:46]" }
+  # ---- promoted from scratch on 2026-05-27 14:17 ----
+  FEATURE_DISPATCHER:               { addr: 0x002E4492, source: overlay, role: "feature dispatch fn — reads [0x11FD08] as index, table-lookup at DISPATCHERS_TABLE 0x321EA0 (8B stride), bx r1 to slot[idx]; slot 23/0x17 = DEFERRED_TASK_DECODER. NokiX-labeled UI_MENU which is misleading. [14:17]" }
+  TASK_HANDLER_BX_R1:               { addr: 0x002E4710, source: overlay, role: "alt dispatcher entry — bx r1 to handler(r0=msg), returns to 0x2E4714; per memory tag, also calls DEFERRED_TASK_DECODER on certain msgs [14:17]" }
+  # ---- promoted from scratch on 2026-05-27 15:18 ----
+  PPM_STRING_LOOKUP:                { addr: 0x002BBF00, source: overlay, role: "PPM string lookup (lang, id) — handles id<51 special, else id-51 in body table [15:18]" }
+  # ---- promoted from scratch on 2026-05-27 19:49 ----
+  GENSIO_READ_HELPER:               { addr: 0x002EF3C8, source: overlay, role: "GENSIO txn helper — start txn @0x2002D, poll status @0x2006D bit1, read data; called for ADC/CCONT-data reads; our 0x2D data path returns stale (only 0x6D status modeled as always-ready) [19:48]" }
+  BOOT_FINALIZE_GATE:               { addr: 0x002E4278, source: overlay, role: "boot finalize gate — waits ([0x20006]-[0x20004])>=30 sleep ticks (~0.9ms at 33055Hz, NOT 30ms as earlier comment said); posts init-complete on success → launches logo [19:48]" }
+  # ---- promoted from scratch on 2026-05-29 07:56 ----
+  SOFT_WDT_SUPERVISOR:              { addr: 0x002C1996, source: overlay, role: "TASK_0_IDLE soft-WDT handler — clears [0x11FEAC+0x6E] supervisor counter (the one the SWDSP/DSP-reset chain overflows) + on failure-flag fan-out issues REASON_SETTER(4=FACTORY_RESET)+RESET_POSTER. NokiX-labeled RESET_WATCHDOGS which is misleading; the chip-level kicker is DEV_RESET_WATCHDOGS @ 0x2EEB94 (= CCONT_RESET_WDT) [23:03]" }
+  SIM_STATE_DRIVER:                 { addr: 0x002C1774, source: overlay, role: "called as tail of every wrapper in SIM_EVENT_PUBLISH_BLOCK (0x2D77F0+); r0=SIM_INFO_* enum index (1-12), r1=payload from 0x29D840. Probable SIM state-machine transition fn (3330 SIM_INFO_PIN2_VERIFY_OK/REQUIRED/BLOCKED/NO_PIN2/etc map here) [23:51]" }
+  SIM_SCM_INIT_RESULT_PUBLISH:      { addr: 0x002D78D4, source: overlay, role: "SIM_STATE_DRIVER(enum=8, payload=status_byte) — wrapper. payload==1 → SIM_INFO_INIT_OK; else → SIM_SCM_INIT_NOT_AVAIL. log=0x5036 event=0x53FD. 3330 case 8 (0x511bb0)" }
+  SIM_SCM_INIT_OK_PUBLISH:          { addr: 0x002D7910, source: overlay, role: "SIM_STATE_DRIVER(enum=9) — wrapper. SIM_SCM_INIT_OK signal. log=0x5037 event=0x53FE. 3330 case 9" }
+  SIM_FDN_INIT_OK_PUBLISH:          { addr: 0x002D75C4, source: overlay, role: "SIM_STATE_DRIVER(enum=10) — wrapper. SIM_FDN_INIT_OK signal. log=0x5039 event=0x5400. 3330 case 10" }
+  SIM_INFO_PIN2_STATE_PUBLISH:      { addr: 0x002D780C, source: overlay, role: "SIM_STATE_DRIVER(enum=11, payload=0..4) — wrapper. payload-indexed PIN2 state cycle: 0=VERIFY_REQUIRED 1=VERIFY_OK 2=BLOCKED 3=PERM_BLOCKED 4=NO_PIN2. log=0x503A event=0x5401. 3330 case 0xb" }
+  SIM_UI_STATE_PUBLISH:             { addr: 0x002D77CE, source: overlay, role: "SIM_STATE_DRIVER(enum=12, payload=ui_state_id) — wrapper. payload IS the UI state byte (e.g. 0x7C=INIT_OK 0x72=PIN_REQUIRED 0=REJECTED 100=PIN_VERIFY_OK 0x65=WRONG_OLD_PIN etc.) per 3330 case 0xc. The LAYER-4 UI dispatcher — this is the one not getting msg 0x12E in the SIM-rejected bug. log=0x503B event=0x5402" }
+  SIM_UI_SUBSTATUS_PUBLISH:         { addr: 0x002D7964, source: overlay, role: "SIM_STATE_DRIVER(enum=13, payload=14 hardcoded) + sub-cycle (1..13). 3330 case 0xd 13-state cycle. log_block 0x5001+. Twin wrapper at 0x002D754A invoked from BROKER region" }
+  SIM_INFO_STATUS_PUBLISH:          { addr: 0x002D7752, source: overlay, role: "SIM_STATE_DRIVER(enum=16, payload=status) — wrapper. payload=1=INIT_OK, 14=NOT_PRESENT, 15=PIN_VERIFY_REQUIRED. Runtime-confirmed via SIMPINON/SIMABSENT WATCH at 0x2C1774. log=0x502E event=0x53B5. 3330 case 8 status-branch" }
+  PERIPH_USE_MODE_PUBLISH:          { addr: 0x002D75F2, source: overlay, role: "SIM_STATE_DRIVER(enum=2) — wrapper. 3330 case 2 = use mode (PORTABLE / CAR_HFU1 / CAR_HFU2 / HEADSET cycle). log=0x5029 event=0x53B0" }
+  PERIPH_IGN_PUBLISH:               { addr: 0x002D76A2, source: overlay, role: "SIM_STATE_DRIVER(enum=3) — wrapper. 3330 case 3 = IGN_ON / IGN_OFF. log=0x5031 event=0x53F8" }
+  PERIPH_HOOK_PUBLISH:              { addr: 0x002D761E, source: overlay, role: "SIM_STATE_DRIVER(enum=4) — wrapper. 3330 case 4 = HOOK_ON / HOOK_OFF. log=0x502C event=0x53B3" }
+  PERIPH_HEADSET_PUBLISH:           { addr: 0x002D764A, source: overlay, role: "SIM_STATE_DRIVER(enum=5) — wrapper. 3330 case 5 = HEADSET_CONNECTED / HEADSET_REMOVED. log=0x502B event=0x53B2" }
+  PERIPH_CHARGER_PUBLISH:           { addr: 0x002D7676, source: overlay, role: "SIM_STATE_DRIVER(enum=6) — wrapper. 3330 case 0/1 = CHARGER_CONNECTED / CHARGER_REMOVED (case 6 here). log=0x502A event=0x53B1" }
+  PERIPH_ENUM7_PUBLISH:             { addr: 0x002D76EA, source: overlay, role: "SIM_STATE_DRIVER(enum=7) — wrapper. 3330 case 7 (semantics TBD; near peripheral block). log=0x5032 event=0x53F9" }
+  SIM_ENUM15_PUBLISH:               { addr: 0x002D784C, source: overlay, role: "SIM_STATE_DRIVER(enum=15) — wrapper. 3330 case TBD (likely case 0xf, not in user-pasted excerpt). log=0x502F event=0x53B7" }
+  PN_TASK:                          { addr: 0x002DA974, source: overlay, role: "Phonet protocol task — NokiX MBUS.rx anchor; mid-fn at first BL to BROKER_PUBLISH [02:07]  [task]" }
+  PN_MBUS_SEND_FRAME:               { addr: 0x002E5838, source: overlay, role: "firmware native MBus frame TX; reached via BL chain from PN_TASK per NokiX MBUS.rx; signature: NokiX-MBUS.rx-walk [02:07]" }
+  XBUS_SEND_FRAME:                  { addr: 0x002E9DEA, source: overlay, role: "firmware native XBus frame TX; companion to PN_MBUS_SEND_FRAME [02:07]" }
+  DISABLE_IRQ:                      { addr: 0x002E4116, source: overlay, role: "IRQ mask off; used by MBUS.rx hook installer [02:07]" }
+  ENABLE_IRQ:                       { addr: 0x002E4130, source: overlay, role: "IRQ mask on; used by MBUS.rx hook installer [02:07]" }
+  BATTERY_CHARGE_ANIM:              { addr: 0x002E33EC, source: overlay, role: "NokiX battery_charge sig; charging-anim frame counter [0x111701] cycles 0..4 (moving bars) [20:13]" }
+  NET_TRIGCONV_TABLE:               { addr: 0x0032D6D8, source: overlay, role: "NokiX trigconv sig 0064004B0032...; network-strength conversion table (8 words) [20:13]" }
+  BATTERY_BAR_CONV_TABLE:           { addr: 0x0032D6B8, source: overlay, role: "battery mV->bar thresholds; 14 words in mV (0xC1C=3100..0xF06=3846); 4 temp-variant tables stepping -0x20 [20:13]" }
+  MEM_ALLOC:                        { addr: 0x002E553C, source: overlay, role: "best-fit aligned heap allocator (r0=align r1=size); free-list head [0x11182C]; epilogue 0x2E560E pops {r4-r7,pc} [23:26]" }
+  HEAP_FREELIST_INSERT:             { addr: 0x002E52B0, source: overlay, role: "sorted free-list insert; nodes {key@0,next@4}; head [0x11182C] [23:26]" }
+  HEAP_FREELIST_REMOVE:             { addr: 0x002E52F6, source: overlay, role: "free-list remove (counterpart to insert) [23:26]" }
+  SOFTTIMER_DECREMENT:              { addr: 0x002E4248, source: overlay, role: "soft-timer countdown decrement; elapsed=Timer0[0x20010]-snapshot[0x1115F8] [23:26]" }
+  SOFTTIMER_WALK:                   { addr: 0x00298B20, source: overlay, role: "soft-timer list walker (FIQ4 handler 0x2E4426 + idle gate); ages/expires timers [23:26]" }
+  SOFTTIMER_FIRE_FREE:              { addr: 0x00298ACC, source: overlay, role: "expired soft-timer fire+free (unlink + heap free) [23:26]" }
+  FIQ4_TIMER0_HANDLER:              { addr: 0x002E4426, source: overlay, role: "FIQ4 scheduler-tick handler; calls 0x298B20; acks [0x20008]=0x10 [23:26]" }
+  TIMER0_REARM:                     { addr: 0x002E4112, source: overlay, role: "Timer0 re-arm: t0_dest[0x20012]=current+interval(~0x19); drives the real FIQ4 tick [23:26]" }
+  SOFTTIMER_LIST_HEAD:              { addr: 0x00104864, source: overlay, role: "soft-timer list head ptr (ctrl struct base 0x104844); 0xFFFFFFFF=empty [23:26]" }
+  HEAP_FREELIST_HEAD:               { addr: 0x0011182C, source: overlay, role: "heap free-list head (sorted blocks {key@0,next@4}) [23:26]" }
+  NETMON_SET_MODE:                  { addr: 0x002275B4, source: overlay, role: "set_netmonitor_mode NokiX-confirmed: modes 0xF0reset/0xF1off/0xF2field/0xF3dev, test# below 0xF0 selects a display [00:14]" }
+  NETMON_RESET_CLASSIFIER:          { addr: 0x00227690, source: overlay, role: "reads reason [0x11FDA0], scans table 0x311C34, routes 0x68+0x73 to SWDSP bucket, bumps D36 counters [0x11FDB8+] [00:15]" }
+  NETMON_SETTINGS_RW:               { addr: 0x00223C10, source: overlay, role: "eeprom-backed netmon settings/counters helper, fields 0x601-0x606, bridges reboot_reason [0x11FF94] to [0x11FDA0] [00:15]" }
+  NETMON_RESET_REASON_TABLE:        { addr: 0x00311C34, source: overlay, role: "6x8B [code][b1][name5]: 6B=SWWD 01=UNKNO 68=SWDSP 69=SWSIM 6C=SWIDL 06=STACK [00:15]" }
+  NETMON_RESET_REASON:              { addr: 0x0011FDA0, source: overlay, role: "raw reboot-reason copy classified for D35/D36 [00:15]" }
+  BYTESUM_DATETIME:                 { addr: 0x002D8AB0, source: overlay, role: "bounded byte-checksum loop after ADD_DATETIME [00:17]" }
+  NETMON_COUNTER_BLOCK:             { addr: 0x0011FDB8, source: overlay, role: "base of netmon 16-bit counters: D36 resets, D40 handover, D65 SMS [00:18]" }
+  NETMON_CELL_RECORDS:              { addr: 0x0010B6D4, source: overlay, role: "PDF D1-D5 cell data: 52-byte records, idx0=serving cell idx1-6=neighbours, ARFCN RxLev C1 C2 BSIC at record offsets, base+idx*52 used in 0x26A876 [00:35]" }
+  NETMON_SERVING_CELL_IDX:          { addr: 0x0010B56E, source: overlay, role: "PDF D1 serving-cell index into NETMON_CELL_RECORDS, compared in formatter 0x26A8A0 [00:35]" }
+  NETMON_CELL_LIST_CTRL:            { addr: 0x0010B56C, source: overlay, role: "PDF D1/D3 cell-list control, offsets +0x10 +0x11 +0x12 used by cell-list mgr 0x26A914 [00:35]" }
+  NETMON_CELL_CHANTYPE:             { addr: 0x0010B6DD, source: overlay, role: "PDF D1 oooo channel-type code array, indexes NETMON_CHANTYPE_TOKENS, read 0x26ADBC [00:35]" }
+  NETMON_CHANTYPE_TOKENS:           { addr: 0x0032E6F8, source: overlay, role: "PDF D1 oooo channel-type token-ptr table, 8 entries each a PPM string-index list, used 0x26ADDE [00:35]" }
+  NETMON_CELL_LIST_RENDER:          { addr: 0x0026A834, source: overlay, role: "PDF D1/D3 renderer iterates NETMON_CELL_RECORDS serving plus neighbours 1-4 [00:35]" }
+  NETMON_CELL_RECORD_FMT:           { addr: 0x0026A876, source: overlay, role: "PDF D1/D2/D3 per-cell processor, record = NETMON_CELL_RECORDS + idx*52 [00:35]" }
+  NETMON_DISPLAY_TABLE:             { addr: 0x003114E0, source: overlay, role: "master display table 71 entries 12B = layout+label+num, displays D2-D133, lookup base 0x3114DC used by 0x227612 [00:50]" }
+  NETMON_FIELD_TABLE:               { addr: 0x00311A18, source: overlay, role: "field-def table 8B entries word0=RAMaddr-or-getterfn byte5=type1u8/3getter/4s16/8u16/9pct byte6=unit-char, ~32 entries battery+charging group [00:50]" }
+  NETMON_FIELD_RESOLVE:             { addr: 0x002240B4, source: overlay, role: "field-id to value: index NETMON_FIELD_TABLE id*8, type-dispatch read u8/s8/s16 or call getter, output to 0x10E3B0 [00:50]" }
+  NETMON_DISPLAY_RENDER:            { addr: 0x002254E8, source: overlay, role: "per-display renderer: reads idx NETMON_DISPLAY_INDEX, looks up NETMON_DISPLAY_TABLE, walks layout tokens, formats via NETMON_FIELD_RESOLVE [00:50]" }
+  NETMON_DISPLAY_INDEX:             { addr: 0x0011FD7D, source: overlay, role: "current netmon display index 0-70 into NETMON_DISPLAY_TABLE, read by renderer 0x22551E [00:50]" }
+  NETMON_TEXT_BUF:                  { addr: 0x0010E3B0, source: overlay, role: "netmon per-field display text buffer formatted by NETMON_FIELD_RESOLVE [00:50]" }
+  NETMON_BATT_MF_DERIVCOUNT:        { addr: 0x0011FD90, source: overlay, role: "PDF D22 Eaaa DerivCount membership 0.00-1.00, field id 0x0E unit E [00:50]" }
+  NETMON_BATT_MF_CHARGEAMOUNT:      { addr: 0x0011FD80, source: overlay, role: "PDF D22 Cbbb ChargeAmount membership, field id 0x0F unit C [00:50]" }
+  NETMON_BATT_MF_VOLDIFFTOMAX:      { addr: 0x0011FD82, source: overlay, role: "PDF D22 Dccc VolDiffToMax membership, field id 0x10 unit D [00:50]" }
+  NETMON_BATT_MF_VOLDROPCNT:        { addr: 0x0011FD84, source: overlay, role: "PDF D22 Rddd VolDropCnt membership, field id 0x11 unit R [00:50]" }
+  NETMON_BATT_MF_VOLDIFFTIME:       { addr: 0x0011FD8A, source: overlay, role: "PDF D22 Ieee VolDiffTime membership, field id 0x12 unit I [00:50]" }
+  NETMON_BATT_MF_AVERDIFF:          { addr: 0x0011FD8C, source: overlay, role: "PDF D22 Afff AverDiff membership, field id 0x13 unit A [00:50]" }
+  NETMON_BATT_MF_TEMP:              { addr: 0x0011FD86, source: overlay, role: "PDF D22 Tggg Temperature membership, field id 0x14 unit T [00:50]" }
+  NETMON_BATT_MF_VOLT:              { addr: 0x0011FD88, source: overlay, role: "PDF D22 Vhhh Voltage membership, field id 0x15 unit V [00:50]" }
+  NETMON_D39_RESETCNT_LAYOUT:       { addr: 0x00310A2C, source: overlay, role: "PDF D39 reset-reason counters UN WD DSP SIM IDLE STACK, label 0x2283C4 - has DSP column [00:50]" }
+  NETMON_D70_DSPTEMP_LAYOUT:        { addr: 0x00310D3C, source: overlay, role: "PDF D70 DSP temporary counters TR1 TR2 TRA TC, label 0x2286E0, field ids 0x11D-0x122 [00:50]" }
+  NETMON_D71_DSPTEMP2_LAYOUT:       { addr: 0x00310D74, source: overlay, role: "NetMon D71 Temporary DSP counters, label 0x228710 [00:50]" }
+  NETMON_D75_SIGLEVEL_LAYOUT:       { addr: 0x00310E54, source: overlay, role: "NetMon D75 DSigL USigL downlink/uplink DSP signal level, label 0x228798 [00:50]" }
+  NETMON_D76_EXTAUD_LAYOUT:         { addr: 0x00310E88, source: overlay, role: "NetMon D76 ExtAudStatus external audio/DSP status, label 0x2287C0 [00:50]" }
+  NETMON_D79_ECHO_LAYOUT:           { addr: 0x00310F1C, source: overlay, role: "NetMon D79 EAA Ada ERL echo-canceller DSP, label 0x228828 [00:50]" }
+  NETMON_D131_DSPRESETCNT_LAYOUT:   { addr: 0x003113E4, source: overlay, role: "NetMon D131 DSP resetcnt dedicated DSP reset counter, label 0x228B70 [00:50]" }
+  NETMON_FIELD_03:                  { addr: 0x0011FD9E, source: overlay, role: "netmon field id 0x03 type 1 unit  battery/charging group, read via NETMON_FIELD_RESOLVE [00:50]" }
+  NETMON_FIELD_05:                  { addr: 0x0011FE90, source: overlay, role: "netmon field id 0x05 type 1 unit W battery/charging group, read via NETMON_FIELD_RESOLVE [00:50]" }
+  NETMON_FIELD_07:                  { addr: 0x0011FD9C, source: overlay, role: "netmon field id 0x07 type 1 unit  battery/charging group, read via NETMON_FIELD_RESOLVE [00:50]" }
+  NETMON_FIELD_08:                  { addr: 0x0011FD92, source: overlay, role: "netmon field id 0x08 type 9 unit  battery/charging group, read via NETMON_FIELD_RESOLVE [00:50]" }
+  NETMON_FIELD_09:                  { addr: 0x0011FD94, source: overlay, role: "netmon field id 0x09 type 9 unit  battery/charging group, read via NETMON_FIELD_RESOLVE [00:50]" }
+  NETMON_FIELD_0A:                  { addr: 0x0011FD98, source: overlay, role: "netmon field id 0x0A type 9 unit  battery/charging group, read via NETMON_FIELD_RESOLVE [00:50]" }
+  NETMON_FIELD_0B:                  { addr: 0x0011FD96, source: overlay, role: "netmon field id 0x0B type 9 unit  battery/charging group, read via NETMON_FIELD_RESOLVE [00:50]" }
+  NETMON_FIELD_0C:                  { addr: 0x0011FD9A, source: overlay, role: "netmon field id 0x0C type 9 unit  battery/charging group, read via NETMON_FIELD_RESOLVE [00:50]" }
+  NETMON_FIELD_0D:                  { addr: 0x0011FD8E, source: overlay, role: "netmon field id 0x0D type 9 unit  battery/charging group, read via NETMON_FIELD_RESOLVE [00:50]" }
+  BLOCKING_MALLOC:                  { addr: 0x00299AF8, source: overlay, role: "blocking allocator calls heap core retries on NULL via memory semaphore 1564 callers [00:56]" }
+  HEAP_ALLOC_CORE:                  { addr: 0x002E533E, source: overlay, role: "underlying heap allocator returns NULL when no free block [00:56]" }
+  MALLOC_FAIL_RETRY:                { addr: 0x00299B26, source: overlay, role: "alloc-fail block-retry PC parks on memory semaphore then retries malloc_fail sig hook [00:56]" }
+  HEAP_ACCT_STRUCT:                 { addr: 0x00104844, source: overlay, role: "heap accounting struct used-bytes at +8 FREE decrements [00:56]" }
+  NETMON_D30_API_AUD1_CTRL:         { addr: 0x0010E72E, source: overlay, role: "PDF D30 A1Cnf = API_AUD1_CTRL audio-path control, field id 0x16, MCU-DSP audio reg shadow [01:09]" }
+  NETMON_D30_API_AUD2_CTRL:         { addr: 0x0010E73C, source: overlay, role: "PDF D30 A2Cnf = API_AUD2_CTRL, field id 0x17 [01:09]" }
+  NETMON_D30_API_SIDETONE:          { addr: 0x0011FE70, source: overlay, role: "PDF D30 ST = API_SIDETONE, field id 0x18 [01:09]" }
+  NETMON_D30_API_AU3:               { addr: 0x0010E728, source: overlay, role: "PDF D30 AU3 = API_AU3, field id 0x19 [01:09]" }
+  NETMON_D30_API_1TONE:             { addr: 0x0010E760, source: overlay, role: "PDF D30 1Tone = API_1_TONE DTMF gen freq1, field id 0x1A [01:09]" }
+  NETMON_D30_API_2TONE:             { addr: 0x0010E718, source: overlay, role: "PDF D30 2Tone = API_2_TONE DTMF gen freq2, field id 0x1B [01:09]" }
+  NETMON_D30_API_CONFIG:            { addr: 0x0010E761, source: overlay, role: "PDF D30 Conf = API_CONFIG, field id 0x1D [01:09]" }
+  NETMON_D30_API_HFVOL:             { addr: 0x0010E74E, source: overlay, role: "PDF D30 HFVol = API_HF_VOL audio output volume, field id 0x1F [01:09]" }
+  MDIRCV_QUEUE_DEPTH:               { addr: 0x002BAC58, source: overlay, role: "RE-01 corroborated (disfw 0x2BAC58 + WATCH/MDILOG). Returns DSP->MCU MDIRCV queue depth = head[0x101CA] - tail[0x101C8] (mod 100); first call of BROKER_DECODE. 0 => empty => BROKER_DECODE returns 0 (task-4 loops back to recv). NOT a timeout/synthesis: 0xE4 only returned when queue NON-EMPTY. [07:40]" }
+  MDIRCV_DEQUEUE:                   { addr: 0x002BAC72, source: overlay, role: "RE-01 corroborated (disfw 0x2BAC72 + dispatch trace). Dequeues one MDIRCV entry: reads entry word r7 at [0x10100+tail*2], group=r7>>8 (r9/r8), builds broker msg struct via EEPROM_READ_BYTES(0x299AF8) [type=0x18 sub=2 grp=r9 raw=r7], advances tail [0x101C8]. The decoded id (r0) is what becomes 0xE4 in task-4. => 0xE4 is an ACTUAL DSP->MCU MDIRCV message, not MCU-side synthesis. [07:40]" }
+  TASK4_BROKER_DECODE_CALL:         { addr: 0x002EDC40, source: overlay, role: "RE-01 corroborated (disfw 0x2EDC40 banner bl-caller of BROKER_DECODE + WATCH=0x2EDC4C step 105941998 r0=0xE4 r6=1 LR=0x298C49). Task-4 MDI_RECEIVER call site: on recv msg==4 (or r6 flag) calls BROKER_DECODE(0x2BACEC) which drains MDIRCV; r4=returned id; ==228(0xE4) => SWDSP fault dispatch at 0x2EDC52->0x2D11F4. [07:40]" }
+  BROKER_DSP_HEALTHY_CHECK:         { addr: 0x00244464, source: overlay, role: "RE-02 corroborated (disfw 0x244464 + WATCH 0x244464 step 38.09M/57.48M/... r5=0x11FEAC r0=0x73 r4=0x6E). Task-2 broker supervisor per-kick check: ldrb [r5+0x73]=[0x11FF1F] DSP-healthy flag; flag!=0(healthy)->0x244472 counter[0x11FF1A]=0; flag==0(unhealthy)->0x24446C counter++; strb at 0x244474; 0x2444A0 cmp#15 -> >=15 falls to TASK2_REBOOT_REISSUE_SITE 0x2444C8 bl REBOOT_FN([0x11FF94]). [07:46]" }
+  BROKER_SUPERVISOR_COUNTER_STORE:  { addr: 0x00244474, source: overlay, role: "RE-02 corroborated (disfw 0x244474 strb [r4=0x6E,r5=0x11FEAC] + RAMWATCH 0x11FF1A 00->01 attributed PC=0x244472, one insn prior). The single store for both counter++ (unhealthy) and counter=0 (healthy) branches of BROKER_DSP_HEALTHY_CHECK. Steady-state: bumps 0->1 every ~19.4M steps then SOFT_WDT_SUPERVISOR(0x2C199C) clears 1->0; never reaches 15 in clean 250M run. [07:46]" }
+  BROKER_DSP_HEALTHY_FLAG:          { addr: 0x0011FF1F, source: overlay, role: "RE-02: DSP-healthy flag = [0x11FEAC+0x73]. RAMWATCH=0x11FF1F over full 250M boot+idle = ZERO writes (NEVER written in clean run); stays at boot-init value 0 (=unhealthy). RAMWATCH=0x11FF10 len16 confirms negative: writers exist for 0x11FF15/18/19/1A/1B/1E but NOT 0x11FF1F. => the healthy-flag SETTER is part of the DSP keep-alive handshake that the emulated DSP never performs (no DSP->MCU heartbeat into MDIRCV) => flag stuck 0 => counter bumps each kick. Confirms DSP-keep-alive-timeout hypothesis from the consumer side. Writer is DSP-handshake-gated (Phase2+ target). [07:46]" }
+  MDISND_AUDIOPATH_ENABLE:          { addr: 0x002BB3D8, source: overlay, role: "RE-03: MCU->DSP [0x100E0]=1 audio/COBBA path enable, gated cmp r4,#47 (0x2F) at 0x2BB3D0; also sets [0x30000]=4 + [0x20008]=2. EVENT-DRIVEN not periodic: post-boot fires only in bursts (mono 30.7-32.8M cluster + 71.4M cluster, gaps 0.0M..38.7M irregular) — NOT a steady keep-alive poll. One-direction write, no reply expected. (MDILOG over [0,106M] + disfw) [07:52]" }
+  SWDSP_DSPINT_PULSE_ONESHOT:       { addr: 0x002E6E8C, source: overlay, role: "RE-03: MCU->DSP DSPINT [0x20002]|=2 pulse, IRQ-disabled wrap (0x2E4116/0x2E4130). ONE-SHOT at mono=13.1M only — not periodic. Not a keep-alive poll. (MDILOG + disfw) [07:52]" }
+  MDIRCV_HEAD_INIT_BOOT:            { addr: 0x002BAD68, source: overlay, role: "RE-03: MCU-side MDIRCV head [0x101CA] init/advance during BOOT upload handshake (head=(ptr-0x10000)/2). Companion 0x2BACD8. Last write mono=3.78M; NO post-boot DSP-driven MDIRCV head advance exists in clean run => no unsolicited DSP heartbeat is produced by emulated DSP (this is the gap Phase 2/3 fills). (MDILOG + disfw) [07:52]" }
+  SWDSP_FAULT_DISPATCH_RE03_VARIANT: { addr: 0x002EDC52, source: overlay, role: "variant=A (DSP-initiated heartbeat). This is the 0xE4->SWDSP_STAGER(0x2D11F4) branch target in task-4. EVIDENCE (RE-03): MDILOG over [0,~106M] shows NO periodic MCU->DSP poll. MCU->DSP traffic = boot upload/self-test (<3.8M) + event-driven audio-enable bursts (0x2BB3D8 [100E0]=1, irregular gaps 0.0-38.7M) + one DSPINT pulse (0x2E6E8C @13.1M). SENDLOG: zero direct 0xE4 sends (corroborates). No steady-cadence request-reply => NOT variant B. Healthy flag [0x11FF1F] (Plan01: never written clean run) would be refreshed by UNSOLICITED DSP->MCU MDIRCV traffic the emulated DSP never emits => Variant A. SINGLE-MESSAGE in steady state (no multi-msg handshake observed). FIQ0-DELIVERABLE: yes (Variant A = write MDIRCV + raise FIQ0 per dsp_default.c self-test responder; IRQ4-free, respects post-boot-IRQ4 hazard). NOTE entry — Plan 01-03 owns promote. [07:52]" }
+  # ---- promoted from scratch on 2026-05-29 09:24 ----
+  BROKER_DSP_HEALTHY_FLAG_SETTER:   { addr: 0x002A429E, source: overlay, role: "sets [0x11FF1F]=[0x11FEAC+0x73] via ldrb [r1=0x11FF1F]+1 strb (state-machine advance, NOT bool); reached from TASK_2_LOC 0x2444D8 (holds r6=0x11FF1F) -> LOC_SUBMSG_DISPATCH 0x2A4224 (subtype [r5+3]); MDI group [r4+3]~0x47/0x82/0x83 routes via 0x244546 to 0x2A4224; precond prior val==26(0x1A), payload word [r5+10..11]<=0; supervisor 0x244464 treats nonzero=healthy. NOTE flag is a LOC/DSP state byte cycling 0->..->26->27; single inject may not flip 0->nonzero (multi-msg walk) - Plan02 to confirm by injection. CONFIDENCE MEDIUM. [08:32]" }
+  LOC_SUBMSG_DISPATCH:              { addr: 0x002A4224, source: overlay, role: "task-2 LOC sub-message dispatcher; routes on subtype [r5+3] (3/5/0x11/0x13/0x47/0x82/0x83); compares [0x11FF1F] vs 26/27 (0x1A/0x1B) state-machine; increments [0x11FF1F] at 0x2A429E; called from TASK_2_LOC 0x24454E when [0x11FF1F]!=0 [08:32]" }
+  BROKER_DSP_HEALTHY_FLAG_INIT_ZERO: { addr: 0x00240F88, source: overlay, role: "INIT path: strb r1(=0),[r0=#115,r4=0x11FEAC] => clears [0x11FF1F]=0 during broker-struct (re)init fn 0x240F24 (sets r8=#115/0x73, r4=0x11FEAC base); the ONLY clear-to-zero writer; called from TASK_2_LOC entry 0x2444DA [08:32]" }
+  # ---- promoted from scratch on 2026-05-29 10:14 ----
+  SWDSP_E4_REDISPATCH_GATE:         { addr: 0x002EDC3C, source: overlay, role: "P02.1-01: task-4 loop gate. r6=1 => 0x2EDC3E bne 0x2EDC4C SKIPS BROKER_DECODE. At the FIRE (step105.94M) recv 0x2EDC36 returns r0=0xE4 DIRECTLY (soft-timer-posted msg), r6=1 => no decode, dispatch cmp#228. At BOOT (1.44M) recv returns task-msg 4, r6=0path => BROKER_DECODE drains MDIRCV ring. RECONCILES the two accounts: Phase1 saw the BOOT ring-drain; Phase2/the FIRE is the soft-timer re-issue. [09:51]" }
+  SWDSP_E4_ARM_LOOP_STATE6:         { addr: 0x00265340, source: overlay, role: "state-6 arm loop: ldrh id from 0x32C3DC[(state*10+i)*2]; bl 0x298738(id) x9. 0xE4 = table entry @0x32C456 (row6 col1). r0=0xE4 arm captured @step 4953348 LR=0x265355 [10:08]" }
+  SWDSP_E4_SOFTTIMER_ARM_BY_ID:     { addr: 0x002987C6, source: overlay, role: "soft-timer arm/cancel manager 0x298738: keyed by timer-id (==msg id at node+10); matches [node+10]==r5(id). Timeout from per-id config [0x104970+id*12+4]; the 0xE4 node is never re-armed/cancelled post-arm [10:08]" }
+  SWDSP_E4_STATE_BYTE_DRIVER:       { addr: 0x00267710, source: overlay, role: "writes task-14 state byte [0x10AE61]=0..7 then 0xFF (step 4.95M burst); state->6 @4953113 immediately precedes the 0xE4 arm @4953348 (2nd-surface arm corroboration) [10:08]" }
+  # ---- promoted from scratch on 2026-05-29 11:36 ----
+  SWDSP_E4_TASK14_STATE_DECODE:     { addr: 0x00267038, source: overlay, role: "recv loop decodes msg id 0xFCD..0x100B: state=(id-0xFCD)/9, state-6 completion id=0x1004 (col1=0xE4 watchdog cancel); drives STATE_FANOUT 0x267734 [11:00]" }
+  # ---- promoted from scratch on 2026-05-29 19:05 ----
+  HEAP_FREE:                        { addr: 0x00299A36, source: overlay, role: "heap dealloc: r0=ptr, reads [ptr-4] size, DECREMENTS HEAP_ACCT_STRUCT+8 by size+4 (writeback 0x299A66), coalesce 0x2E5492, 1998 callers. RENAME of misleading MALLOC_TRY (06-03 DIAG-03; verified disfw on Factory-Reset v5.79) [19:05]" }
+  HEAP_ALLOC:                       { addr: 0x00299A84, source: overlay, role: "non-blocking heap alloc wrapper: r0=size, tail-calls HEAP_ALLOC_CORE 0x2E533E, increments HEAP_ACCT_STRUCT+8 by (blk&~1)+4, epilogue 0x299ABA r0=ptr. MALLOC 0x299AEC tail-calls here (06-03 DIAG-03) [19:05]" }
+  MDIRCV_BROKER_MSG_ALLOC:          { addr: 0x002BACB8, source: overlay, role: "06-03 DIAG: per-MDIRCV-message broker-buffer alloc inside MDIRCV_DEQUEUE — bl BLOCKING_MALLOC(0x299AF8) r0=payload+5, ptr stored [r5] then filled type=0x18 sub=2. THE LEAKING ALLOC SITE for the 0xE4 deep-idle heap leak [19:05]" }
+  TASK4_BROKER_MSG_FREE:            { addr: 0x002EDC1E, source: overlay, role: "06-03 DIAG: TASK_4_MDI_RECEIVER frees the broker buffer here (bl HEAP_FREE 0x299A36, r0=r4=msg) on the NORMAL dispatch path. The 0xE4 path (gate 0x2EDC4C cmp#228 -> SWDSP_FAULT_DISPATCH 0x2EDC52) NEVER reaches here => the missing-free for the deep-idle leak [19:05]" }
+  # ---- promoted from scratch on 2026-05-30 23:11 ----
+  HEAP_BLOCK_WALK:                  { addr: 0x002E5492, source: overlay, role: "heap free-list/block validate walk from base 0x1167C0; wedge-loop 0x2E54A2 grows as leaked blocks accumulate; coalesce target of HEAP_FREE [20:27]" }
+  PHONEBOOK_MSG_TO_TASK2:           { addr: 0x002C1948, source: overlay, role: "allocs [r5+2]+10 buffer (0x2C195E), fills via UI_PHONEBOOK 0x2F0244, TASK_SENDs to task-2; 977 leak (never freed by task-2) [00:06]" }
+  # ---- promoted from scratch on 2026-06-05 08:07 ----
+  IDLE_WAIT_GATE:                   { addr: 0x0011186C, source: overlay, role: "TASK_0_IDLE sleep/wake gate: set=1 @0x2E0EA2, cleared=0 by FIQ_DISPATCH_LOOP @0x2E6FC2; web never re-dispatches TASK_0_IDLE so SOFT_WDT never re-runs -> broker 0x6C climb [09:37]" }
+  SCREEN_WALKER_WDT_KICK:           { addr: 0x0025C32E, source: overlay, role: "2nd SOFT_WDT_SUPERVISOR caller (display/table 27-item walk) [09:37]" }
+  IDLE_LOOP_BACK:                   { addr: 0x002E0E32, source: overlay, role: "TASK_0_IDLE loop-back target: bl SOFT_WDT_SUPERVISOR 0x2C1996; reached from boot fall-through 0x2E0E2A b AND back-edge 0x2E0EB2 beq (gate==0). Native ~22K steps; web frozen at 300 @~54.6M cyc [H4-SCHED-RE]" }
+  IDLE_GATE_SPIN:                   { addr: 0x002E0EAE, source: overlay, role: "TASK_0_IDLE WFI-equivalent: ldrb gate / cmp #0 / beq IDLE_LOOP_BACK (gate==0) / b self (gate!=0). The idle wait. FIQ_DISPATCH_LOOP clears gate to release [H4-SCHED-RE]" }
+  PN_ROUTE_DISPATCH:                { addr: 0x002DA37C, source: overlay, role: "TASK_7/PN routing-table dispatcher: 8-byte-stride table @0x32B478 keyed by device-id [r5+6] (5 entries); bx handler @0x2DA386 or TASK_SEND @0x2DA392 (sender LR 0x2DA397). THE storm loop on web: forwards msg 0x6C54+0x7A14 to task 2 forever @>54.6M cyc; 0 hits on native [H4-SCHED-RE]" }
+  PN_ROUTE_SEND_SITE:               { addr: 0x002DA392, source: overlay, role: "the bl TASK_SEND inside PN_ROUTE_DISPATCH; storm dispatch site. WATCH=0 on native 25M steps; web 7000+/9M steps post-freeze [H4-SCHED-RE]" }
+  SIM_GATE_GREETING_LOAD:           { addr: 0x002E82DA, source: overlay, role: "ldrb r0,[0x11FCB8+r0] loads sim_gate_byte[0x11FD1B]; FIRST native-vs-web divergent read (09-02 DIFFTRACE; web bypass-poke=0x06 vs native=0x00)" }
+  MDIRCV_RING_ENTRY_READ:           { addr: 0x002BAC9E, source: overlay, role: "ldrh r7,[r4] in MDIRCV_DEQUEUE 0x2BAC72; reads ring word [0x10100+tail*2]; web ka_replay=2 vs native ka_replay=0 ring content diverges (09-02 DIFFTRACE)" }
+  BROKER_SUPERVISOR_COUNTER_INC:    { addr: 0x00244472, source: overlay, role: "increments [0x11FF1A] (PC writes r0; ~every 19.6M cyc); climbs 0->15 under DSPKA_REPLAY=2 then reason-0x6C @0x2444A0 cmp#15. Cleared by SOFT_WDT_SUPERVISOR 0x2C199C on healthy runs; clears=0 under replay-burst (09-02 Task2) [12:23]" }
+  SOFT_WDT_COUNTER_CLEAR:           { addr: 0x002C199C, source: overlay, role: "strb 0 -> [0x11FEAC+0x6E]=[0x11FF1A]; unconditional at SOFT_WDT_SUPERVISOR entry. Runs on healthy native (perpetual ka=0 AND DSPNOKEEPALIVE) every ~19.6M cyc; runs 0 times under DSPKA_REPLAY=2 = the 0x6C root (idle-clear starvation) (09-02 Task2) [12:23]" }
+  MDI_BROKER_DELIVER_CATCHALL:      { addr: 0x002ED6A0, source: overlay, role: "unrecognised-MDI-id catch-all -> BROKER_DELIVER -> PN_ROUTE_DISPATCH task-2 re-fan (the 0x6C storm path); reached for any MDI low byte not 0x8D/0x8E/handled (H4 09-02) [13:45]" }
+  BROKER_DSP_HEALTHY_FLAG_SET:      { addr: 0x002A486C, source: overlay, role: "LOC submessage handler tail: sets [0x11FF1F]=1 (DSP-healthy), [+0x72]=2, sends XBUS frame. Gated on LOC/network activity -> NEVER runs at no-SIM standby -> [0x11FF1F] stays 0 -> counter kept in check only by idle SOFT_WDT clear (H4 09-02) [13:45]" }
+  TASK_BLOCK_DISPATCH:              { addr: 0x00298B66, source: overlay, role: "scheduler block/dispatch + node-free path; walks tcb_table 0x106130 + [0x104868] soft-timer chain; frees via 0x2E520C->HEAP_FREE @0x298C44 (H5 09-03) [20:13]" }
+  DEV_FREE_VENEER:                  { addr: 0x002E520C, source: overlay, role: "ARM device-free veneer; indexes per-task pool-base table flash 0x32E318 ([0x104845] sel); tail-reaches HEAP_FREE (H5 09-03) [20:13]" }
+  TASK_POOL_BASE_TABLE:             { addr: 0x0032E318, source: overlay, role: "flash per-task RAM pool-base ptr table indexed by [0x104845] (H5 09-03) [20:13]" }
+  MMI_BLOCK_BITSCAN:                { addr: 0x002D62C2, source: overlay, role: "deep-idle 16-bit bit-scan over FLASH_BLOCKS-table mask [0x10D4F8+idx*24+36]; the LCD-stall/idle web deep-idle wedge spinner (H5 09-03) [20:13]" }
+  KEYPAD_RECV_PUMP:                 { addr: 0x00290500, source: overlay, role: "TASK_1_KEYPAD inner recv pump; calls TASK_RECV_BLOCKING 0x2992D4; ret slot 0x290507 (H5 09-03) [20:13]" }
+  IDLE_GATE_SET:                    { addr: 0x002E0EA2, source: overlay, role: "strb r9(=1) -> IDLE_WAIT_GATE [0x11186C]; TASK_0_IDLE arms the wait. On CURRENT build (post-H4-fix 50beb3b) the idle loopback re-runs SOFT_WDT_SUPERVISOR continuously on web (set-site freezes ~870 @100M but LOOP_BACK keeps climbing) -> no 0x6C (09.1-01) [21:50]" }
+  IDLE_GATE_CLEAR:                  { addr: 0x002E6FC2, source: overlay, role: "mov r0,#0; strb r0->[0x11186C]; FIQ_DISPATCH_LOOP 0x2E6FBE first act on EVERY FIQ entry -> releases the idle spin. The native re-dispatch wake edge (09.1-01) [21:50]" }
+  BOOTSTAGE_DRAW_SEND_0x16:         { addr: 0x002E70A8, source: overlay, role: "boot-stage: DRAW_CHARS(0x7203)+TASK_SEND(task=1,msg=0x16); ready-path stage absent on 3410 [00:27]" }
+  BOOTSTAGE_DRAW_SEND_0x15:         { addr: 0x002E729C, source: overlay, role: "boot-stage: DRAW_CHARS+TASK_SEND(task=1,msg=0x15); final ready advance; 3410 never sends 0x15 [00:27]" }
+  BOOTSTAGE_DRAW_SEND_0x17:         { addr: 0x002E70FE, source: overlay, role: "common boot-stage: DRAW_CHARS(0x7201)+TASK_SEND(task=1,msg=0x17); 3410 twin 0x3D5F76 [00:27]" }
+  ANALOG_READY_SEND_0x4C:           { addr: 0x002D7346, source: overlay, role: "task17 self-send msg 0x4C -> TASK_5 ASIC-IRQ-enable handshake (mutex18; TASK_SEND task=17 msg=0x4C) [05:55]" }
+  TASK5_MSG_0x4C_ENABLE_IRQ:        { addr: 0x0022919E, source: overlay, role: "TASK_5/task17 msg-0x4C case: programs [0x20024]|=1 [0x20020]|=1 then TASK_SEND task=1 msg=0x4D ack [05:55]" }
+  ANALOG_INIT_FIRES_0x4C:           { addr: 0x00290D60, source: overlay, role: "task17 one-time analog init (guard [0x11173C]); calls ANALOG_READY_SEND_0x4C; reached when readiness HW probe reports ready [05:55]" }
+  DSP_BLOCK_DESC_TABLE:             { addr: 0x002F2258, source: overlay, role: "NULL-terminated table of 28 BE flash pointers to DSP code-block descriptors (0x300CD8-0x307DFC); IRQ4 upload handshake indexes this [22:09]" }
+  BROKER_TRACE_CHANNEL_TABLE:       { addr: 0x0032C4E8, source: overlay, role: "trace-channel NAME registry (osmocom dct3-gsmtap taxonomy); entries 8F<idx> <fixedlen> 00; idx 0x18=MDISND 0x19=MDIRCV 0x20/0x23=SIM (EXACT match to dct3-gsmtap types). VESTIGIAL in v5.79: ref'd ONLY by dead BROKER_CHANNEL_PUBLISH_DEAD 0x2EC3FA literal pool; NOT wired at runtime. Live publish uses native event-ids via BROKER_ROUTER_SPINE 0x2EACAA [16:31][16:52]" }
+  BROKER_CHANNEL_PUBLISH_DEAD:      { addr: 0x002EC3FA, source: overlay, role: "DEAD/vestigial in v5.79: 0 BL callers + 0 pointer refs; sole consumer of 0x8F channel table 0x32C4E8 (which is ref'd ONLY by this fn's literal pool). The osmocom 0x8F-channel taxonomy (idx 0x18=MDISND etc) is NOT wired at runtime in this build. Live trace path = BROKER_ROUTER 0x2EACAA (41 leaf sites in 0x24xxxx, native event-ids cat 0x80/0x84) [16:52]" }
+  DSP_READY2_FLAG_UNWRITTEN:        { addr: 0x00135664, source: overlay, role: "dsp-ready-2 flag (set by DSP_ISR_BOOTREADY 0x2CB418; 8850 profile dsp_uploaded). RAMWATCH = 0 writes in 30M on 3310 native => the DSP boot-ready ISR path never completes => SWDSP opcode handshake never initiated (confirm correct 3310 addr; 3410 used 0x11038C/0x12BA10) [22:06]" }
+  SWDSP_STATE_RECORDS:              { addr: 0x0010AED8, source: overlay, role: "per-state record array (0x58=88B stride) indexed by task-14 state [0x10AE61]; OPCODE_DISPATCHER 0x264E14 reads puVar4=base+state*0x58 to build the next msg. State machine working memory [05:42]" }
+  SWDSP_TASK14_STRUCT:              { addr: 0x0010AE58, source: overlay, role: "task-14 state struct: [+8] flag, [+9]=state byte [0x10AE61]. Read by OPCODE_DISPATCHER/STATE_FANOUT as DAT_002651E4. State machine cursor [05:42]" }
+  SWDSP_TASK14_L1_SENDER:           { addr: 0x0024EB26, source: overlay, role: "the SOLE immediate-task-14 sender (TASK_SEND@0x24ED86 + twin 0x2996B8@0x24ED78); L1/LOC msg formatter, 6 callers in 24xxxx/25xxxx (L1 message handlers). Builds msg id 2/6 (task-14 low-id path). EMPIRICAL: runs 0× => task-14 wedged at first recv. Gated on L1 activity our DSP-silent model never produces. SWDSP state ids 0xFCD come via task-14's OWN BROKER_DECODE of DSP d2m, which needs this wake first [05:57]" }
+  T14INJECT_TRAMPOLINE:             { addr: 0x001F0000, source: overlay, role: "boot_trace T14INJECT diag trampoline: malloc 0x40 + buf[0]=CALLR0 + FUN_00299134(14,buf). EXPERIMENT 2026-06-05: injecting id 0xFCD/0x1004 @50M DOES wake task-14 (recv returns 1 vs 0, state byte [0x10AE61] FF->0/6 @ PC 0x267054) = ENTRY HYPOTHESIS VALIDATED. But crafted buf only sets [0] => task-14 reads uninit fields ([+3]/[+5]/payload) => WILD-PC @135M cyc. Need the full broker-decoded msg format (DSP-side, resident-ROM-adjacent) [06:09]" }
+  SWDSP_TASK14_MSG_DECODE:          { addr: 0x00267054, source: overlay, role: "TASK_RECV_LOOP entry-id path (lines 754-760): for id 0xFCD..0x100B reads ONLY *psVar3 (off0=id), sets task14 [0x10AE61]=col + [+8]=[+0x50+col], HEAP_FREE, loops. NO other buffer fields read => crafted-buffer is NOT the inject crash cause. Heavy paths (other ids) read off 0x02 (deref'd PTR! crash risk) + 0x04-0x35. Struct = short*, 0x36B. 135M WILD-PC on inject is DOWNSTREAM not buffer [06:14]" }
+  INJECT_MECH_WILD_POP:             { addr: 0x00298C64, source: overlay, role: "T14INJECT crash = INJECTION-MECHANISM ARTIFACT (CONFIRMED 2026-06-05): control inject to task 19 (INJTASK=19) crashes IDENTICALLY (WILD-PC 0xFFFFFFFE via pop{pc}@0x298C64 SEMAPHORE_OPEN epilogue, step ~50.0015M, ~135M cyc). So mid-fn CALL-hijack + unlinked malloc'd mailbox msg corrupts free-list regardless of target task. NOT a task-14/SWDSP failure. Lever (task-14 wakes+state set) still valid; watchdog-cancel verdict OPEN. FIX: faithful inject via sweep_inject_mdircv (MDIRCV+FIQ0) OR CALL only at idle-spin 0x2E0EAE [06:23]" }
+  TASK_SEND_TYPED:                  { addr: 0x00299134, source: overlay, role: "TASK_SEND(r0=task,r1=msg) sibling of TASK_SEND_PRIM 0x29921C; indexes mailbox_ring_table 0x105E90. SWDSP OPCODE_DISPATCHER sends to task12/14 via this [06:36]" }
+  SWDSP_MSGID_TABLE:                { addr: 0x0032C2CC, source: overlay, role: "32-bit BE id table, index=(state*9+col)->id 0xFCD..0x100B; 0x1004(state6/col1) at +0x8C. INVERSE of recv-loop state=(id-0xFCD)/9. Action table 0x32C3DC. NB does NOT cancel the watchdog (refuted) [06:36]" }
+  SWDSP_DSPMSG_HANDLER:             { addr: 0x00278248, source: overlay, role: "builds 8B msg id 0xFAC strh->[buf] then TASK_SEND_TYPED(14,buf); one of ~30 internal SWDSP task-14 senders (ids 0xFA1..0x1016). Producer of the 0xFCD-range ids; NOT ring-injectable [06:36]" }
+  BROKER_TRACE_PUBLISH:             { addr: 0x002C342C, source: overlay, role: "(r0=trace_id,r1=byte)->BROKER_GATE 0x2EABC0/BROKER_DELIVER. Consumer of literal 0x1004 @0x2A76A0 = OUTBOUND trace id, NOT a task-14 send (disambiguates the two 0x1004 uses) [06:36]" }
+  SOFTTIMER_ARM_BY_SLOTID:          { addr: 0x002988D2, source: overlay, role: "soft-timer ARM/re-arm primitive (r0=slot-idx, r1=delta); per-slot struct = per_task_pending_count+0xEC+idx*12; matcher cmp[node+10],slotid then delta-queue insert via 0x298814. Healthy 0xE4 branch calls (36,0x9CD); the named-but-misplaced 0x2987C6 is a fall-through block of the slot service, not this [06:43]" }
+  SWDSP_E4_WDOG_REARM:              { addr: 0x002EDC5A, source: overlay, role: "0xE4 healthy branch: counter [0x111862]!=0 -> SOFTTIMER_ARM(slot36,0x9CD) re-arms watchdog window + strh 0 -> [0x111862] reset. UNCONDITIONAL re-arm => watchdog is PERPETUAL (View A) [06:43]" }
+  SWDSP_E4_WDOG_INITARM:            { addr: 0x00232824, source: overlay, role: "INITIAL arm of slot-36 watchdog: SOFTTIMER_ARM(36,0x9CD) + [0x111862]=0. One of 3 slot-36 arm sites (this, SWDSP_STAGER 0x2D12A4, healthy-tick 0x2EDC5A); ZERO disarm sites for slot 36 anywhere => never cancelled [06:43]" }
+  TASK4_D2M_HANDLERS_NO_T14:        { addr: 0x002C3CB8, source: overlay, role: "task-4 d2m group handlers (jumptable 0x2EDB48, ids 0x83-0x8F -> 0x2C3690/0x2C3C9C/0x2C3BEC/0x2C3CF0/0x2C3CFC/0x2C3D4C/0x2C3CD4/0x2C3FC4/0x2C3D20/0x2C3CB8/0x2C35CA) + catchall 0x2ED6A0 + 0x70-class 0x2C1948: 19 TASK_SEND_TYPED calls, ALL target tasks 3/10/11/13. ZERO to task-14/12, ZERO into SWDSP engine. No ring d2m kicks SWDSP (Q2=b) [06:43]" }
+  SWDSP_L1_REQ_FORMATTER:           { addr: 0x0020D6C0, source: overlay, role: "L1/LOC request->task-14 formatter (switch on req-type, reads L1 state [0x10E151]/[0x10E160]/DSP-state [0x110440]); sends task-14 ids 0xA29/0xA3C/0xA40/0xA49/0xA4D + a task-12 send @0x23CA50. One of the 3 boot-bootstrap task-14 senders (0x20D72C,0x23CA46,0x24ED78=FUN_0024EB26) gating SWDSP start; ALL L1-cell-sync/DSP-measurement gated => DSP-silent model never fires them [06:43]" }
+  MDI_ACTIVITY_COUNTER_INC:         { addr: 0x002EDB16, source: overlay, role: "ldrh r0,[r5,#2];add#1;strh -> bumps [0x111862] per non-0xE4 MDI msg to TASK_4. SOLE feed of the watchdog counter. MEASURED 2026-06-05: with default ka_replay=1 (39-record cap) counter hits 0 at the 203M tick -> 0x68. With DSPKA_REPLAY=0 (perpetual) counter=51 at both 106M+203M ticks -> NO 0x68 to 250M. The in-code dsp_default.c essay claiming silent/replay=1 is safe-to-2.8B is STALE/REFUTED [06:58]" }
+  BROKER_DECODE_EMPTY_GUARD:        { addr: 0x002BACF0, source: overlay, role: "BROKER_DECODE head: MDIRCV_QUEUE_DEPTH 0x2BAC58; if depth==0 -> returns 0 (no dequeue). ANSWERS dan-IRQ-hypothesis 2026-06-05: a bare FIQ0/IRQ (DSP doorbell w/ empty ring) does NOT feed the watchdog counter -> task-4 0x2EDC46 cmp r4,#0 beq loops back without bumping [0x111862]. Watchdog liveness REQUIRES an actual ring ENTRY (depth>0) per ~97M window, NOT just an interrupt. DSPINT 0x30000bit2 is MCU->DSP (outbound, irrelevant to inbound liveness) [07:16]" }
+  FIQ0_TASKSEND4:                   { addr: 0x002BAB9E, source: overlay, role: "FIQ0 handler 0x2BAB82 tail: sets [0x2000A]bit, [0x20008]=1, TASK_SEND_IRQ(task=4,msg=4) UNCONDITIONALLY on every DSP MDIRCV doorbell. task-4 then BROKER_DECODEs the ring; empty ring => msg discarded (BROKER_DECODE_EMPTY_GUARD). So the doorbell is necessary but NOT sufficient - the ring must carry an entry. Content beyond group byte largely irrelevant (any non-0/non-0xE4 decode bumps counter) [07:16]" }
+ram:
+  # --- Reset/fault state (docs/watchdog-reset-3310.md, docs/dsp-reset-chain-3310-v579.md) ---
+  reboot_reason:                   { addr: 0x0011FF94, source: overlay, role: "persisted reset reason byte (read by classifiers, written by REASON_SETTER + REBOOT_FN)" }
+  reboot_save:                     { addr: 0x0011FF88, source: overlay, role: "fatal handler 3-word save block (LR, SPSR, CPSR)" }
+  task4_retry_counter:             { addr: 0x00111862, source: overlay, role: "task 4 retry counter — first msg 0xE4 → stage SWDSP/DSP reset, second → suppress" }
+  broker_supervisor_counter:       { addr: 0x0011FF1A, source: overlay, role: "task-2 broker WDT-kick supervisor — overflows at 15, calls REBOOT_FN([reboot_reason])" }
+
+  # --- Subsystem state ---
+  verdict_byte:                    { addr: 0x0011FF15, source: overlay, role: "boot self-test verdict (HLE 0xC8 by spike, organic via DSP responder)" }
+  sim_gate_byte:                   { addr: 0x0011FD1B, source: overlay, role: "disp49 SIM-gate bypass byte (anon-access poke)" }
+  sim_retry_counter:               { addr: 0x0011FD08, source: overlay, role: "SIM recognition retry counter (overflows -> task 4 msg 0xE4)" }
+  phone_mode_byte:                 { addr: 0x0010E71A, source: overlay, role: "phone mode (1=PON, 2/3=NORMAL, 5/6=variant) — gated by REASON_SETTER" }
+  framebuffer_ptr:                 { addr: 0x0010FD9C, source: overlay, role: "LCD framebuffer pointer (alloc'd by WINDOW_MGR_FN)" }
+  faid_checksum:                   { addr: 0x00111B8A, source: overlay, role: "FAID integrity checksum (FuBu v6.39 expects 0x03B7)" }
+  dsp_uploaded_flag:               { addr: 0x0011038C, source: overlay, role: "DSP code-block upload complete flag" }
+  dsp_ready_flag1:                 { addr: 0x00135665, source: overlay, role: "DSP boot ready flag 1 (set by [0x10004]=6 responder)" }
+  dsp_ready_flag2:                 { addr: 0x00135664, source: overlay, role: "DSP boot ready flag 2 (set by IRQ4 ISR 0x2CB418)" }
+  rng_seed:                        { addr: 0x00111864, source: overlay, role: "ANSI LCG seed (srand at boot; seeded by time()=0x7FFFFFFF in emu)" }
+  centisec_counter:                { addr: 0x0011139C, source: overlay, role: "stopwatch centisecond up-counter (++ by FIQ8 100Hz)" }
+  countdown_counter:               { addr: 0x00111398, source: overlay, role: "stopwatch countdown counter" }
+
+  # --- Kernel data structures (docs/task-map-3310.md) ---
+  tcb_table:                       { addr: 0x00106130, source: overlay, role: "TCB table — 24 entries × 16 bytes (idx+14, state+13, pri+12, ctx+8)" }
+  mailbox_ring_table:              { addr: 0x00105E90, source: overlay, role: "per-task mailbox ring — 28 bytes/task (head+16, tail+17, cap from 0x10485C)" }
+  per_task_pending_count:          { addr: 0x00104884, source: overlay, role: "per-task pending msg counter — indexed by task id" }
+  tasks_init_table:                { addr: 0x0031C30C, source: overlay, role: "static task table (24 × 12 B: handler|1, stack-size, priority)" }
+
+messages:
+  # Per-task / per-broker message IDs we've identified during RE. NokiX itself
+  # has no locator for these — they're pure semantic constants the firmware uses.
+  # Format: id is the literal value the firmware emits on the wire (uint16).
+  MSG_KEY_DOWN:                    { id: 0x0366, role: "soft key down (per-key dispatch — see KEY_DOWN/UP family)" }
+  MSG_KEY_UP:                      { id: 0x0367, role: "soft key up (per-key dispatch)" }
+  MSG_KEY_RELEASE:                 { id: 0x00C9, role: "menu/key-release sentinel (terminates auto-repeat)" }
+  MSG_DIALOG_DRAW:                 { id: 0x057C, role: "DIALOG_DRAW — redraw the currently-open dialog" }
+  MSG_DIALOG_OPEN_RAW:             { id: 0x0578, role: "DIALOG_OPEN constructs msg id 0xAF*8 — passes to DIALOG_OPEN_MSG" }
+  MSG_DISPLAY_MESSAGE:             { id: 0x0226, role: "MSG_DISPLAY_MESSAGE — show a static text id (DMI_WARNING/INFO)" }
+  MSG_DISPLAY_MESSAGE_HI:          { id: 0x8226, role: "DISPLAY_MESSAGE with high-bit set — keypress-relaunch variant" }
+  MSG_CREATE_WIN:                  { id: 0x4C3A, role: "create-window msg — handler 0x26DFEE, never fires in incomplete boot" }
+  MSG_PHONE_STARTUP_SWEEP:         { id: 0x13B5, role: "post-PON GSM-driven re-sweep — triggers dialog re-broadcast" }
+  MSG_LIFECYCLE:                   { id: 0x0130, role: "lifecycle state change (PHONE_STARTUP, IDLE, …)" }
+
+  # --- Task-2 broker message dispatch table (function 0x2442B4 case-DA..E3) ---
+  MSG_T2_WDT_KICK:                 { id: 0x00DA, role: "task-2 broker — case 0xDA: kick WDT + bump supervisor counter" }
+  MSG_T2_VERDICT_CHECK:            { id: 0x00DB, role: "task-2 broker — case 0xDB: check [verdict_byte] bit3" }
+  MSG_T2_REBOOT_REISSUE:           { id: 0x00DC, role: "task-2 broker — case 0xDC: read [reboot_reason], call REBOOT_FN" }
+
+  # --- Task-4 fatal-reset dispatcher (handler 0x2EDB04 dispatch) ---
+  MSG_T4_MDI_FAULT:        { id: 0x00E4, role: "task-4 MDI/DSP receiver msg — first fire stages SWDSP DSP-reset scenario, reason 0x68 (SWDSP / DSP-watchdog)" }
+
+  # --- Reset poster (fn 0x2E0F20) sends ---
+  MSG_T1_RESET_REQUEST:            { id: 0x001B, role: "task 1 — graceful-shutdown reset request from RESET_POSTER" }
+  MSG_CH28_SHUTDOWN:               { id: 0x007D, role: "broker fan-out (ch 28) — shutdown subscribers" }
+
+  # --- Broker fault notifier (0x2D724C) sends ---
+  MSG_T17_BROKER_FAULT:            { id: 0x0044, role: "task 17 (charge SM) — broker fault notify from 0x2D724C" }
+
+  # --- Assertion codes (firmware-internal fault IDs, captured by ASSERT_LOG) ---
+  ASSERT_BROKER_FAULT:             { id: 0x5B06, role: "broker fault — emitted by BROKER_FAULT_NOTIFIER + REBOOT_FN's notify" }
+  ASSERT_CHARGE_HEARTBEAT:         { id: 0x5B0F, role: "charge-task idle heartbeat (~1s period) — NOISE, not a fault" }
+  ASSERT_BROKER_CH_BOUNDARY:       { id: 0x5B0C, role: "broker pubsub channel split — codes >= this go to ch2, < to ch0" }
+
+  # --- Reset reason codes (docs/watchdog-deep-re-findings.md §B.3) ---
+  REASON_POWERUP:                  { id: 0x01, role: "cold boot — written by RESET_CLASSIFIER_BOOT" }
+  REASON_FACTORY_RESET:            { id: 0x04, role: "factory reset (intentional)" }
+  REASON_FATAL_CPU_EXCEPTION:      { id: 0x05, role: "fatal — ARM exception (undef/swi/pabort/dabort) via FATAL_HANDLER" }
+  REASON_FIQ_CANARY:               { id: 0x06, role: "FIQ-stack canary clobber (handlers 0x2E4F38/0x2E50A0/0x2E51F0)" }
+  REASON_TASK1_CLOCK:              { id: 0x0C, role: "task 1 / clock region (caller 0x291B3E)" }
+  REASON_SWDSP:                { id: 0x68, role: "SWDSP — software DSP reset (firmware NetMon D35 name); staged by SWDSP_STAGER scenario=1. Was mislabeled SIM-fatal; firmware's separate SIM-contact reset is SWSIM 0x69" }
+  REASON_TASK2_FAULT_NOTIFY:       { id: 0x73, role: "task-2 fault-notify — staged by SWDSP_STAGER scenario=3; also a DSP-reset variant (SWDSP bucket per NetMon classifier 0x227690)" }
+  REASON_BOOT_CAUSE_SW_RESET:      { id: 107, role: "RESET_CLASSIFIER_BOOT returns this if [0x20001] bit2 set on boot" }
+  REASON_BOOT_CAUSE_POWERUP:       { id: 101, role: "RESET_CLASSIFIER_BOOT returns this if [0x20001] bit3 set on boot" }

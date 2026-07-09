@@ -1,0 +1,303 @@
+#!/usr/bin/env bash
+# run — one-line launcher for the dct3 emulator.
+#
+# Replaces the "remember 5 env vars + a quoted path + a positional step count"
+# invocation with `./run <model> <scenario> [steps] [extra args/env...]`.
+#
+# It only RESOLVES the firmware path + the right knob combo per scenario, then
+# execs the existing binary. The 168 debug env-knobs still work — set any of
+# them inline (`WRWATCH=0x101C8 ./run 3410 boot`) and they pass straight through.
+#
+#   ./run                       # list models + scenarios
+#   ./run 3410 gui-reset        # boot the 3410 GUI, force a warm reset, recover
+#   ./run 3310 boot             # headless boot + post-mortem
+#   ./run 3410 reset-recover    # observe the real sim-present 0x73 self-reset + recovery
+#   TRACE=sim,dsp ./run 8850 boot 120000000
+#
+# Base config: reset-recovery + early intercept (RESET_EARLY+RESET_RECOVER) are
+# ON by default — every scenario catches a firmware self-reset at reboot-entry
+# and recovers in place. Disable with --no-recover (or RECOVER=0 env).
+#
+# Footguns handled here: a GUI scenario with no $DISPLAY fails fast with the
+# headless alternatives (the GUI loop is wall-clock-paced, so dummy-video runs
+# never practically finish); every run prints the resolved config so a mistyped
+# knob is visible, not mistaken for a fault.
+
+set -euo pipefail
+cd "$(dirname "$0")"
+
+# ── model → firmware image ────────────────────────────────────────────────
+# Two tiers, so `./run <model>` works for EVERY model in the firmware library,
+# even ones the emulator has no ModelProfile for yet:
+#   1. CURATED — the tested/canonical image for each of the 8 profiled models
+#      (src/models/model.c). These win.
+#   2. LIBRARY fallback — any other model number resolves to the NEWEST matching
+#      flat image built by tools/build_fls_library.py:
+#         firmware/Nokia <model> <TYPE> v<ver> <PPM>.fls
+#      so `./run 8210 boot` runs even with no 8210 profile — the binary
+#      auto-detects the header and falls back. (firmware/ is gitignored; the
+#      preflight prints the one-line rebuild when nothing matches.)
+PROFILED="3310 3310v6 3330 3350 3410 5110 5210 5510 7110 8850"
+
+fw_curated() {
+  case "$1" in
+    3310)   echo "firmware/Factory Reset 3310 NR1 v5.79.fls" ;;
+    3310v6) echo "firmware/FuBu3310 v6.39 (PPM B).fls" ;;
+    3330)   echo "firmware/Nokia 3330 NHM-6 v4.16 A.fls" ;;
+    3350)   echo "firmware/Nokia 3350 NHM-9 v5.22 A.fls" ;;
+    3410)   echo "firmware/Nokia 3410 NHM-2 v5.46 (FAID off, cksum fixed).fls" ;;
+    5110)   echo "firmware/Nokia 5110 NSE-1 v5.30 A (FAID off, cksum fixed).fls" ;;
+    5210)   echo "firmware/Nokia 5210 NSM-5 v5.40 A (EEPROM).fls" ;;
+    5510)   echo "firmware/Nokia 5510 NPM-5 v3.50 A.fls" ;;
+    7110)   echo "firmware/My 7110 v5.00.fls" ;;   # full dump (provisioned EEPROM/FFS), not the MCU+PPM-only image
+    8850)   echo "firmware/FuBu8850 v5.31 (PPM C).fls" ;;
+    *)      return 1 ;;
+  esac
+}
+
+# Newest library build for a bare model number (filenames may contain spaces).
+fw_library() {
+  shopt -s nullglob
+  local matches=( "firmware/Nokia $1 "*.fls )
+  shopt -u nullglob
+  [ ${#matches[@]} -eq 0 ] && return 1
+  printf '%s\n' "${matches[@]}" | sort -V | tail -1
+}
+
+fw_for() { fw_curated "$1" || fw_library "$1"; }
+
+# All resolvable model keys: profiled + every model number found in firmware/.
+all_models() {
+  { printf '%s\n' $PROFILED
+    shopt -s nullglob
+    local f
+    for f in firmware/Nokia\ *\ v*.fls; do basename "$f" | awk '{print $2}'; done
+    shopt -u nullglob
+  } | sort -uV | tr '\n' ' '
+}
+MODELS="$(all_models)"
+
+# ── scenario → (binary, default steps, knobs, one-line description) ───────
+# Each scenario sets: BIN, STEPS, KNOBS (space-separated VAR=VAL), DESC.
+scenario() {
+  BIN=build/dct3_boot_trace; STEPS=250000000; KNOBS=""; DESC=""
+  case "$1" in
+    boot)
+      DESC="headless boot → idle + post-mortem on any halt" ;;
+    gui)
+      BIN=build/dct3_boot_trace_gui; STEPS=400000000; KNOBS="GUI=1"
+      DESC="live SDL GUI (auto-dummy video when headless)" ;;
+    gui-reset)
+      BIN=build/dct3_boot_trace_gui; STEPS=60000000
+      KNOBS="GUI=1 GUIKEYLOG=1 GUIREBOOTAT=30000000"
+      DESC="boot GUI, force one warm reset @30M, recover + keep running" ;;
+    reset-recover)
+      STEPS=320000000; KNOBS="TRACE=sim,dsp"
+      DESC="boot with sim+dsp trace to watch the self-reset intercept + recovery" ;;
+    nosim)
+      KNOBS="SIMABSENT=1"
+      DESC="boot with an empty SIM tray" ;;
+    faid-bake)
+      # 5110/MAD1: boot with the external 24C16, then persist it (EE5110SAVE) so a
+      # one-time FAID/calibration provisioning is captured for re-load via EE5110=.
+      STEPS=40000000; KNOBS="EE5110SAVE=firmware/nse-1-faid.bin"
+      DESC="5110: boot + persist the external EEPROM (FAID/calibration bake)" ;;
+    *) return 1 ;;
+  esac
+}
+SCENARIOS="boot gui gui-reset reset-recover nosim faid-bake"
+
+# ── usage ─────────────────────────────────────────────────────────────────
+usage() {
+  cat <<EOF
+dct3 launcher — ./run <model> <scenario> [steps] [extra passthrough args]
+
+  models:     $MODELS
+    profiled (known-good): $PROFILED
+    others resolve to the newest firmware/Nokia <model> … .fls (build with
+    tools/build_fls_library.py --go) and run experimentally — the emulator
+    has no ModelProfile yet, so it auto-detects the header and falls back.
+  scenarios:
+EOF
+  for s in $SCENARIOS; do scenario "$s"; printf "    %-14s %s\n" "$s" "$DESC"; done
+  cat <<EOF
+
+  base config: reset-recovery + early intercept are ON by default (every
+    scenario catches a firmware self-reset at reboot-entry and recovers).
+    turn off:  ./run 3410 boot --no-recover     (or RECOVER=0 ./run ...)
+    keep recovery, drop eager intercept:  ./run 3410 boot --no-early
+
+  mbus service tools (phone GUI + tool over the tty0tty modem comport, one cmd):
+    ./run 5110 noktool      # also: eeprom | faid | koci | nfree
+    (delegates to \$MBUS_TOOL_LAUNCHER, default ~/fresh-start.sh; phone boots OFF — tap 'p')
+
+  examples:
+    ./run 3410 gui-reset
+    ./run 3310 boot
+    ./run 3410 reset-recover
+    ./run 3410 boot --no-recover              # honest halt — post-mortem on a self-reset
+    TRACE=sim,dsp ./run 8850 boot 120000000   # extra knobs pass through
+
+  the 168 debug env-knobs still work — either inline (WRWATCH=0x101C8 ./run …)
+    or as a trailing VAR=VAL (./run 3310 boot WRWATCH=0x101C8); both reach the binary.
+EOF
+}
+
+[ $# -lt 2 ] && { usage; exit "$([ $# -eq 0 ] && echo 0 || echo 2)"; }
+
+MODEL="$1"; SCEN="$2"; shift 2
+
+# ── MBUS service-tool shortcut: `./run <model> <tool>` ────────────────────
+# One command launches the phone GUI + a Windows service tool (NokTool/EepromTools/
+# faid/Koci/NFREE) over the tty0tty MODEM comport (real DTR/RTS/DCD — no shim).
+# Delegates to the orchestrator ($MBUS_TOOL_LAUNCHER, default ~/fresh-start.sh): it
+# tears down stale procs, loads tty0tty, wires wine COM3 → /dev/tnt1, and starts both.
+# The phone boots powered OFF — tap 'p' in the GUI to power on.
+case "$SCEN" in
+  noktool|eeprom|faid|koci|nfree)
+    LAUNCHER="${MBUS_TOOL_LAUNCHER:-$HOME/fresh-start.sh}"
+    [ -x "$LAUNCHER" ] || { echo "run: MBUS tool launcher not found/executable: $LAUNCHER" >&2
+                            echo "     set MBUS_TOOL_LAUNCHER=<path> or restore ~/fresh-start.sh" >&2; exit 2; }
+    echo "run: launching $MODEL + '$SCEN' over the MBUS modem comport (via $(basename "$LAUNCHER")) ..."
+    exec "$LAUNCHER" "$MODEL" "$SCEN" ;;
+esac
+
+FW="$(fw_for "$MODEL")" || { echo "run: unknown model '$MODEL' (have: $MODELS)" >&2; exit 2; }
+scenario "$SCEN"        || { echo "run: unknown scenario '$SCEN' (have: $SCENARIOS  |  tools: noktool eeprom faid koci nfree)" >&2; exit 2; }
+
+# ── model-specific knobs (appended to the scenario's KNOBS) ───────────────
+# 5110 (NSE-1, MAD1 V1-DCT3) — THE CANONICAL CONFIG (docs/5110-DSP-CANONICAL-STATE.md):
+#   * DSP54_COSIM=1 is the WHOLE faithful recipe: real C54x core + real MCU upload, and
+#     every faithful sub-knob (COBBA codec model incl. BSP loopback + frame clock,
+#     CMDLEVEL, SELFTEST_MEAS, …) defaults ON under it. No other knobs. DSP54_X=0
+#     opts a single sub-knob out for A/B.
+#   * EEPROM: prefers the baked firmware/nse-1-faid.bin (./run 5110 faid-bake) and falls
+#     back to the virgin NokiX blob. EITHER is made good at load (mad1_i2c.c finalize):
+#     tune checksum @0x11E recomputed + the DSP-fault latch rec 0x607 @0x29E provisioned
+#     (virgin 0xFF would trip the legacy reason-0x68 watchdog reset ~283M). EE5110_RAW=1
+#     opts the finalize out.
+#   * SIM-present + PIN-off are the model defaults (SIMABSENT unset; SIMPINON to enable).
+#   * Expected boot: THROUGH CONTACT SERVICE to "Security code" (oracle 4921792d @30M,
+#     tools/check_5110_boot.sh); steady state holds past the ~94M-step watchdog checks.
+# EE5110SAVE (faid-bake) must not be overridden.
+case "$MODEL" in
+  5110)
+    # DSP54_COSIM is a PRESENCE check in the binary (=0 still enables it). Honor a user
+    # override here: pass DSP54_COSIM=0 to turn cosim OFF (we drop the var entirely below),
+    # any non-zero value keeps it on, none => default on. Pre-scan the trailing args.
+    _ucos=""; for a in "$@"; do case "$a" in DSP54_COSIM=*) _ucos="${a#DSP54_COSIM=}";; esac; done
+    [ -z "$_ucos" ] && KNOBS="DSP54_COSIM=1 $KNOBS"
+    EE_NOTE="virgin NokiX blob + load-time finalize (tune cksum + DSP-fault latch 0x607)"
+    case " $KNOBS " in *EE5110SAVE=*)
+      EE_NOTE="baking → firmware/nse-1-faid.bin (EE5110SAVE)" ;;
+    *)
+      if [ -f firmware/nse-1-faid.bin ]; then
+        KNOBS="EE5110=firmware/nse-1-faid.bin $KNOBS"
+        EE_NOTE="firmware/nse-1-faid.bin (baked) + load-time finalize"
+      fi ;;
+    esac
+    # Canonical soak for a headless boot: 320M covers three ~94M-step DSP-watchdog
+    # checks (103M/197M/291M) past the old reason-0x68 window. A trailing numeric
+    # arg still overrides.
+    [ "$SCEN" = boot ] && STEPS=320000000 ;;
+  7110)
+    # 7110 (NSE-5) DSP is ROM-4 (tools/dsp/rom_fingerprint.py — F073 range 0x0926-0xF870,
+    # docs/dct3-dsp-rom-revisions.md), same family as the 5110, so the real C54x co-sim runs
+    # it (proven 2026-06-17). Default cosim ON like the 5110: DSP54_COSIM is a presence-check,
+    # so DSP54_COSIM=0 turns it off (dropped entirely via the global arg scan below).
+    _ucos=""; for a in "$@"; do case "$a" in DSP54_COSIM=*) _ucos="${a#DSP54_COSIM=}";; esac; done
+    [ -z "$_ucos" ] && KNOBS="DSP54_COSIM=1 $KNOBS" ;;
+esac
+
+# ── base config: reset-recovery + early intercept ON by default ──────────
+# The launcher's baseline is RESET_EARLY + RESET_RECOVER (catch a firmware
+# self-reset at reboot-entry AND recover in place). Turn off with --no-recover
+# (or RECOVER=0 env); drop just the eager intercept with --no-early.
+RECOVER="${RECOVER:-1}"; EARLY="${EARLY:-1}"
+# Scan ALL remaining args (order-independent): pull out the recovery flags and an
+# optional numeric step-count override; everything else is binary passthrough.
+PASS=(); ENVK=()
+for a in "$@"; do
+  case "$a" in
+    --no-recover|--norecover) RECOVER=0 ;;
+    --recover)                RECOVER=1 ;;
+    --no-early)               EARLY=0   ;;
+    DSP54_COSIM=0)            : ;;   # presence-check knob: drop entirely so cosim is truly OFF
+    *)
+      if   [[ "$a" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then ENVK+=("$a")    # VAR=VAL → debug knob (env)
+      elif [[ "$a" =~ ^[0-9]+$ ]];                 then STEPS="$a"      # numeric → step override
+      else PASS+=("$a"); fi ;;
+  esac
+done
+set -- ${PASS[@]+"${PASS[@]}"}
+
+BASE_KNOBS=""; RECOVER_NOTE="OFF (honest halt: post-mortem on a self-reset)"
+if [ "$RECOVER" = 1 ]; then
+  BASE_KNOBS="RESET_RECOVER=1"; RECOVER_NOTE="ON (RESET_RECOVER"
+  if [ "$EARLY" = 1 ]; then BASE_KNOBS="RESET_EARLY=1 $BASE_KNOBS"; RECOVER_NOTE="ON (RESET_EARLY+RESET_RECOVER"; fi
+  RECOVER_NOTE="$RECOVER_NOTE) — disable with --no-recover"
+fi
+
+# ── preflight: firmware + binary present ─────────────────────────────────
+if [ ! -f "$FW" ]; then
+  echo "run: firmware image missing: $FW" >&2
+  case "$MODEL" in
+    3410) echo "     rebuild: tools/fls_assemble.py -o \"$FW\" <MCU> <PPM> <eeprom>  (see docs/3410-bringup-HANDOFF.md)" >&2 ;;
+    *)    case "$FW" in
+            firmware/Nokia*) echo "     rebuild the library:  tools/build_fls_library.py --model $MODEL --go" >&2 ;;
+          esac ;;
+  esac
+  exit 1
+fi
+if [ ! -x "$BIN" ]; then
+  echo "run: binary missing: $BIN" >&2
+  echo "     build:  make $([ "$BIN" = build/dct3_boot_trace_gui ] && echo gui || echo trace)" >&2
+  exit 1
+fi
+# Staleness check — a stale binary silently lies (2026-06-12: a dct3_boot_trace_gui
+# built 73 min before the PCMCAP per-write tap "proved" a tone-capture gap that did
+# not exist). Warn when any emulator source is newer than the chosen binary.
+STALE_NOTE=""
+if find src third_party tools \( -name '*.c' -o -name '*.h' \) -newer "$BIN" -print -quit 2>/dev/null | grep -q .; then
+  STALE_NOTE="⚠ STALE — sources newer than binary; rebuild: make $BIN"
+fi
+
+# ── footgun: GUI needs a real display ────────────────────────────────────
+# The live GUI loop is wall-clock-paced (not instruction-paced), so headless
+# under SDL_VIDEODRIVER=dummy it launches but never practically finishes. Fail
+# fast with the headless alternatives instead of silently grinding forever.
+VIDEO_NOTE=""
+if [ "$BIN" = build/dct3_boot_trace_gui ] && [ -z "${DISPLAY:-}" ]; then
+  if [ -z "${SDL_VIDEODRIVER:-}" ]; then
+    echo "run: scenario '$SCEN' needs a real display (\$DISPLAY is unset)." >&2
+    echo "     headless? use a non-GUI scenario:  ./run $MODEL boot   |   ./run $MODEL reset-recover" >&2
+    echo "     really want it? force (wall-clock paced, slow):  SDL_VIDEODRIVER=dummy ./run $MODEL $SCEN" >&2
+    exit 1
+  fi
+  VIDEO_NOTE="$SDL_VIDEODRIVER (forced; wall-clock paced — slow headless)"
+fi
+
+# ── resolved-config banner (so a typo is visible, not mistaken for a fault) ─
+echo    "┌─ dct3 run ───────────────────────────────────────────"
+printf  "│  model     %s\n" "$MODEL"
+case " $PROFILED " in
+  *" $MODEL "*) ;;
+  *) printf "│  note      no ModelProfile yet — emulator auto-detects/falls back (experimental)\n" ;;
+esac
+printf  "│  scenario  %s — %s\n" "$SCEN" "$DESC"
+printf  "│  firmware  %s\n" "$FW"
+printf  "│  binary    %s%s\n" "$BIN" "${STALE_NOTE:+  $STALE_NOTE}"
+printf  "│  steps     %s\n" "$STEPS"
+[ -n "${EE_NOTE:-}" ] && printf "│  eeprom    %s\n" "$EE_NOTE"
+printf  "│  recovery  %s\n" "$RECOVER_NOTE"
+printf  "│  knobs     %s\n" "${KNOBS:-(none)}"
+[ ${#ENVK[@]} -gt 0 ] && printf "│  user      %s\n" "${ENVK[*]}"
+[ -n "$VIDEO_NOTE" ] && printf "│  video     %s\n" "$VIDEO_NOTE"
+[ $# -gt 0 ] && printf "│  extra     %s\n" "$*"
+echo    "└──────────────────────────────────────────────────────"
+
+# env-assignment order = precedence (last wins): base recovery, then scenario
+# knobs, then user VAR=VAL knobs override both. BASE_KNOBS/KNOBS word-split on
+# purpose; ENVK passed as discrete array words.
+# shellcheck disable=SC2086
+exec env $BASE_KNOBS $KNOBS ${ENVK[@]+"${ENVK[@]}"} "$BIN" "$FW" "$STEPS" "$@"

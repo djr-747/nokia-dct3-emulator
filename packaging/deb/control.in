@@ -1,0 +1,18 @@
+Package: dct3-emu
+Version: @VERSION@
+Section: otherosfs
+Priority: optional
+Architecture: @ARCH@
+Depends: libsdl2-2.0-0, libc6
+Maintainer: @MAINTAINER@
+Installed-Size: @ISIZE@
+Description: Nokia 3310 (DCT3) firmware emulator — beta GUI
+ A native SDL2 emulator of the Nokia 3310 (NHM-5, MAD2). It boots a real DCT3
+ firmware image to a live LCD with keypad input, earpiece audio, on-screen power
+ button, and a screenshot key.
+ .
+ This is a slimmed BETA build: 3310 only, with the DSP co-simulation and all
+ developer/debug/tracing knobs compiled out.
+ .
+ Firmware is NOT included (it is copyrighted Nokia code). Supply your own 3310
+ .fls dump — see /usr/share/doc/dct3-emu/README.md.
