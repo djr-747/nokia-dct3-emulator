@@ -246,6 +246,11 @@
         buzzerChirp:    optWrap("dct3_web_buzzer_chirp", "number"),
         toneHz:         optWrap("dct3_web_tone_hz", "number"),
         toneHz2:        optWrap("dct3_web_tone_hz2", "number"),
+        // Unified PCM earpiece stream (buzzer + DSP HLE tone/DTMF from emu_audio.c —
+        // the same stream the native SDL GUI plays).
+        pcmRead:        optWrap("dct3_web_pcm_read", "number", ["number"]),
+        pcmPtr:         optWrap("dct3_web_pcm_ptr", "number"),
+        pcmRate:        optWrap("dct3_web_pcm_rate", "number"),
         toneAmp:        optWrap("dct3_web_tone_amp", "number"),
         poweredOff:     optWrap("dct3_web_powered_off", "number"),
         // For the boot fast-forward branch — legacy busy-loops dct3_web_run
@@ -516,6 +521,7 @@
     function frame(now) {
       if (loopStopped) return;
       try {
+        pumpPCM();                          // drain the unified PCM ring (no-op if audio off)
         // CCONT clean-shutdown detection. The firmware ran its full
         // power-off sequence (animation, NVRAM flush, WDT=0 to CCONT)
         // and mad2 latched power_off. Park the CPU; tap power to reboot.
@@ -993,21 +999,35 @@
     // captures sub-frame buzzer pulses our 16 ms poll would miss.
     // -------------------------------------------------------------
     var chkAudio = document.getElementById("chk-audio");
-    var audioCtx = null;
-    var buzzOsc  = null, buzzGain  = null;
-    var toneOsc1 = null, toneGain1 = null;
-    var toneOsc2 = null, toneGain2 = null;
-    var audioPoll = null;
-    var chirpEndsAt = 0;
-    var BUZZ_CLOCK = 13e6;
-    var BLIP_S = 0.03;                       // duration of a chirp blip
+    var audioCtx = null, audioOn = false, pcmNode = null;
+    // PCM ring pulled from the wasm, resampled by the node to the AudioContext rate.
+    var PCMQ = 1 << 15, PCMQ_MASK = PCMQ - 1, PCM_PRIME = 2048;
+    var pcmq = new Float32Array(PCMQ);
+    var pcmqHead = 0, pcmqTail = 0, pcmFrac = 0, pcmPrimed = false, pcmLast = 0;
+    var pcmRate = 18642;                     // producer Hz (refreshed from C.pcmRate)
 
-    function buzzHz(div) {
-      if (!div) return 0;
-      var f = BUZZ_CLOCK / div;
-      while (f > 20000) f /= 2;
-      while (f > 0 && f < 20) f *= 2;
-      return f;
+    // Drain the wasm PCM ring into the JS queue — called every frame. The producer
+    // streams constantly (silence included), so while audio is off we still drain and
+    // discard, otherwise enabling later would replay ~1 s of stale ring.
+    function pumpPCM() {
+      if (!C.pcmRead) return;
+      if (!audioOn || !audioCtx) {
+        try { while (C.pcmRead(2048) === 2048) { /* discard */ } } catch (_) {}
+        return;
+      }
+      var r = C.pcmRate ? (C.pcmRate() | 0) : 0; if (r > 0) pcmRate = r;
+      var base = (C.pcmPtr() | 0) >> 1;       // int16 index into HEAP16
+      for (;;) {
+        var n = C.pcmRead(2048);
+        if (n <= 0) break;
+        var view = mod.HEAP16.subarray(base, base + n);
+        for (var i = 0; i < n; i++) {
+          if (((pcmqHead + 1) & PCMQ_MASK) === (pcmqTail & PCMQ_MASK)) break;   // full → drop
+          pcmq[pcmqHead & PCMQ_MASK] = view[i] / 32768;
+          pcmqHead++;
+        }
+        if (n < 2048) break;
+      }
     }
 
     function audioStart() {
@@ -1017,105 +1037,46 @@
         if (chkAudio) chkAudio.checked = false;
         return;
       }
-      if (audioCtx) {
-        try { if (audioCtx.resume) audioCtx.resume(); } catch (_) {}
-      } else {
-        try {
-          audioCtx = new Ctor();
-          // Buzzer chain
-          buzzGain = audioCtx.createGain(); buzzGain.gain.value = 0;
-          buzzOsc  = audioCtx.createOscillator();
-          buzzOsc.type = "square"; buzzOsc.frequency.value = 1000;
-          buzzOsc.connect(buzzGain).connect(audioCtx.destination);
-          buzzOsc.start();
-          // DSP tone chains — two sines, summed = DTMF. Single-osc only =
-          // a plain UI beep on key press.
-          toneGain1 = audioCtx.createGain(); toneGain1.gain.value = 0;
-          toneOsc1  = audioCtx.createOscillator();
-          toneOsc1.type = "sine"; toneOsc1.frequency.value = 440;
-          toneOsc1.connect(toneGain1).connect(audioCtx.destination);
-          toneOsc1.start();
-          toneGain2 = audioCtx.createGain(); toneGain2.gain.value = 0;
-          toneOsc2  = audioCtx.createOscillator();
-          toneOsc2.type = "sine"; toneOsc2.frequency.value = 440;
-          toneOsc2.connect(toneGain2).connect(audioCtx.destination);
-          toneOsc2.start();
-        } catch (e) {
-          showError("audio-start", e);
-          if (chkAudio) chkAudio.checked = false;
-          return;
-        }
+      audioOn = true;
+      if (audioCtx) { try { if (audioCtx.resume) audioCtx.resume(); } catch (_) {} return; }
+      try {
+        audioCtx = new Ctor();
+        pcmRate = (C.pcmRate && C.pcmRate()) || 18642;
+        pcmqHead = pcmqTail = 0; pcmFrac = 0; pcmPrimed = false; pcmLast = 0;
+        // One node plays the unified earpiece PCM (buzzer + DSP tone/codec), resampled.
+        pcmNode = audioCtx.createScriptProcessor(1024, 0, 1);
+        pcmNode.onaudioprocess = function (e) {
+          var out = e.outputBuffer.getChannelData(0);
+          var ratio = pcmRate / audioCtx.sampleRate;   // input samples per output sample
+          // Hold silent until a cushion is buffered so per-frame burst production can't
+          // starve the node into clicks — a realtime source just needs a little latency.
+          if (!pcmPrimed) {
+            if (((pcmqHead - pcmqTail) & PCMQ_MASK) >= PCM_PRIME) pcmPrimed = true;
+            else { out.fill(0); return; }
+          }
+          for (var i = 0; i < out.length; i++) {
+            if (((pcmqHead - pcmqTail) & PCMQ_MASK) < 2) {          // underrun → fade + re-prime
+              pcmLast *= 0.985; out[i] = pcmLast;
+              if (Math.abs(pcmLast) < 1e-4) { pcmLast = 0; pcmPrimed = false; }
+              continue;
+            }
+            var a = pcmq[pcmqTail & PCMQ_MASK], b = pcmq[(pcmqTail + 1) & PCMQ_MASK];
+            out[i] = pcmLast = a + (b - a) * pcmFrac;
+            pcmFrac += ratio;
+            while (pcmFrac >= 1 && ((pcmqHead - pcmqTail) & PCMQ_MASK) >= 2) { pcmFrac -= 1; pcmqTail++; }
+          }
+        };
+        pcmNode.connect(audioCtx.destination);
+      } catch (e) {
+        showError("audio-start", e);
+        if (chkAudio) chkAudio.checked = false;
+        audioOn = false;
       }
-
-      if (audioPoll) clearInterval(audioPoll);
-      audioPoll = setInterval(function () {
-        if (!audioCtx) return;
-        try {
-          var t = audioCtx.currentTime;
-          // Phone powered down (CCONT power_off latched): the CPU is parked, so
-          // its buzzer/tone registers freeze at whatever they held — a tone that
-          // was sounding at shutdown would otherwise sustain forever. Force
-          // silence and skip reading the frozen state until power-on clears halted.
-          if (halted) {
-            buzzGain.gain.cancelScheduledValues(t);  buzzGain.gain.setValueAtTime(0, t);
-            toneGain1.gain.cancelScheduledValues(t); toneGain1.gain.setValueAtTime(0, t);
-            toneGain2.gain.cancelScheduledValues(t); toneGain2.gain.setValueAtTime(0, t);
-            chirpEndsAt = 0;
-            return;
-          }
-          // Buzzer
-          var on    = C.buzzerOn   ? (C.buzzerOn()   | 0) : 0;
-          var div   = C.buzzerDiv  ? (C.buzzerDiv()  | 0) : 0;
-          var chirp = C.buzzerChirp ? (C.buzzerChirp() | 0) : 0;
-          var edges    = chirp & 0xff;
-          var chirpDiv = (chirp >>> 8) & 0xffff;
-          if (on && div > 0) {                          // sustained tone
-            buzzOsc.frequency.setTargetAtTime(buzzHz(div), t, 0.004);
-            buzzGain.gain.setTargetAtTime(0.06, t, 0.004);
-            chirpEndsAt = 0;
-          } else if (edges > 0 && chirpDiv > 0) {       // sub-frame blip
-            var hz = buzzHz(chirpDiv);
-            buzzOsc.frequency.setValueAtTime(hz, t);
-            buzzGain.gain.cancelScheduledValues(t);
-            buzzGain.gain.setValueAtTime(0.06, t);
-            buzzGain.gain.setValueAtTime(0, t + BLIP_S);
-            chirpEndsAt = t + BLIP_S;
-          } else if (t >= chirpEndsAt) {
-            buzzGain.gain.setTargetAtTime(0, t, 0.008);
-          }
-          // DSP tone (UI beeps + DTMF)
-          var h1 = C.toneHz  ? (C.toneHz()  | 0) : 0;
-          var h2 = C.toneHz2 ? (C.toneHz2() | 0) : 0;
-          if (h1 > 0) {
-            toneOsc1.frequency.setTargetAtTime(h1, t, 0.004);
-            toneGain1.gain.setTargetAtTime(0.05, t, 0.004);
-          } else {
-            toneGain1.gain.setTargetAtTime(0, t, 0.008);
-          }
-          if (h2 > 0) {
-            toneOsc2.frequency.setTargetAtTime(h2, t, 0.004);
-            toneGain2.gain.setTargetAtTime(0.05, t, 0.004);
-          } else {
-            toneGain2.gain.setTargetAtTime(0, t, 0.008);
-          }
-        } catch (e) {
-          // Single-shot reporting — don't spam 60×/sec.
-          if (audioPoll) { clearInterval(audioPoll); audioPoll = null; }
-          showError("audio-poll", e);
-        }
-      }, 16);
     }
     function audioStop() {
-      if (audioPoll) { clearInterval(audioPoll); audioPoll = null; }
-      // Mute by zeroing the gains; keep the oscillators running so a
-      // re-enable doesn't have to recreate the graph (and re-prompt
-      // the autoplay gesture check).
-      try {
-        if (buzzGain)  buzzGain.gain.value  = 0;
-        if (toneGain1) toneGain1.gain.value = 0;
-        if (toneGain2) toneGain2.gain.value = 0;
-        if (audioCtx && audioCtx.suspend) audioCtx.suspend();
-      } catch (_) {}
+      audioOn = false;
+      pcmqHead = pcmqTail = 0; pcmPrimed = false; pcmLast = 0;   // flush; re-enable starts clean
+      try { if (audioCtx && audioCtx.suspend) audioCtx.suspend(); } catch (_) {}
     }
     if (chkAudio) chkAudio.addEventListener("change", function () {
       if (chkAudio.checked) audioStart(); else audioStop();
