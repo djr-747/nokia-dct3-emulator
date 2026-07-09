@@ -188,12 +188,16 @@ body.lcd-off .lcd { filter: brightness(.78) saturate(.7); }
    canvas is reseated onto .shell-lcd. When a shell is active the .chassis
    grid is hidden (the photo IS the body). */
 .shell-host { display: none; }
-body.shell-mode .shell-host { display: block; }
+body.shell-mode .shell-host { display: block; overflow: hidden; }
 body.shell-mode .chassis { display: none; }     /* the photo replaces the slab + grid */
 body.shell-mode.lcd-off .lcd { filter: none; }   /* shell drives backlight via the panel bg */
 .shell-root {
   position: relative;
-  transform-origin: top center;
+  /* Scale from the top-LEFT, not top-center: when the phone is scaled down (s<1) its
+     un-scaled box is wider than the host, so `margin: 0 auto` resolves to left-aligned
+     (not centered) — a top-center origin then flings the scaled photo off to one side.
+     Top-left keeps the visual inside its (centered) host box. */
+  transform-origin: top left;
   -webkit-user-select: none; user-select: none; touch-action: none;
   margin: 0 auto;
 }
