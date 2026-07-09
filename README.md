@@ -49,7 +49,8 @@ version are read from the flash header — nothing is hardcoded per image.
 | **8290 / 8890** | NSB v5.22 / v12.16 | 🟡 partial | reach Contact Service; DSP-upload handshake RE pending |
 | **3330 / 3350** | NHM v4.50 / v5.22 | 🔴 scaffold | Contact Service; verdict/dsp-upload RE outstanding |
 | **5510 / 7110** | NPM / NSE | 🔴 scaffold | early power-off / wild-PC; map + DSP scratch unresolved |
-| **5110 / 8810** | NSE-1 / NSE-6 | ⚫ MAD1 spike | external-EEPROM MAD1 layout; separate bring-up track |
+| **5110** | NSE-1 v5.30 | 🟡 partial | **MAD1 / external-EEPROM**, native only (the web build doesn't link the C54x core). Boots to the MMI: the **C54x DSP co-sim** passes Contact Service to the "Security code" (FAID) screen faithfully; the **HLE DSP** reaches PIN/standby. See `docs/5110-DSP-CANONICAL-STATE.md`. |
+| **8810** | NSE-6 v6.02 | 🔴 scaffold | same MAD1 external-EEPROM layout as the 5110; not yet brought up |
 
 Seven models boot to standby today. Per-model detail lives in [`docs/MODELS.md`](docs/MODELS.md).
 

@@ -22,8 +22,8 @@ Single source of truth for which DCT3 models boot and how far. Registry lives in
 | **3350** | NHM-9 v5.22 | `Nokia 3350 NHM-9 v5.22 A.fls` | 🔴 scaffold | CONTACT SERVICE. EEPROM BLANK; eeprom_reset entry added (RESET_FN 0x2566A8) but the init under-populates (~496 B vs ~35 KB) AND verdict/dsp_uploaded need RE (NHM-9 / 3410-class). |
 | **5510** | NPM-5 v3.50 | `Nokia 5510 NPM-5 v3.50 A.fls` | 🔴 scaffold | clean POWER-OFF early; map/scratch unresolved |
 | **7110** | NSE-5 v5.01 | `Nokia 7110 NSE-5 v5.01 A.fls` | 🔴 scaffold | WILD-PC (crash); 4 MB map/scratch unresolved |
-| **5110** | NSE-1 v5.30 | `Nokia 5110 NSE-1 v5.30 A.fls` | ⚫ V1 spike | **MAD1 / external EEPROM** (1 MB, no in-flash partition). Autodetects + runs the shared DCT3 core; stalls at the MAD1 serial-bus poll (I/O 0x28-0x2D, `[0x29].bit2` ready) — pre-CCONT. New-subsystem milestone; see docs/v1-dct3-5110-spike.md. |
-| **8810** | NSE-6 v6.02 | `Nokia 8810 NSE-6 v6.02 A.fls` | ⚫ V1-family | NSE-6 — same V1-layout as the 5110 (header at 0x170004 = block+4, not 0x1FC). Almost certainly MAD1 external-EEPROM/serial-bus; bring up alongside the V1 milestone. See docs/v1-dct3-5110-spike.md. |
+| **5110** | NSE-1 v5.30 | `Nokia 5110 NSE-1 v5.30 A.fls` | 🟡 partial | **MAD1 / external EEPROM** (1 MB, no in-flash partition), **native only** — the web build doesn't link the C54x core. Boots into the MMI: with the **C54x DSP co-sim** (`DSP54_COSIM=1`) it passes Contact Service to the faithful "Security code" (FAID) screen; with the **HLE DSP** it reaches PIN/standby. reason-0x68 idle-reset and the DSP self-test (cmd-0x70 / COBBA loopback) are resolved. SSOT: `docs/5110-DSP-CANONICAL-STATE.md`. |
+| **8810** | NSE-6 v6.02 | `Nokia 8810 NSE-6 v6.02 A.fls` | ⚫ MAD1-family | NSE-6 — same MAD1 layout as the 5110 (header at 0x170004 = block+4, not 0x1FC). MAD1 external-EEPROM/serial-bus; not yet brought up. |
 
 **Booting to standby: 7 of 13 registered** (3310, 3410, 5210, 8210, 8250, 8850, 8855).
 
