@@ -10,26 +10,42 @@ you supply is picked up automatically.
 
 | Model | Code / ver | Status | Notes |
 |---|---|---|---|
-| **3310** | NHM-5 v5.79 | ✅ standby | reference baseline; kept byte-identical by `make guard` |
-| **3410** | NHM-2 v5.46 | ✅ standby | minor set-time clock-tick gap tracked separately, not a boot blocker |
 | **2100** | NAM-2 v5.84 | ✅ standby | 5210-personality profile |
-| **5210** | NSM-5 v5.40 | ✅ standby | |
-| **8210** | NSM-3 v5.31 | ✅ standby | |
-| **8250** | NSM-3D v6.02 | ✅ standby | |
-| **8850** | NSM-2 v5.31 | ✅ standby | NSM Family-A reference |
-| **8855** | NSM-4 v5.13 | ✅ standby | |
+| **3210** | NSE-8 v6.00 | 🟡 partial | powers on to Contact Service (CS = MMI-block launch) |
+| **3310** | NHM-5 v5.79 | ✅ standby | reference baseline; kept byte-identical by `make guard` |
+| **3330** | NHM-6 v4.50 | 🟡 partial | Contact Service; DSP upload works, MMI verdict RE outstanding |
+| **3350** | NHM-9 v5.22 | 🟡 partial | Contact Service; profile/RE incomplete |
+| **3410** | NHM-2 v5.46 | ✅ standby | minor set-time clock-tick gap tracked separately, not a boot blocker |
 | **5110** | NSE-1 v5.30 | 🟡 partial | external-EEPROM layout (no in-flash partition). Boots into the MMI: the **HLE DSP** (web build) reaches PIN/standby; the **C54x DSP co-sim** (`DSP54_COSIM=1`, native GUI) passes Contact Service to the faithful "Security code" (FAID) screen. |
+| **5210** | NSM-5 v5.40 | ✅ standby | |
+| **5510** | NPM-5 v3.50 | 🔴 scaffold | clean power-off early; map/scratch unresolved |
 | **6110** | NSE-3 v5.48 | 🟡 partial | boots to the "Security code" (FAID) screen |
 | **6210** | NPE-3 v5.56 | 🟡 partial | boots to Contact Service (DSP-gated); 4 MB map |
 | **7110** | NSE-5 v5.01 | 🟡 partial | renders (SED1565 controller); Contact Service |
-| **3210** | NSE-8 v6.00 | 🟡 partial | powers on to Contact Service (CS = MMI-block launch) |
+| **8210** | NSM-3 v5.31 | ✅ standby | |
+| **8250** | NSM-3D v6.02 | ✅ standby | |
 | **8290** | NSB-7 v5.22 | 🟡 partial | Contact Service; US-band DSP-upload boot handshake RE pending |
+| **8850** | NSM-2 v5.31 | ✅ standby | NSM Family-A reference |
+| **8855** | NSM-4 v5.13 | ✅ standby | |
 | **8890** | NSB-6 v12.16 | 🟡 partial | Contact Service; same as 8290 (US-band 8850) |
-| **3330** | NHM-6 v4.50 | 🟡 partial | Contact Service; DSP upload works, MMI verdict RE outstanding |
-| **3350** | NHM-9 v5.22 | 🟡 partial | Contact Service; profile/RE incomplete |
-| **5510** | NPM-5 v3.50 | 🔴 scaffold | clean power-off early; map/scratch unresolved |
 
 **Booting to standby: 8 of 18 registered** (2100, 3310, 3410, 5210, 8210, 8250, 8850, 8855).
+
+## Not yet profiled
+
+These DCT3 models have firmware in the wild but no `src/models/<model>/profile.c` yet, so the
+emulator can't boot them until a profile is written. Most are close relatives of models above, so
+several should be quick bring-ups:
+
+| Model | Variant | Closest profiled relative |
+|---|---|---|
+| **5130** | NSK-1 | 5110-class |
+| **5190** | NSB-1 | US-band (like 8290 / 8890) |
+| **6130** | NSK-3 | 6110-class |
+| **6150** | NSM-1 | rugged 6110-type |
+| **6190** | NSB-3 | US-band |
+| **6250** | NHM-3 | rugged 6210-type |
+| **8810** | NSE-6 | external-EEPROM (5110-class) |
 
 ## How to check a model yourself
 
