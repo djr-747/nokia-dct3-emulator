@@ -48,31 +48,31 @@ LICENSE
 
 RECENT REVISION HISTORY:
 
-      2.30  (2024-05-31) avoid erroneous gcc warning
+      2.30  avoid erroneous gcc warning
       2.29  (2023-05-xx) optimizations
-      2.28  (2023-01-29) many error fixes, security errors, just tons of stuff
-      2.27  (2021-07-11) document stbi_info better, 16-bit PNM support, bug fixes
-      2.26  (2020-07-13) many minor fixes
-      2.25  (2020-02-02) fix warnings
-      2.24  (2020-02-02) fix warnings; thread-local failure_reason and flip_vertically
-      2.23  (2019-08-11) fix clang static analysis warning
-      2.22  (2019-03-04) gif fixes, fix warnings
-      2.21  (2019-02-25) fix typo in comment
-      2.20  (2019-02-07) support utf8 filenames in Windows; fix warnings and platform ifdefs
-      2.19  (2018-02-11) fix warning
-      2.18  (2018-01-30) fix warnings
-      2.17  (2018-01-29) bugfix, 1-bit BMP, 16-bitness query, fix warnings
-      2.16  (2017-07-23) all functions have 16-bit variants; optimizations; bugfixes
-      2.15  (2017-03-18) fix png-1,2,4; all Imagenet JPGs; no runtime SSE detection on GCC
-      2.14  (2017-03-03) remove deprecated STBI_JPEG_OLD; fixes for Imagenet JPGs
-      2.13  (2016-12-04) experimental 16-bit API, only for PNG so far; fixes
-      2.12  (2016-04-02) fix typo in 2.11 PSD fix that caused crashes
-      2.11  (2016-04-02) 16-bit PNGS; enable SSE2 in non-gcc x64
+      2.28  many error fixes, security errors, just tons of stuff
+      2.27  document stbi_info better, 16-bit PNM support, bug fixes
+      2.26  many minor fixes
+      2.25  fix warnings
+      2.24  fix warnings; thread-local failure_reason and flip_vertically
+      2.23  fix clang static analysis warning
+      2.22  gif fixes, fix warnings
+      2.21  fix typo in comment
+      2.20  support utf8 filenames in Windows; fix warnings and platform ifdefs
+      2.19  fix warning
+      2.18  fix warnings
+      2.17  bugfix, 1-bit BMP, 16-bitness query, fix warnings
+      2.16  all functions have 16-bit variants; optimizations; bugfixes
+      2.15  fix png-1,2,4; all Imagenet JPGs; no runtime SSE detection on GCC
+      2.14  remove deprecated STBI_JPEG_OLD; fixes for Imagenet JPGs
+      2.13  experimental 16-bit API, only for PNG so far; fixes
+      2.12  fix typo in 2.11 PSD fix that caused crashes
+      2.11  16-bit PNGS; enable SSE2 in non-gcc x64
                          RGB-format JPEG; remove white matting in PSD;
                          allocate large structures on the stack;
                          correct channel count for PNG & BMP
-      2.10  (2016-01-22) avoid warning introduced in 2.09
-      2.09  (2016-01-16) 16-bit TGA; comments in PNM files; STBI_REALLOC_SIZED
+      2.10  avoid warning introduced in 2.09
+      2.09  16-bit TGA; comments in PNM files; STBI_REALLOC_SIZED
 
    See end of file for full revision history.
 
@@ -7763,94 +7763,94 @@ STBIDEF int stbi_is_16_bit_from_callbacks(stbi_io_callbacks const *c, void *user
 
 /*
    revision history:
-      2.20  (2019-02-07) support utf8 filenames in Windows; fix warnings and platform ifdefs
-      2.19  (2018-02-11) fix warning
-      2.18  (2018-01-30) fix warnings
-      2.17  (2018-01-29) change sbti__shiftsigned to avoid clang -O2 bug
+      2.20  support utf8 filenames in Windows; fix warnings and platform ifdefs
+      2.19  fix warning
+      2.18  fix warnings
+      2.17  change sbti__shiftsigned to avoid clang -O2 bug
                          1-bit BMP
                          *_is_16_bit api
                          avoid warnings
-      2.16  (2017-07-23) all functions have 16-bit variants;
+      2.16  all functions have 16-bit variants;
                          STBI_NO_STDIO works again;
                          compilation fixes;
                          fix rounding in unpremultiply;
                          optimize vertical flip;
                          disable raw_len validation;
                          documentation fixes
-      2.15  (2017-03-18) fix png-1,2,4 bug; now all Imagenet JPGs decode;
+      2.15  fix png-1,2,4 bug; now all Imagenet JPGs decode;
                          warning fixes; disable run-time SSE detection on gcc;
                          uniform handling of optional "return" values;
                          thread-safe initialization of zlib tables
-      2.14  (2017-03-03) remove deprecated STBI_JPEG_OLD; fixes for Imagenet JPGs
-      2.13  (2016-11-29) add 16-bit API, only supported for PNG right now
-      2.12  (2016-04-02) fix typo in 2.11 PSD fix that caused crashes
-      2.11  (2016-04-02) allocate large structures on the stack
+      2.14  remove deprecated STBI_JPEG_OLD; fixes for Imagenet JPGs
+      2.13  add 16-bit API, only supported for PNG right now
+      2.12  fix typo in 2.11 PSD fix that caused crashes
+      2.11  allocate large structures on the stack
                          remove white matting for transparent PSD
                          fix reported channel count for PNG & BMP
                          re-enable SSE2 in non-gcc 64-bit
                          support RGB-formatted JPEG
                          read 16-bit PNGs (only as 8-bit)
-      2.10  (2016-01-22) avoid warning introduced in 2.09 by STBI_REALLOC_SIZED
-      2.09  (2016-01-16) allow comments in PNM files
+      2.10  avoid warning introduced in 2.09 by STBI_REALLOC_SIZED
+      2.09  allow comments in PNM files
                          16-bit-per-pixel TGA (not bit-per-component)
                          info() for TGA could break due to .hdr handling
                          info() for BMP to shares code instead of sloppy parse
                          can use STBI_REALLOC_SIZED if allocator doesn't support realloc
                          code cleanup
-      2.08  (2015-09-13) fix to 2.07 cleanup, reading RGB PSD as RGBA
-      2.07  (2015-09-13) fix compiler warnings
+      2.08  fix to 2.07 cleanup, reading RGB PSD as RGBA
+      2.07  fix compiler warnings
                          partial animated GIF support
                          limited 16-bpc PSD support
                          #ifdef unused functions
                          bug with < 92 byte PIC,PNM,HDR,TGA
-      2.06  (2015-04-19) fix bug where PSD returns wrong '*comp' value
-      2.05  (2015-04-19) fix bug in progressive JPEG handling, fix warning
-      2.04  (2015-04-15) try to re-enable SIMD on MinGW 64-bit
-      2.03  (2015-04-12) extra corruption checking (mmozeiko)
+      2.06  fix bug where PSD returns wrong '*comp' value
+      2.05  fix bug in progressive JPEG handling, fix warning
+      2.04  try to re-enable SIMD on MinGW 64-bit
+      2.03  extra corruption checking (mmozeiko)
                          stbi_set_flip_vertically_on_load (nguillemot)
                          fix NEON support; fix mingw support
-      2.02  (2015-01-19) fix incorrect assert, fix warning
-      2.01  (2015-01-17) fix various warnings; suppress SIMD on gcc 32-bit without -msse2
-      2.00b (2014-12-25) fix STBI_MALLOC in progressive JPEG
-      2.00  (2014-12-25) optimize JPG, including x86 SSE2 & NEON SIMD (ryg)
+      2.02  fix incorrect assert, fix warning
+      2.01  fix various warnings; suppress SIMD on gcc 32-bit without -msse2
+      2.00b fix STBI_MALLOC in progressive JPEG
+      2.00  optimize JPG, including x86 SSE2 & NEON SIMD (ryg)
                          progressive JPEG (stb)
                          PGM/PPM support (Ken Miller)
                          STBI_MALLOC,STBI_REALLOC,STBI_FREE
                          GIF bugfix -- seemingly never worked
                          STBI_NO_*, STBI_ONLY_*
-      1.48  (2014-12-14) fix incorrectly-named assert()
-      1.47  (2014-12-14) 1/2/4-bit PNG support, both direct and paletted (Omar Cornut & stb)
+      1.48  fix incorrectly-named assert
+      1.47  1/2/4-bit PNG support, both direct and paletted (Omar Cornut & stb)
                          optimize PNG (ryg)
                          fix bug in interlaced PNG with user-specified channel count (stb)
-      1.46  (2014-08-26)
+      1.46 
               fix broken tRNS chunk (colorkey-style transparency) in non-paletted PNG
-      1.45  (2014-08-16)
+      1.45 
               fix MSVC-ARM internal compiler error by wrapping malloc
-      1.44  (2014-08-07)
+      1.44 
               various warning fixes from Ronny Chevalier
-      1.43  (2014-07-15)
+      1.43 
               fix MSVC-only compiler problem in code changed in 1.42
-      1.42  (2014-07-09)
+      1.42 
               don't define _CRT_SECURE_NO_WARNINGS (affects user code)
               fixes to stbi__cleanup_jpeg path
               added STBI_ASSERT to avoid requiring assert.h
-      1.41  (2014-06-25)
+      1.41 
               fix search&replace from 1.36 that messed up comments/error messages
-      1.40  (2014-06-22)
+      1.40 
               fix gcc struct-initialization warning
-      1.39  (2014-06-15)
+      1.39 
               fix to TGA optimization when req_comp != number of components in TGA;
               fix to GIF loading because BMP wasn't rewinding (whoops, no GIFs in my test suite)
               add support for BMP version 5 (more ignored fields)
-      1.38  (2014-06-06)
+      1.38 
               suppress MSVC warnings on integer casts truncating values
               fix accidental rename of 'skip' field of I/O
-      1.37  (2014-06-04)
+      1.37 
               remove duplicate typedef
-      1.36  (2014-06-03)
+      1.36 
               convert to header file single-file library
               if de-iphone isn't set, load iphone images color-swapped instead of returning NULL
-      1.35  (2014-05-27)
+      1.35 
               various warnings
               fix broken STBI_SIMD path
               fix bug where stbi_load_from_file no longer left file pointer in correct place
@@ -7858,35 +7858,35 @@ STBIDEF int stbi_is_16_bit_from_callbacks(stbi_io_callbacks const *c, void *user
               TGA optimization by Arseny Kapoulkine
       1.34  (unknown)
               use STBI_NOTUSED in stbi__resample_row_generic(), fix one more leak in tga failure case
-      1.33  (2011-07-14)
+      1.33 
               make stbi_is_hdr work in STBI_NO_HDR (as specified), minor compiler-friendly improvements
-      1.32  (2011-07-13)
+      1.32 
               support for "info" function for all supported filetypes (SpartanJ)
-      1.31  (2011-06-20)
+      1.31 
               a few more leak fixes, bug in PNG handling (SpartanJ)
-      1.30  (2011-06-11)
+      1.30 
               added ability to load files via callbacks to accomidate custom input streams (Ben Wenger)
               removed deprecated format-specific test/load functions
               removed support for installable file formats (stbi_loader) -- would have been broken for IO callbacks anyway
               error cases in bmp and tga give messages and don't leak (Raymond Barbiero, grisha)
               fix inefficiency in decoding 32-bit BMP (David Woo)
-      1.29  (2010-08-16)
+      1.29 
               various warning fixes from Aurelien Pocheville
-      1.28  (2010-08-01)
+      1.28 
               fix bug in GIF palette transparency (SpartanJ)
-      1.27  (2010-08-01)
+      1.27 
               cast-to-stbi_uc to fix warnings
-      1.26  (2010-07-24)
+      1.26 
               fix bug in file buffering for PNG reported by SpartanJ
-      1.25  (2010-07-17)
+      1.25 
               refix trans_data warning (Won Chun)
-      1.24  (2010-07-12)
+      1.24 
               perf improvements reading from files on platforms with lock-heavy fgetc()
               minor perf improvements for jpeg
               deprecated type-specific functions so we'll get feedback if they're needed
               attempt to fix trans_data warning (Won Chun)
       1.23    fixed bug in iPhone support
-      1.22  (2010-07-10)
+      1.22 
               removed image *writing* support
               stbi_info support from Jetro Lauha
               GIF support from Jean-Marc Lienher
@@ -7895,7 +7895,7 @@ STBIDEF int stbi_is_16_bit_from_callbacks(stbi_io_callbacks const *c, void *user
       1.21    fix use of 'stbi_uc' in header (reported by jon blow)
       1.20    added support for Softimage PIC, by Tom Seddon
       1.19    bug in interlaced PNG corruption check (found by ryg)
-      1.18  (2008-08-02)
+      1.18 
               fix a threading bug (local mutable static)
       1.17    support interlaced PNG
       1.16    major bugfix - stbi__convert_format converted one too many pixels
@@ -7940,7 +7940,7 @@ STBIDEF int stbi_is_16_bit_from_callbacks(stbi_io_callbacks const *c, void *user
       0.52    png handles req_comp=3,4 directly; minor cleanup; jpeg comments
       0.51    obey req_comp requests, 1-component jpegs return as 1-component,
               on 'test' only check type, not whether we support this variant
-      0.50  (2006-11-19)
+      0.50 
               first released version
 */
 

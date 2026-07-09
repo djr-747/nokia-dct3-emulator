@@ -50,7 +50,7 @@ static void dbgcon_write(Mad2* m, uint32_t pc, uint32_t addr, int size, uint32_t
 
 uint32_t mad2_read(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t ram_value) {
     Mad2* m = (Mad2*)ctx;
-    m->cur_io_pc = pc;   // TEMP(CCLOG): attribute CCONT reg-0x0E reads to the ISR
+    m->cur_io_pc = pc;   // attribute CCONT reg-0x0E reads to the ISR
     if (addr >= m->model->mem.flash_base &&
         addr < m->model->mem.flash_base + m->model->mem.flash_size)
         return flash_read(m, addr, size, ram_value);
@@ -172,7 +172,7 @@ uint32_t mad2_read(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t ram
             case IO_CTSI_WDT: return m->wdt_reg;          // watchdog CTSI shadow readback
             case IO_PUP_FIQ8: return m->fiq8_ctrl;        // Timer1/FIQ8 enable readback
             default:
-                // TEMP(MMIOAUDIT): log fall-through MMIO reads (no explicit handler).
+                // log fall-through MMIO reads (no explicit handler).
                 // Per-offset counter; dump via mad2_mmio_audit_dump from boot_trace.
                 if (getenv("MMIOAUDIT")) {
                     uint8_t o = (uint8_t)(addr - MMIO_BASE);
@@ -546,7 +546,7 @@ void mad2_write(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t value)
             mad2_ack_irq(m, 4);
             break;
         default:
-            // TEMP(MMIOAUDIT): log fall-through MMIO writes (no explicit handler).
+            // log fall-through MMIO writes (no explicit handler).
             if (getenv("MMIOAUDIT")) {
                 uint8_t o = (uint8_t)(addr - MMIO_BASE);
                 m->mmio_audit_w[o]++;
@@ -559,7 +559,7 @@ void mad2_write(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t value)
     }
 }
 
-// TEMP(MMIOAUDIT): dump per-offset access counts for fall-through MMIO addresses.
+// dump per-offset access counts for fall-through MMIO addresses.
 // Called by boot_trace at the end of a run when MMIOAUDIT=1.
 void mad2_mmio_audit_dump(const Mad2* m) {
     if (!getenv("MMIOAUDIT")) return;

@@ -44,7 +44,7 @@ static const uint8_t ka_replay_id[KA_REPLAY_N] = {
 //
 // AUTHORITATIVE SOURCE (replaces the prior v6.33 capture which was unfaithful here — the
 // DIFFTRACE-PIN found web[0x10104]=0xEDE1 vs real-HW 0xD674): NokiX RAM reads off TWO physical
-// 3310 v6.39 units, 2026-05-31 (Dan). 0x10100 is the HW-pinned shared MCU<->DSP address space,
+// 3310 v6.39 units. 0x10100 is the HW-pinned shared MCU<->DSP address space,
 // version-invariant; the v6.39 reads are authoritative for v5.79. 7 of 8 dword lines are
 // BYTE-IDENTICAL across BOTH units => this is REAL FIXED DETERMINISTIC DSP data (the boot
 // self-test signature / constant block), NOT stale/uninit junk and NOT measurement noise.
@@ -76,7 +76,7 @@ static const uint16_t ka_early[16] = {
 int dsp_default_read(Mad2* m, uint32_t addr, int size, uint32_t ram_value, uint32_t* out) {
     (void)size;
     // MAMEDSP=1 (A/B experiment): replace our faithful mailbox/FIQ0 model with MAME's
-    // nokia_3310.cpp dsp_ram_r HACK — frozen constants on the four slots it special-cases
+    // nokia_3310.cpp dsp_ram_r approach — frozen constants on the four slots it special-cases
     // ("avoid hangs when ARM try to communicate with the DSP"), RAM passthrough otherwise,
     // and NO FIQ0/IRQ4/upload protocol (see the write/tick branches). Lets us see how far
     // OUR firmware boots on MAME's stub. NOT faithful — diagnostic only, default OFF.
@@ -363,8 +363,7 @@ void dsp_default_tick(Mad2* m) {
             //   ALWAYS trips 0x68. (The MDIRCV ring routes only to task-4 — it can NEVER reach the
             //   task-14 SWDSP machine, so injecting a handshake msg is architecturally impossible.)
             //
-            //   IS IT THE INTERRUPT OR THE MESSAGE? The ring ENTRY, not the bare IRQ (Dan's Q,
-            //   2026-06-05). FIQ0 (0x2BAB82) always TASK_SEND_IRQ(4,4), but TASK_4 then calls
+            //   IS IT THE INTERRUPT OR THE MESSAGE? The ring ENTRY, not the bare IRQ. FIQ0 (0x2BAB82) always TASK_SEND_IRQ(4,4), but TASK_4 then calls
             //   BROKER_DECODE 0x2BACF0 which returns 0 on empty queue depth -> TASK_4 0x2EDC46
             //   (cmp r4,#0; beq) loops back WITHOUT bumping. So a bare FIQ0/DSPINT doorbell with an
             //   empty ring does NOT feed the watchdog; a real ring entry must be present. CONTENT
@@ -373,7 +372,7 @@ void dsp_default_tick(Mad2* m) {
             //   WHY PERPETUAL IS NOW SAFE (the old H5 tradeoff is GONE): perpetual used to drive
             //   the 0x116854 MDI-buffer double-free -> wild-PC @2.46B. That was CURED by honoring
             //   the firmware's 0x2000C master interrupt-disable in FIQ delivery
-            //   ([[heap-corruption-is-fiq-intctrl-masking]]). The ring-wrap guard below (END 0xE4
+            // . The ring-wrap guard below (END 0xE4
             //   -> START 0x80) keeps the ring bounded so there is no overrun/leak either.
             //
             //   A/B MEASURED ON HEAD (no-SIM, recovery OFF, faithful baseline, 2026-06-05):

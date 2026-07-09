@@ -1,6 +1,6 @@
 // Nokia 5510 model profile — SCAFFOLD (bring-up in progress).
 //
-// Built "4 MB 3310-based" per Dan: the boot/platform scaffold reuses the 3310 HW base
+// Built "4 MB 3310-based": the boot/platform scaffold reuses the 3310 HW base
 // (84x48 PCD8544 LCD, Family B keypad) with the 5510's own 4 MB memory map. NB the real
 // 5510 hardware is physically unusual for a DCT3 — a landscape "music" phone with a full
 // QWERTY keyboard and a wide display — so the LCD geometry and (especially) the keypad

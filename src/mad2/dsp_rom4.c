@@ -1,7 +1,7 @@
 // ROM-4 DSP behaviour for the MAD2 platform — the 5110 / 6110 generation (NSE-1, early-MAD2
 // "LEAD" = customised TMS320C54x). See docs/research/5110-.
 //
-// WHY A SEPARATE MODULE (Dan's directive, 2026-06-16): Nokia shared one DSP ROM across whole
+// WHY A SEPARATE MODULE: Nokia shared one DSP ROM across whole
 // phone generations. Our HLE responder is therefore organised BY ROM REVISION, not per-model:
 //   * ROM 4  -> 5110 / 6110           (this file, mad2_dsp_rom4)
 //   * ROM 6  -> 33xx/34xx/82xx/8850   (src/mad2/dsp_default.c, mad2_dsp_default — the 3310-tuned

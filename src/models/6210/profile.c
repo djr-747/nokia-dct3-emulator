@@ -1,5 +1,5 @@
 // Nokia 6210 model profile — NPE-3, a 4 MB MAD2 DCT3 (2000). NOT an NSM/Family-A phone: the 6210
-// is its own design that STRADDLES the 5110 and the 3310 (Dan, 2026-06-20). From the 3310 side it
+// is its own design that STRADDLES the 5110 and the 3310. From the 3310 side it
 // is ROM-6 DSP (in-flash generation, mad2_dsp_default — confirmed by DSP-block F073-target finger-
 // print) with an in-flash EEPROM partition (NOT the 5110/6110 external serial EEPROM). From the
 // 5110 side it shares the SAME battery A/D window {0x2C0,0x150,0x140,0x000}. The 96x65 graphic
@@ -34,14 +34,14 @@ const ModelProfile model_6210 = {
         .eeprom_size = 0x00080000u,
     },
     .lcd = {
-        // 96x65 graphic display (same larger screen class as the 3410/7110, per Dan). PCD8544-
+        // 96x65 graphic display (same larger screen class as the 3410/7110). PCD8544-
         // compatible decode (as the 3410) over the MAD2 GENSIO offsets. Verify controller/wiring.
         .controller = LCD_PCD8544,
         .width = 96, .height = 65, .banks = 9,
         .io_data = 0x2E, .io_cmd = 0x6E,
     },
     .keypad = {
-        // Keypad (row,col) decode is firmware-VERIFIED v5.56 (2026-06-20), NOT an NSM-family
+        // Keypad (row,col) decode is firmware-VERIFIED v5.56, NOT an NSM-family
         // assumption: the 6210 KEYMAP_NORM table @0x2869B8 (decode fn 0x4FACFA, raw=row*5+col) is
         // byte-identical in content to the shared MAD2 matrix keymap, so the 6210 reuses that
         // (row,col) table — this is shared MAD2 keypad silicon decode, not a product-family tag.
@@ -85,7 +85,7 @@ const ModelProfile model_6210 = {
         .dsp_release_mask  = 0x04,
     },
     // Power-on reason: ccont_poweron_int stays UNSET (0). The 6210 is 5210-class (keypad-driven
-    // power-on reason), NOT a 3210-style CCONT-PWRONX oddball. VERIFIED v5.56 (2026-06-20): over a
+    // power-on reason), NOT a 3210-style CCONT-PWRONX oddball. VERIFIED v5.56: over a
     // full boot, CCONT reg 0x0E is read exactly once (-> 0x00) at 0x4EC7C4, and only as part of the
     // generic register-snapshot loop (stores into [0x1742EC+reg]); the result [0x1742FA] is never
     // read back, so there is no PWRONX power-off classifier (contrast 3210 0x2AF0AE). Boots cleanly

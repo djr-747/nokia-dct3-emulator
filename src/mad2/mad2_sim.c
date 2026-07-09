@@ -606,7 +606,7 @@ static int simbridge_refresh_atr(void) {
     return -1;
 }
 
-// Faithful card-absent semantics (2026-06-11): with the bridge ACTIVE but the card
+// Faithful card-absent semantics: with the bridge ACTIVE but the card
 // MUTE (no ATR), the firmware must see an EMPTY TRAY ("Insert SIM card") — not the
 // synthetic SIM. The old behavior silently fell back to synth on a mute card, so
 // "no card in the ESP32" booted past the insert-SIM screen (misleading at the

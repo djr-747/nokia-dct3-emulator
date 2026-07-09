@@ -42,7 +42,7 @@ const ModelProfile model_5210 = {
         // See mad2_flash.c flash_erase_blk.
     },
     .lcd = {
-        // 84x48 PCD8544 — same panel as the 3310 (confirmed on-screen, Dan 2026-06-05;
+        // 84x48 PCD8544 — same panel as the 3310 (confirmed on-screen;
         // was a 96x65/102x72 placeholder copied from the 3410). ctrl_* dropped so the
         // controller RAM == the visible 84x48. io_data/io_cmd = 3310 GENSIO offsets.
         .controller = LCD_PCD8544,
@@ -52,7 +52,7 @@ const ModelProfile model_5210 = {
                          // without this) — the one way its LCD differs from other DCT3.
     },
     .keypad = {
-        // NSM Family-A keypad, SHARED with the 8850 (per Dan: 5210/82xx/8855 all match
+        // NSM Family-A keypad, SHARED with the 8850 (5210/82xx/8855 all match
         // the 8850 matrix). The 5210 is a candybar, not a slide -> has_slide stays 0.
         .power_special_cols = 0x02,   // PWR special-scan bit1
         .family  = KP_FAMILY_8210,    // Family A: soft keys, up/down, send/end, volume
@@ -61,7 +61,7 @@ const ModelProfile model_5210 = {
         .scan = KP_SCAN_DIR_AWARE,
         .uif_irq = 1,                 // matrix IRQ-source decode (8850-class)
     },
-    // Period-correct backlight: the orange glow (Dan, 2026-06-12). 0xRRGGBB,
+    // Period-correct backlight: the orange glow. 0xRRGGBB,
     // consumed by the harness tints (web palette / gui_sdl LCD bg).
     .led = { .lcd_rgb = 0xFFA040, .kbd_rgb = 0xFFA040 },
     .battery = {
@@ -71,8 +71,7 @@ const ModelProfile model_5210 = {
         // power-off (WDT=0 at 0x3E42C8 via the teardown at 0x2DDAD4). Empirically the
         // valid windows are BSI in [0x13E,0x172] AND temp in [0x133,0x158) — IDENTICAL
         // to the 8850 (NSM-2, fn 0x2FF716 mode 10). This battery-type window + values are
-        // SHARED across the NSM Li-ion (BLB-2) family: 5210 / 8210 / 8250 / 8850 (Dan,
-        // 2026-06-05) — reuse these for those bring-ups. The 3310 NiMH defaults
+        // SHARED across the NSM Li-ion (BLB-2) family: 5210 / 8210 / 8250 / 8850 — reuse these for those bring-ups. The 3310 NiMH defaults
         // (bsi 0x100, temp 0x200) fall OUTSIDE both -> type 0 -> power-off. These
         // mid-window values give a valid type and let the boot proceed past ~1.8M.
         .vbatt = 0x2C0, .bsi = 0x150, .temp = 0x140, .charger = 0x000,

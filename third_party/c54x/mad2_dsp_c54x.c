@@ -232,7 +232,7 @@ static void cmdlevel_eval(Mad2 *m) {
 // values makes the self-test PASS organically (the real CONTACT SERVICE fix — SELFTEST_MEAS
 // patched the OUTPUT, this models the INPUT). Register-level model: latch addr from 0x2C,
 // return the reg file on 0x2D with bit12=0 (ready, so the bring-up spin at 0x45F8 exits).
-// === COBBA serial protocol (RE'd 2026-06-11, dsp_prom.s54 0x465C/0x4610/0x4604) ===========
+// === COBBA serial protocol (RE'd, dsp_prom.s54 0x465C/0x4610/0x4604) ===========
 // The DSP↔COBBA serial link is a register-addressed transfer over I/O ports 0x2C (select) and
 // 0x2D (data + bit12 busy/ready flag). Decoded from the silicon:
 //
@@ -433,7 +433,7 @@ static uint16_t c54x_port_read(void *opaque, uint16_t pa) {
     return rv;
 }
 // === DSP54_PCMCAP — tap the DSP's COBBA codec output (port 0x21 DAC) ======================
-// ARCHITECTURE (RE'd 2026-06-11 eve): MAD2 audio is NOT a C54x McBSP/serial-MMR path — the
+// ARCHITECTURE (RE'd eve): MAD2 audio is NOT a C54x McBSP/serial-MMR path — the
 // transmit interrupt vectors (0xFFD4/D8/DC) are STUBS (return_fast), so there is no XINT-driven
 // serial transmit. Audio is the COBBA codec over I/O-PORT 0x21 (bidirectional: read = mic ADC,
 // write = earpiece DAC), driven per codec frame by the vec16 ISR (0x3204): read input, process
@@ -600,7 +600,7 @@ static void c54x_port_write(void *opaque, uint16_t pa, uint16_t val) {
     // 0x8Exx host-cmd region never fire because the MCU's task-enable commands are absorbed
     // by the HLE), so the enqueue never runs and port1 never sees val=1 yet. This lands the
     // correct wiring; the unlock is retiring the HLE so the real DSP gets those commands.
-    // NOTE (2026-06-08): the real DSP writes port(1)=0x0100 @PC 0xB7E1 under REALUP, but it is NOT
+    // NOTE: the real DSP writes port(1)=0x0100 @PC 0xB7E1 under REALUP, but it is NOT
     // a validated MDIRCV doorbell — the real DSP never advances the MDIRCV tail at boot (0x101C8
     // stays 0x80 with the HLE off), so wiring FIQ0 to it raises a spurious interrupt on an empty
     // ring. Kept as the legacy port(1)=1 wiring only (DSP54_FIQ0OUT, default OFF). The real DSP->MCU
@@ -714,7 +714,7 @@ static void c54x_lazy_init(Mad2 *m) {
     // COLD reset-RELEASE edge (see 0x20002 handler in c54x_write), NOT here. Seeding at t=0 was
     // unfaithful: the MCU's HPI window-clear during its own boot (28k-397k) wiped it, forcing a
     // reseed. The faithful HPI boot order is: MCU clears the window -> drops the loader -> releases
-    // the DSP. So we seed loader1 exactly at the release edge (2026-06-09; t=0 seed removed).
+    // the DSP. So we seed loader1 exactly at the release edge (t=0 seed removed).
     // (Manual block-upload knobs DSP54_BLOCKS / DSP54_BLOCKONLY REMOVED 2026-06-17: they
     // loaded extracted re/dsp-5110/blockNN.bin into DSP memory by hand — a debugging crutch
     // from before the firmware drove its own upload faithfully. The MCU now uploads every
@@ -756,7 +756,7 @@ static int upload_done(Mad2 *m) {
 // boot/upload handshake is served by the legacy model (so the firmware uploads its blocks);
 // only after upload completes — and only with DSP54_LIVE=1 — do HPI reads reflect the live
 // C54x data RAM (where the real DSP posts its replies).
-// TEMP(DSP54_DSPIFAUDIT): trace EVERY MCU access to the DSPIF/CTSI->DSP MMIO block
+// trace EVERY MCU access to the DSPIF/CTSI->DSP MMIO block
 // [0x30000,0x30040) — hunting the register the MCU programs to arm a periodic CTSI->DSP
 // interrupt (the dispatcher-wake gap). Logs value+PC+dsp_step, capped. Default OFF.
 static void dspif_audit(Mad2 *m, const char *dir, uint32_t addr, int size, uint32_t value) {
@@ -821,7 +821,7 @@ static int c54x_read(Mad2 *m, uint32_t addr, int size, uint32_t ram_value, uint3
         }
         static int live = -1;
         if (live < 0) live = getenv("DSP54_LIVE") ? 1 : 0;
-        // DSP54_LIVEVER — *** RETIRED / DISABLED (2026-06-07) — DO NOT RE-ENABLE casually ***
+        // DSP54_LIVEVER — *** RETIRED / DISABLED — DO NOT RE-ENABLE casually ***
         // It served the version slots (0x10004/0x10006) LIVE from the DSP's api_ram from step 0.
         // That only "works" under the wild RATIO=4 boot recipe, which DIVERGES the real DSP — it
         // runs wild (taskbmp garbage, never idles, vocoder/BIST dominant) while still booting the
@@ -873,7 +873,7 @@ static int c54x_read(Mad2 *m, uint32_t addr, int size, uint32_t ram_value, uint3
         // (mbox0/mbox1 = words 0x7F/0x80) reads loader1's acks, not the HLE's instant dsp_ack echo. This
         // makes the MCU pace the upload by the real loader1 (so loader1 consumes every chunk -> its count
         // exhausts -> finalize -> idle), instead of the HLE racing ahead and stranding loader1.
-        // The old version/boot-status (0x10004/0x10006) HLE EXCEPTION is RETIRED (2026-06-11):
+        // The old version/boot-status (0x10004/0x10006) HLE EXCEPTION is RETIRED:
         // COMMLOG proves the real loader1 writes the version cells itself ([0x802/0x803]=0x0004 at
         // dsp_pc=0x0F15 — its ready signal, not an ISR reply), so the HLE answer was the last faked
         // DSP->MCU signal in the read path. DSP54_REALSTATUS=0 restores the exception for A/B.
@@ -1099,7 +1099,7 @@ static int c54x_write(Mad2 *m, uint32_t addr, int size, uint32_t value) {
             // 0x30000 bit2 = HPIC DSPINT -> the DSP's HPINT = **vec 25** (-> 0x3772, which sets the
             // idle work-bit [0x866]|=2 the dispatcher gates on, and services the [0x870] mailbox via
             // 0xA51B). This is the well-documented TI C54x HPI semantic (host writes HPIC.DSPINT ->
-            // DSP HPINT) and is now confirmed authoritative (Dan, 2026-06-10): HPINT IS [0x30000].
+            // DSP HPINT) and is now confirmed authoritative: HPINT IS [0x30000].
             // VERIFIED: with [0x30000]->vec25 the boot still handshakes to verdict 0xC4 (the version
             // exchange runs through the [0x870] mailbox/HPINT path, NOT the port cmd-word) and the
             // dispatcher wakes faithfully. The OLD default of 18 routed the host doorbell to the
@@ -1129,8 +1129,8 @@ static int c54x_write(Mad2 *m, uint32_t addr, int size, uint32_t value) {
         // ack-stale+unmask of FIQ1=FIQ_MDISND (ref/Nok-MADos-master/include/hw/int.h), the DSP->MCU
         // flow-control source we now raise faithfully on the MDISND-head advance (DSP54_RINGFIQ).
         // It does NOT reach the DSP. Firing a DSP interrupt from it was the old "unified doorbell"
-        // HACK that stood in for the real host doorbell [0x30000]->vec25 (HPINT) — now that that is
-        // wired correctly (g_hpivec=25), the hack is RETIRED (DSP54_RINGDOORBELL, default OFF). Kept
+        // stand-in for the real host doorbell [0x30000]->vec25 (HPINT) — now that that is
+        // wired correctly (g_hpivec=25), the stand-in is RETIRED (DSP54_RINGDOORBELL, default OFF). Kept
         // only for A/B; DSP54_UNIDOORBELL likewise requires it. (The MDISND consumer's wake is HPINT
         // ([0x866]bit1 via 0x3772); its dequeue ARM is INT2/vec18 — a separate, non-MCU-pulsed
         // source still to be modelled. Neither is [0x20008].)
@@ -1866,7 +1866,7 @@ static void c54x_tick(Mad2 *m) {
           }
         }
         // === DSP54_COBBA — fake COBBA-GJ codec: the codec FRAME CLOCK (vec20 RINT0) =========
-        // RE'd 2026-06-11: MAD2 audio = the COBBA codec over I/O-port 0x21 (read=mic ADC,
+        // RE'd: MAD2 audio = the COBBA codec over I/O-port 0x21 (read=mic ADC,
         // write=ear DAC), clocked per sample by the vec20 RINT0 serial ISR (0x3416 -> 0x3558
         // -> tone gen 0xA617 / FIR). The C54x transmit vectors are STUBS, so there is no McBSP
         // transmit — COBBA *is* the frame clock + the data exchange. Our cosim has no codec, so
@@ -1936,7 +1936,7 @@ static void c54x_tick(Mad2 *m) {
           }
         }
         // === DSP54_COBBA — COBBA BSP serial DIGITAL LOOPBACK (DXR -> DRR) ===================
-        // RE'd 2026-06-12 (docs/research/5110-, phase-2): the cmd-0x70
+        // RE'd (docs/research/5110-, phase-2): the cmd-0x70
         // self-test's loader2 routine (demand-page block 18, flash 0x298934, dest 0x0D80) runs
         // a TWO-PHASE COBBA codec check that folds the verdict cell data[0x06F9] (== MCU verdict
         // byte[9] = [0x101441]; gate = byte9&3==0):
@@ -2069,7 +2069,7 @@ static void c54x_tick(Mad2 *m) {
         }
         // DSP54_TICKVEC=<vec> [+DSP54_TICKPER=<steps>, default 50000] — DIAGNOSTIC PROBE (default OFF).
         //
-        // ⚠ RETIRED FROM THE FAITHFUL PATH (2026-06-12). This was a periodic-interrupt STAND-IN for
+        // ⚠ RETIRED FROM THE FAITHFUL PATH. This was a periodic-interrupt STAND-IN for
         // the DSP self-wake that drains the rings — back when the demand-page sleep overlay (id 8)
         // never landed, so the real 0x30A7 sleep-loop dispatcher crashed and something had to pump
         // the superloop. Once id 8 lands at 0x1CA4 (READA/WRITA PAR-seed + INTR k fixes, commit
@@ -2109,7 +2109,7 @@ static void c54x_tick(Mad2 *m) {
         // no-call standby there is NO live measurement source — proven by elimination: no DSP ISR
         // writes the source (CELLWATCH), the repoint hook 0x250b is a resident no-op, and the 0x2286
         // codec overlay is never entered by the (fully resident) self-test path. ⚠ CORRECTED by the
-        // first live end-to-end run (2026-06-11): the builder tail (call 0x3900 + 2x 0x7f2d) DOES
+        // first live end-to-end run: the builder tail (call 0x3900 + 2x 0x7f2d) DOES
         // rewrite staging words 2+ in place (staged 0010/0/0/0/0160 left the DSP as BC4E/803B/E300/
         // A5F2/4C1B; word0 0x3532 and word1 survive) — the old "writes 0x13DC, not the report"
         // reading was wrong. On real HW that tail inserts/encodes the live measurement; in cosim it
@@ -2125,7 +2125,7 @@ static void c54x_tick(Mad2 *m) {
         // working self-test reference). Requires the self-test to actually execute (the MDISND dequeue
         // armed — organic under DSP54_CMDLEVEL).
         // Fires once per builder entry (re-arms on exit, so a self-test retry is also covered).
-        // Faithful default ON under cosim (2026-06-11, end-to-end validated with CMDLEVEL): models
+        // Faithful default ON under cosim (end-to-end validated with CMDLEVEL): models
         // the analog front-end's NOMINAL idle reading. Without it the organically-drained report
         // carries garbage -> the validator faithfully REJECTS -> the firmware's real one-shot retry
         // reboot ([0x10FDDE] 0x5A/0xA5 marker protocol, reason-4 @0x258D2E) -> exposes the (open)

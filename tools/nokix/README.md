@@ -70,8 +70,3 @@ The patched flash is written to `<input>.patched.fls` (override with
   their binary values via `RexxVariablePool` (RXSHV_FETCH).  Same for
   `setdata`.
 
-## See also
-
-- `[[nokix-architecture]]` memory — why this approach is small.
-- `[[nokix-wine-setup]]` memory — the wine path we abandoned.
-- `[[dct3-big-endian]]` memory — flash byte ordering.

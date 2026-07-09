@@ -1,6 +1,6 @@
 // Nokia 3350 model profile — SCAFFOLD (bring-up in progress).
 //
-// Per Dan: the 3350 is HW-identical to the 3410 — SAME LCD (96x65 visible / 102x72
+// the 3350 is HW-identical to the 3410 — SAME LCD (96x65 visible / 102x72
 // controller PCD8544-compatible) and SAME keypad (Family C: 2 soft keys, up/down,
 // send/end, no volume). It differs from the 3410 only in the memory map (its own 4 MB
 // partition layout) and the per-build firmware addresses (sig-located at runtime).
@@ -16,7 +16,7 @@
 #include "models/model.h"
 #include "models/mad2_sigs.h"   // shared MAD2 RTOS firmware-address signatures
 
-// 3350 keypad matrix = the 3410's (Family C) per Dan ("3410 & 3350 same" keys). RE'd
+// 3350 keypad matrix = the 3410's (Family C) ("3410 & 3350 same" keys). RE'd
 // 3410 table reused verbatim; treat the green/red orientation as inherited-inferred.
 static const KeyLine keylines_3350[] = {
     {KK_1,1,2,0}, {KK_2,1,3,0}, {KK_3,4,1,0},

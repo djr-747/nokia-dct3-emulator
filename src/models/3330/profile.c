@@ -1,6 +1,6 @@
 // Nokia 3330 model profile — SCAFFOLD (bring-up in progress).
 //
-// Per Dan: the 3330 is HW-identical to the 3310 — SAME LCD (84x48 PCD8544) and SAME
+// the 3330 is HW-identical to the 3310 — SAME LCD (84x48 PCD8544) and SAME
 // keypad (Family B: Menu/Names(C), up/down, digits) — it is essentially "a 4 MB 3310".
 // The only differences from the 3310 are the memory map (4 MB image, EEPROM pushed
 // late) and the per-build firmware addresses (located by signature at runtime).
@@ -18,7 +18,7 @@
 #include "models/mad2_sigs.h"   // shared MAD2 RTOS firmware-address signatures
 
 // 3330 keypad matrix = byte-identical to the 3310 (Family B). RE'd 3310 table reused
-// verbatim per Dan ("3310 & 3330 same" keys).
+// verbatim ("3310 & 3330 same" keys).
 static const KeyLine keylines_3330[] = {
     {KK_1,1,2,0}, {KK_2,1,3,0}, {KK_3,4,1,0},
     {KK_4,2,4,0}, {KK_5,2,3,0}, {KK_6,2,2,0},
@@ -66,7 +66,7 @@ const ModelProfile model_3330 = {
     },
     .asic = {
         .irq_sources = 8,           // MAD2 default
-        // The 3330 is 3310 HW (per Dan: identical except the memory map), so the ASIC /
+        // The 3330 is 3310 HW (identical except the memory map), so the ASIC /
         // DSP-release read-backs are the SAME silicon values as the 3310. Leaving these at
         // 0 made MMIO 0x20000 (ASIC ver) fall through to RAM (bogus ASIC ID into the DSP
         // shared-mem slot 0x101E2) and MMIO 0x20002 never report the post-release DSP

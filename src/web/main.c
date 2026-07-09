@@ -121,7 +121,7 @@ static int64_t   g_step = 0;          // 64-bit: `long` is 32-bit in wasm32 and
 static uint64_t  g_cycles64 = 0;     // true elapsed CPU cycles (rebase-corrected),
                                       // for the real-time cycle-paced run loop.
 static uint32_t  g_rtc_wr_lr = 0;    // external caller of the CCONT RTC-reg write (diag)
-// TEMP(CCWR ring): capture (LR, logical-reg, value) at the CCONT write-reg helper entry
+// capture (LR, logical-reg, value) at the CCONT write-reg helper entry
 // 0x2E98D4 (r0=packed reg<<8|mask, r1=value). Finds who writes the RTC regs. Strip before commit.
 #define CCWR_N 24
 static uint32_t g_ccwr_lr[CCWR_N], g_ccwr_reg[CCWR_N], g_ccwr_val[CCWR_N];
@@ -215,7 +215,7 @@ static uint32_t g_dbg_pc[DBG_NWATCH]  = {0};
 static int64_t  g_dbg_cnt[DBG_NWATCH] = {0};
 static int      g_dbg_any = 0;
 
-// TEMP(PCRING): last-N executed PCs, frozen the instant control jumps into the low
+// last-N executed PCs, frozen the instant control jumps into the low
 // (exception-vector / null) range. The clock-tick null-callback crash lands at PC=0x20
 // via a bx/blx to a 0-handler; a heuristic stack-walk mislabels the frames, so this
 // records the EXACT instruction trail into the bad branch. Freeze-on-crash keeps the
@@ -272,9 +272,9 @@ static uint32_t g_call_ret_pc = 0;
 static int32_t  g_call_save_gpr[15];
 static uint32_t g_call_save_cpsr = 0;
 static uint32_t g_call_count = 0;     // completed calls (so JS can confirm it ran)
-static uint32_t g_call_result = 0;    // TEMP(clock): r0 captured at call return (strip before commit)
-static uint32_t g_cap_pc = 0, g_cap_val = 0, g_cap_hits = 0;   // TEMP(clock): capture r0 at a PC (strip before commit)
-// TEMP(clock): send-logger — ring of (task<<16|msg) at send 0x29921C / enqueue 0x2997B0.
+static uint32_t g_call_result = 0;    // r0 captured at call return
+static uint32_t g_cap_pc = 0, g_cap_val = 0, g_cap_hits = 0;   // capture r0 at a PC
+// send-logger — ring of (task<<16|msg) at send 0x29921C / enqueue 0x2997B0.
 // Lets a node probe trace the post-ready message cascade. Strip before commit.
 #define SENDLOG_N 256
 static uint32_t g_sendlog[SENDLOG_N]; static uint32_t g_sendlog_lr[SENDLOG_N]; static uint32_t g_sendlog_w = 0; static int g_sendlog_on = 0;
@@ -321,7 +321,7 @@ int dct3_web_regspike_count(void) { return g_ts_count; }   // total spikes fired
 EMSCRIPTEN_KEEPALIVE
 double dct3_web_call_count(void) { return (double)g_call_count; }
 EMSCRIPTEN_KEEPALIVE
-uint32_t dct3_web_call_result(void) { return g_call_result; }   // TEMP(clock); strip before commit
+uint32_t dct3_web_call_result(void) { return g_call_result; }
 
 // Unlock the security-code screen by setting the code to the factory default 12345. ARMs a
 // hook at the verify call site (g_mad2.fw.seccode_verify) that, on every verify, (1) re-provisions
@@ -339,23 +339,23 @@ int dct3_web_seccode_reset(void) {
     return 1;
 }
 EMSCRIPTEN_KEEPALIVE
-void dct3_web_cap_set(uint32_t pc) { g_cap_pc = pc; g_cap_hits = 0; g_cap_val = 0; }   // TEMP(clock)
+void dct3_web_cap_set(uint32_t pc) { g_cap_pc = pc; g_cap_hits = 0; g_cap_val = 0; }
 EMSCRIPTEN_KEEPALIVE
-uint32_t dct3_web_cap_val(void) { return g_cap_val; }     // TEMP(clock)
+uint32_t dct3_web_cap_val(void) { return g_cap_val; }
 EMSCRIPTEN_KEEPALIVE
-uint32_t dct3_web_cap_hits(void) { return g_cap_hits; }   // TEMP(clock)
+uint32_t dct3_web_cap_hits(void) { return g_cap_hits; }
 EMSCRIPTEN_KEEPALIVE
-uint32_t dct3_web_ccw(int reg) { return g_core ? ((g_mad2.dbg_ccw_count[reg&15] << 8) | g_mad2.dbg_ccw_last[reg&15]) : 0; }   // TEMP(clock): per-CCONT-reg count<<8|last
+uint32_t dct3_web_ccw(int reg) { return g_core ? ((g_mad2.dbg_ccw_count[reg&15] << 8) | g_mad2.dbg_ccw_last[reg&15]): 0; }   // per-CCONT-reg count<<8|last
 EMSCRIPTEN_KEEPALIVE
 void dct3_web_difftrace(int on, double every, double lo, double hi) { difftrace_arm(on, every, lo, hi); }   // Phase9 09-02: native-vs-wasm lockstep hash (gated; fprintf->console)
 EMSCRIPTEN_KEEPALIVE
-void dct3_web_sendlog_on(int en) { g_sendlog_on = en ? 1 : 0; if (en) g_sendlog_w = 0; }   // TEMP(clock)
+void dct3_web_sendlog_on(int en) { g_sendlog_on = en ? 1: 0; if (en) g_sendlog_w = 0; }
 EMSCRIPTEN_KEEPALIVE
-uint32_t dct3_web_sendlog_w(void) { return g_sendlog_w; }   // TEMP(clock)
+uint32_t dct3_web_sendlog_w(void) { return g_sendlog_w; }
 EMSCRIPTEN_KEEPALIVE
-uint32_t dct3_web_sendlog_at(int i) { return g_sendlog[i % SENDLOG_N]; }   // TEMP(clock): (task<<16|msg)
+uint32_t dct3_web_sendlog_at(int i) { return g_sendlog[i % SENDLOG_N]; }   // (task<<16|msg)
 EMSCRIPTEN_KEEPALIVE
-uint32_t dct3_web_sendlog_lr(int i) { return g_sendlog_lr[i % SENDLOG_N]; }   // TEMP(clock): sender LR
+uint32_t dct3_web_sendlog_lr(int i) { return g_sendlog_lr[i % SENDLOG_N]; }   // sender LR
 
 EMSCRIPTEN_KEEPALIVE
 const char* dct3_version(void) { return DCT3_VERSION; }
@@ -496,9 +496,9 @@ int dct3_web_boot(void) {
     g_pwr_released = 0;
     g_key_armed = 0; g_key_row = g_key_col = -1; g_key_detected = 0;
     g_keyq_head = g_keyq_tail = 0; g_key_seq_state = 0; g_key_seq_at = -1;
-    g_pcring_w = 0; g_pcring_frozen = 0; g_pcring_step = 0; g_pcring_last_low = 0; g_pcring_lowcnt = 0;   // TEMP(PCRING): re-arm the crash trail
+    g_pcring_w = 0; g_pcring_frozen = 0; g_pcring_step = 0; g_pcring_last_low = 0; g_pcring_lowcnt = 0;   // re-arm the crash trail
     g_trace_w = 0; g_trace_next_cyc = 0;   // divergence-finder ring resets per (re)boot
-    // NOTE: the old web-only EEPROM-write gate was REMOVED (Dan, 2026-06-19). It blocked the
+    // NOTE: the old web-only EEPROM-write gate was REMOVED. It blocked the
     // firmware's boot-time FFS init writes (CFI reported success, array unchanged), leaving the
     // FFS half-initialised — NVRAM saves (Nokia Club ID) wrote garbage and in-flash app launch
     // (Snake 2) hung in the FFS readiness check. Native never gated flash writes; the web now
@@ -599,7 +599,7 @@ static void web_step_once(struct ARMCore* cpu) {
         if (g_call_pending || g_call_active) {
             uint32_t cpc = (uint32_t)cpu->gprs[15] - (cpu->cpsr.t ? 4u : 8u);
             if (g_call_active && cpc == g_call_ret_pc) {
-                g_call_result = (uint32_t)cpu->gprs[0];   // TEMP(clock): capture return value before restore
+                g_call_result = (uint32_t)cpu->gprs[0];   // capture return value before restore
                 for (int k = 0; k < 15; ++k) cpu->gprs[k] = g_call_save_gpr[k];
                 cpu->cpsr.packed = g_call_save_cpsr;
                 g_call_active = 0; g_call_count++;
@@ -647,8 +647,8 @@ static void web_step_once(struct ARMCore* cpu) {
             if (g_dbg_any)
                 for (int k = 0; k < DBG_NWATCH; ++k)
                     if (g_dbg_pc[k] == pc) g_dbg_cnt[k]++;
-            if (g_cap_pc && pc == g_cap_pc) { g_cap_val = (uint32_t)cpu->gprs[0]; g_cap_hits++; }   // TEMP(clock): capture r0 at PC
-            if (g_sendlog_on && (pc == 0x0029921Cu || pc == 0x002997B0u)) {   // TEMP(clock): send/enqueue(task=r0,msg=r1)
+            if (g_cap_pc && pc == g_cap_pc) { g_cap_val = (uint32_t)cpu->gprs[0]; g_cap_hits++; }   // capture r0 at PC
+            if (g_sendlog_on && (pc == 0x0029921Cu || pc == 0x002997B0u)) {   // send/enqueue(task=r0,msg=r1)
                 uint32_t i = g_sendlog_w % SENDLOG_N;
                 g_sendlog[i]    = (((uint32_t)cpu->gprs[0] & 0xFFFFu) << 16) | ((uint32_t)cpu->gprs[1] & 0xFFFFu);
                 g_sendlog_lr[i] = (uint32_t)cpu->gprs[14] & 0xFFFFFFu;   // caller (sender)
@@ -794,7 +794,7 @@ static void web_step_once(struct ARMCore* cpu) {
                 uint32_t nreg = ((uint32_t)cpu->gprs[0] >> 8) & 0xFFu;
                 if (nreg >= 0x08u && nreg <= 0x0Cu) g_rtc_wr_lr = (uint32_t)cpu->gprs[14];
             }
-            // TEMP(CCWR ring): every CCONT write-reg helper call -> ring (find the RTC writer).
+            // every CCONT write-reg helper call -> ring (find the RTC writer).
             if (pc == 0x002E98D4u) {
                 uint32_t i = g_ccwr_w % CCWR_N;
                 g_ccwr_lr[i]  = (uint32_t)cpu->gprs[14];
@@ -864,7 +864,7 @@ static void web_step_once(struct ARMCore* cpu) {
         } else { /* state 2 */
             if (g_step >= g_key_seq_at) { g_key_seq_state = 0; g_key_seq_at = -1; }
         }
-        // TEMP(PCRING): record this step's PC; freeze the ring once we branch into the
+        // record this step's PC; freeze the ring once we branch into the
         // low/null range so the trail into the bad branch survives. Strip before commit.
         if (!g_pcring_frozen) {
             uint32_t raw  = (uint32_t)cpu->gprs[15];
@@ -1076,9 +1076,9 @@ int dct3_web_warm_reset(void) {
     g_pwr_released = 0; g_pwr_auto = 1;
     g_key_armed = 0; g_key_row = g_key_col = -1; g_key_detected = 0;
     g_keyq_head = g_keyq_tail = 0; g_key_seq_state = 0; g_key_seq_at = -1;
-    g_pcring_w = 0; g_pcring_frozen = 0; g_pcring_step = 0; g_pcring_last_low = 0; g_pcring_lowcnt = 0;   // TEMP(PCRING): re-arm the crash trail
+    g_pcring_w = 0; g_pcring_frozen = 0; g_pcring_step = 0; g_pcring_last_low = 0; g_pcring_lowcnt = 0;   // re-arm the crash trail
     g_trace_w = 0; g_trace_next_cyc = 0;   // divergence-finder ring resets per (re)boot
-    // NOTE: the old web-only EEPROM-write gate was REMOVED (Dan, 2026-06-19). It blocked the
+    // NOTE: the old web-only EEPROM-write gate was REMOVED. It blocked the
     // firmware's boot-time FFS init writes (CFI reported success, array unchanged), leaving the
     // FFS half-initialised — NVRAM saves (Nokia Club ID) wrote garbage and in-flash app launch
     // (Snake 2) hung in the FFS readiness check. Native never gated flash writes; the web now
@@ -1268,7 +1268,7 @@ double dct3_web_rtc_min_edges(void) { return (double)g_mad2.rtc_min_edges; }
 // continuously) and the raw CCONT RTC bytes it wrote (sec | min<<8 | hour<<16 | day<<24).
 EMSCRIPTEN_KEEPALIVE
 double dct3_web_rtc_writes(void) { return (double)g_mad2.rtc_writes; }
-// TEMP(CCWR ring): read ring entry k (0..23, newest-first via w). Returns packed
+// read ring entry k (0..23, newest-first via w). Returns packed
 // lr (low24) | reg<<24; val via the _val accessor. Strip before commit.
 EMSCRIPTEN_KEEPALIVE
 uint32_t dct3_web_ccwr_w(void) { return g_ccwr_w; }
@@ -1667,7 +1667,7 @@ int  dct3_web_get_spike(void)   { return g_pin_verdict; }
 EMSCRIPTEN_KEEPALIVE
 uint32_t dct3_web_pc(void) { return g_core ? (uint32_t)g_core->cpu.gprs[15] : 0; }
 
-// TEMP(PCRING): frozen-on-crash PC ring. crashed() = 1 once control jumped into the
+// frozen-on-crash PC ring. crashed = 1 once control jumped into the
 // low range; w() = total recorded (ring index = w%N); at(i) = entry i (0..N-1, raw
 // slot). Read the last N in order: for k in 0..N-1, slot=(w-N+k)%N. Strip before commit.
 EMSCRIPTEN_KEEPALIVE int      dct3_web_pcring_crashed(void) { return g_pcring_frozen; }

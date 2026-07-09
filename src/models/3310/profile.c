@@ -66,8 +66,8 @@ const ModelProfile model_3310 = {
     },
     .asic = {
         .irq_sources = 8,
-        .asic_version = 0xA1,   // MAD2 ASIC version @0x20000 — real-HW confirmed (Dan)
-        .dsp_reset_running = 0x53,  // I/O 0x20002 read-back after DSP release — real-HW (Dan)
+       .asic_version = 0xA1,   // MAD2 ASIC version @0x20000 — real-HW confirmed
+       .dsp_reset_running = 0x53,  // I/O 0x20002 read-back after DSP release — real-HW
     },
     .fw = {
         // Boot/self-test scratch (per-build; signatures may override).

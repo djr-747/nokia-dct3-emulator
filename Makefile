@@ -113,7 +113,7 @@ TEST_CFLAGS := -std=gnu99 -O1 -g -Wall $(APP_INC) -Itools $(DEFS)   # -Itools: m
 # tight loop (ARM core + 4x C54x per step) — -O1 -g left ~2-3x on the table.
 # -O2 keeps -g line info. make test guards correctness; default boot stays
 # byte-identical (integer interpreters are opt-level-stable). 2026-06-09.
-# -flto (2026-06-14): the hot loop is dominated by cheap cross-TU helpers
+# -flto: the hot loop is dominated by cheap cross-TU helpers
 # (dsp54_hpi_read/peek per cosim tick, the harness hooks) that the per-file build
 # could not inline; LTO inlines them and ~doubles the 5110 cosim rate (0.44->0.75x
 # realtime), lifting non-cosim models well past realtime. -O3/-march=native were

@@ -22,7 +22,7 @@ struct Dsp54 {
 
 static Dsp54 *g_active;   /* single active instance for the global bridge hooks */
 
-/* === Static-upload regression guard (2026-06-08) =========================================
+/* === Static-upload regression guard =========================================
  * The FAITHFUL 5110/MAD2 DSP boot is the MCU firmware's REAL staged block-upload: the MCU
  * pages each DSP code block through the HPI window + a 5-word UPLOADHEADER and the DSP loader
  * scatters it to its dest (; memory 5110-dsp-staged-upload-pivot).

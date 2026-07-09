@@ -23,8 +23,8 @@ exception/IRQ/FIQ vectors, PC+8/PC+4 prefetch). mGBA is one of the most accurate
 emulators in existence. This is why stock firmware stays in lockstep for **billions** of
 instructions (verified stable past **3.7 billion cycles ≈ 1.37 B instructions**).
 
-**We forked it to big-endian** (GBA is little-endian; DCT3 runs the ARM7 in BE) — see
-[[dct3-big-endian]]. The flash stays byte-exact; the core was adapted.
+**We forked it to big-endian** (GBA is little-endian; DCT3 runs the ARM7 in BE). The flash
+stays byte-exact; the core was adapted.
 
 **Caveat — cycle *timing* is approximate, semantics are exact.** Per-access cycle counts
 come from mGBA's memory-timing model (tuned for GBA waitstates), not measured DCT3 silicon.

@@ -254,7 +254,7 @@ if [ ! -x "$BIN" ]; then
   echo "     build:  make $([ "$BIN" = build/dct3_boot_trace_gui ] && echo gui || echo trace)" >&2
   exit 1
 fi
-# Staleness check — a stale binary silently lies (2026-06-12: a dct3_boot_trace_gui
+# Staleness check — a stale binary silently lies (a dct3_boot_trace_gui
 # built 73 min before the PCMCAP per-write tap "proved" a tone-capture gap that did
 # not exist). Warn when any emulator source is newer than the chosen binary.
 STALE_NOTE=""

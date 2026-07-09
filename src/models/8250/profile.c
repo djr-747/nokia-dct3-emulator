@@ -1,4 +1,4 @@
-// Nokia 8250 model profile — BOOTS TO STANDBY (2026-06-06). NSM-3D, 2 MB MAD2 candybar —
+// Nokia 8250 model profile — BOOTS TO STANDBY. NSM-3D, 2 MB MAD2 candybar —
 // the 8210's twin (same NSM Family-A class: shared keypad matrix + BLB-2 battery). v6.02
 // is a LATER build than the 8850/8210 v5.31, so the 8850 DSP sigs port only FUZZY (the
 // addresses shift) — verdict/dsp_uploaded below were re-pinned against this image. Unlike
@@ -38,7 +38,7 @@ const ModelProfile model_8250 = {
         .scan = KP_SCAN_DIR_AWARE,
         .uif_irq = 1,
     },
-    // Period-correct backlight: the blue glow (Dan, 2026-06-12). 0xRRGGBB,
+    // Period-correct backlight: the blue glow. 0xRRGGBB,
     // consumed by the harness tints (web palette / gui_sdl LCD bg).
     .led = { .lcd_rgb = 0x6FA8FF, .kbd_rgb = 0x6FA8FF },
     .battery = {

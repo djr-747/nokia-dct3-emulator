@@ -232,7 +232,7 @@ typedef struct {
     // DDRAM left-to-right but column 0 is physically the RIGHTMOST pixel). The decode
     // path maps logical column c -> physical (width-1-c) at write time so the stored fb
     // is correctly oriented for every consumer (web unpack, native ASCII, PNG). The
-    // 5210 (NSM-5) needs this; 3310/3410/8850 etc. = 0 (normal order). (Dan, 2026-06).
+    // 5210 (NSM-5) needs this; 3310/3410/8850 etc. = 0 (normal order).
     uint8_t  x_mirror;
 } LcdSpec;
 
@@ -425,7 +425,7 @@ typedef struct DspOps {
 // it NULL. Kept in the DSP layer (not the mixer) because tone generation is a DSP function.
 int dsp_hle_tone(struct Mad2* m, int* f1_hz, int* f2_hz);
 extern const DspOps mad2_dsp_default;   // ROM-6 (3310/33xx/34xx/82xx/8850) — shared legacy behaviour
-// HLE DSP responders are organised BY Nokia DSP ROM revision (Dan, 2026-06-16): ROM 4 = 5110/6110
+// HLE DSP responders are organised BY Nokia DSP ROM revision: ROM 4 = 5110/6110
 // (src/mad2/dsp_rom4.c, cosim-grounded), ROM 6 = mad2_dsp_default above. Distinct TUs so ROM-4
 // fidelity work can't regress the byte-identical 3310 (ROM-6) boot. See
 // docs/research/5110-.

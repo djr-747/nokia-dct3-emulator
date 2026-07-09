@@ -18,7 +18,7 @@ reset `0x290A90`) and is wake-on-keypress via **IRQ0**.
 
 ## The tap-timing model (`dct3_web_key`)
 
-**Problem (bug Dan reported):** "if the numeric buttons come too fast after the
+**Problem (a reported bug):** "if the numeric buttons come too fast after the
 first menu hit, the phone goes back to home." Two failure modes:
 - keys arriving **too fast** after the first Menu press → phone **stuck on the
   home screen** (the next press stomped the previous one mid-hold, so the press

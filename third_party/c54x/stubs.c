@@ -6,7 +6,7 @@
 QemuMutex calypso_pcb_daram_lock;
 QemuMutex calypso_pcb_api_ram_lock;
 
-/* === Memoized env lookups (2026-06-09 perf) ===
+/* === Memoized env lookups (perf) ===
  * calypso_debug_enabled() / cdbg_env() were a raw getenv() per call. The C54x
  * core calls them from inside its per-instruction loop (PCEQ, PCWIN, SNAPSHOT,
  * DECODE-AUDIT, AR/A-traces, ...) — several env scans PER INSTRUCTION, over

@@ -1,7 +1,7 @@
 // Nokia 3210 model profile — NSE-8 (v6.00), an early MAD2 DCT3 (1999), same
 // peripheral attachment family as the 5110 (NSE-1) and 6110 (NSE-3): the CCONT power ASIC
 // and an EXTERNAL serial-bus EEPROM hang off a BIT-BANGED SERIAL bus (mad2_bus_serial), not
-// the later memory-mapped GENSIO + in-flash EEPROM. Per Dan: "hw is 5110, but may differ;
+// the later memory-mapped GENSIO + in-flash EEPROM. "hw is 5110, but may differ;
 // rom4 should work with cosim." So this starts as a near-clone of src/models/5110/profile.c
 // with the 3210's three real deltas:
 //
@@ -19,7 +19,7 @@
 // mad2_dsp_c54x loads the *5110's* recovered DSP image (re/dsp-5110/raw/dsp_full.bin), but the
 // 3210 uploads its OWN DSP code blocks from its own flash, so co-sim drives that static image
 // into a degenerate PC=0x0000 bootstub loop and never produces the boot reply. Same call the
-// 6110 makes ([[hle-dsp-by-rom-revision]]). (A faithful 3210 co-sim would need the 3210's own
+// 6110 makes. (A faithful 3210 co-sim would need the 3210's own
 // recovered ROM-4 image — out of scope for bring-up.)
 //
 // The DCT3 RTOS/MMI core is shared with the 3310/5110/6110, so MAD2_SIGS resolves the
@@ -135,7 +135,7 @@ const ModelProfile model_3210 = {
         // verdict (MMI-ready / self-test gate) is the boot-critical per-build cell and must be
         // RE'd for v6.00 (gen_sig-port from the 5110 0x10FDDD / 6110 0x10FDE1 MMI-ready gate);
         // 0x10FDE1 is the v6-era closest guess until located.
-        // verdict = 0x11FED1 — the MMI startup-screen display gate, RE'd 2026-06-19 (was the
+        // verdict = 0x11FED1 — the MMI startup-screen display gate, RE'd (was the
         // unlocated 6110 fallback 0x10FDE1, a dead cell never written on v6.00). The "CONTACT
         // SERVICE" decision is at 0x237B52: `ldr r5,=0x11FE68; ldrb r0,[0x69+r5]` (=[0x11FED1])
         // `lsr #7; bcs` — bit7 SET = standby, CLEAR = draw the inline "CONTACT SERVICE" string

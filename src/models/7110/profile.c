@@ -60,7 +60,7 @@ const ModelProfile model_7110 = {
         // detection window (bsi=0x150, the same in-window value the 5110/6110/8850 family
         // profiles use) AND the 7110 reads its BTEMP line low here (ch4 < 50), which posts
         // the battery-OK event (0x49D478 -> 0x7B06) with [0x16BC7C]=0 -> verdict bit0 set.
-        // ADC AUDIT (2026-06-20): temp REVISED 0x028 -> 0x0140 (320). The bit0 gate's "ch4<50"
+        // ADC AUDIT: temp REVISED 0x028 -> 0x0140 (320). The bit0 gate's "ch4<50"
         // is NON-PHYSICAL: ch4 (BTEMP) is an NTC, and the AUTHORITATIVE charge classifier
         // 0x4C83F6 needs raw ch4 in [307,347] (0x133..0x15B) = a real room-temperature reading.
         // A real 7110 at room temp reads BTEMP~320, FAILS the bit0 gate (>=50), takes the
@@ -125,7 +125,7 @@ const ModelProfile model_7110 = {
     // wedges (DSP stuck polling api_ram[0x1200] @PC 0x00ed, IMR=0x0001, never services the
     // cmd-0x70 self-test). Same limit the 3210 hits. So use the revision-correct ROM-4 HLE
     // responder on BOTH native and web (like the 6110); cosim stays a research-only opt-in
-    // (bind mad2_dsp_c54x + DSP54_COSIM=1 to study the real DSP). See [[7110-bringup-state]].
+    // (bind mad2_dsp_c54x + DSP54_COSIM=1 to study the real DSP)
     // 7110-SPECIFIC ROM-4 responder (src/models/7110/dsp_7110.c): same revision as the
     // 5110/6110/3210 (mad2_dsp_rom4) but its own DSP self-test reply model — the phones differ.
     .dsp = &mad2_dsp_7110,           // ROM-4 HLE responder, 7110-specific (native + web)

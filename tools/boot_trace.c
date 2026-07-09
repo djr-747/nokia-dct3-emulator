@@ -919,7 +919,7 @@ int main(int argc, char** argv) {
     // exact path into a stop point is visible.  Enable with EDGES=<n>.
     long edge_n = (long)strtoul(getenv("EDGES") ? getenv("EDGES") : "0", NULL, 0);
     if (edge_n > 4000) edge_n = 4000;
-    // TEMP(WEDGETRAP): break the instant PC leaves flash (>=0x400000) after this step,
+    // break the instant PC leaves flash (>=0x400000) after this step,
     // to catch the exact jump-into-garbage of the FIQ-mode wedge. Strip before commit.
     long wedgetrap = getenv("WEDGETRAP") ? atol(getenv("WEDGETRAP")) : 0;
     struct { uint32_t from, to, lr; } *edges = edge_n ? calloc((size_t)edge_n, sizeof(*edges)) : NULL;
@@ -1113,13 +1113,13 @@ int main(int argc, char** argv) {
     uint64_t tr_acks = h.mad2.dsp_acks, tr_cbacks = h.mad2.dsp_cb_acks;
     uint16_t tr_mdtail = 0; int tr_irq4 = 0, tr_selftest = 0;
     uint32_t tr_disp49 = 0xFFFFFFFFu;   // last (gate<<16|sub<<8|sel) emitted, to dedup re-evals
-    // TEMP(IRQ2TRACE): print N firmware PCs after each IRQ2 (CCONT cascade) delivery, to
+    // print N firmware PCs after each IRQ2 (CCONT cascade) delivery, to
     // map the cascade-dispatch path (vector -> common IRQ -> CCONT int service -> send msg).
     // IRQ2TRACE_AFTER gates to IRQ2s raised after a given step. Strip before commit.
     long irq2trace = getenv("IRQ2TRACE") ? atol(getenv("IRQ2TRACE")) : 0;
     long irq2trace_after = getenv("IRQ2TRACE_AFTER") ? atol(getenv("IRQ2TRACE_AFTER")) : 0;
     long irq2trace_left = 0; int irq2_seen = 0;
-    // TEMP(TRACEFROM): when PC first hits TRACEFROM after step TRACEAFTER, print the next
+    // when PC first hits TRACEFROM after step TRACEAFTER, print the next
     // TRACEN PCs (decode a routine's path). Reuses the irq2trace print. Strip before commit.
     uint32_t tracefrom = (uint32_t)strtoul(getenv("TRACEFROM") ? getenv("TRACEFROM") : "0", NULL, 0);
     long traceafter = getenv("TRACEAFTER") ? atol(getenv("TRACEAFTER")) : 0;
@@ -1365,7 +1365,7 @@ gui_run_start:   // in-process warm-reboot target (PWR held 30s); GUI build only
             printf("[trc] >>> hit %06X @step %ld\n", pc & 0xFFFFFFu, steps);
         }
         if (irq2trace_left > 0) { printf("[irq2] %06X\n", pc & 0xFFFFFFu); irq2trace_left--; }
-        // TEMP(SENDLOG): log RTOS message sends — entry of send 0x29921C (task ctx) and the
+        // log RTOS message sends — entry of send 0x29921C (task ctx) and the
         // IRQ-ctx twin 0x2997B0. r0=target task id, r1=message. Shows the live message graph
         // (which tasks ever get messages). SENDLOG_AFTER gates by step. Strip before commit.
         {
@@ -1910,7 +1910,7 @@ gui_run_start:   // in-process warm-reboot target (PWR held 30s); GUI build only
                g_pcmsink_n[1], g_pcmsink_pk, g_pcmsink_n[0],
                h.mad2.pcm_rate ? h.mad2.pcm_rate : 0.0);
 
-    // TEMP(RAMDUMP=addr,len): hexdump a RAM region at exit (16 bytes/line). For task
+    // hexdump a RAM region at exit (16 bytes/line). For task
     // census (TCB table 0x106130, pending counts 0x104884). Strip before commit.
     // NOTE: RAMDUMP is ALSO the snapshot-path knob (line ~887). Only treat it as an
     // addr-hexdump when it parses as a number — a path like "/tmp/w" parses nothing
@@ -1931,7 +1931,7 @@ gui_run_start:   // in-process warm-reboot target (PWR held 30s); GUI build only
         skip_ramdump_hexdump: ;
     }
 
-    // TEMP(MMIOAUDIT): dump fall-through MMIO access table.
+    // dump fall-through MMIO access table.
     mad2_mmio_audit_dump(&h.mad2);
 
 #ifdef DCT3_SDL

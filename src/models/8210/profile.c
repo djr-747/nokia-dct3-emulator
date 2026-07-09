@@ -1,4 +1,4 @@
-// Nokia 8210 model profile — BOOTS TO STANDBY (2026-06-06). NSM-3, 2 MB MAD2 candybar
+// Nokia 8210 model profile — BOOTS TO STANDBY. NSM-3, 2 MB MAD2 candybar
 // of the same NSM Family-A class as the 8850 (shared keypad matrix + BLB-2 battery
 // window). 8210 v5.31 is the SAME build version as the 8850 v5.31, so the 8850 DSP
 // sigs port exactly (verdict/dsp_uploaded/dsp_boot_status below). Firmware on hand:

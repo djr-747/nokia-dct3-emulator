@@ -2,7 +2,7 @@
 """Auto-derive a masked Thumb function signature (NokiX-LOCATE style) and locate the
 analogous function in other builds.
 
-The premise (Dan): every Thumb opcode splits into build-STABLE bits (the opcode +
+The premise: every Thumb opcode splits into build-STABLE bits (the opcode +
 register fields) and build-VARIABLE bits (PC-relative literal-pool offsets and BL/BLX
 call targets — these move when the image is recompiled). So we can mechanically emit a
 (pattern, mask) for a function by walking its instructions from the entry up to the

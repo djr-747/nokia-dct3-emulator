@@ -1,7 +1,7 @@
 // Nokia 7110 (NSE-5) ROM-4 DSP HLE responder — DELIBERATELY DISTINCT from the shared
 // mad2_dsp_rom4 (5110 / 6110 / 3210).
 //
-// WHY ITS OWN TU (Dan's directive, 2026-06-18): the 7110 and 5110 are both ROM-4, but their
+// WHY ITS OWN TU: the 7110 and 5110 are both ROM-4, but their
 // DSP self-test CONVERSATIONS are obviously different — different uploaded blocks, different
 // cmd-0x70 sub-tests (the 7110 sends sub-0x04/0x06/0x0E via the PORT1 API-command path; the
 // 5110 sends sub-0x14/0x16 over the MDISND ring). The 5110's solved self-test lives in the
@@ -15,7 +15,7 @@
 // boot block-upload / mailbox ack bodies are shared with the family via the dsp_default_*
 // helpers (declared in mad2.h) — only the 7110 self-test reply is bespoke.
 //
-// WHY HLE, NOT CO-SIM (see [[7110-bringup-state]]): the native C54x co-sim runs the 5110's
+// WHY HLE, NOT CO-SIM: the native C54x co-sim runs the 5110's
 // resident PROM (re/dsp-5110/raw/dsp_full.bin) while the 7110 uploads its OWN blocks (only 36%
 // F073-overlapped), so the 7110's code far-branches into incompatible PROM routines and wedges
 // (DSP stuck polling api_ram[0x1200] @PC 0x00ed, IMR=0x0001, never services cmd-0x70). The 3210
@@ -98,7 +98,7 @@ static void dsp_7110_tick(Mad2* m) {
     // st70_irq_done, gated on: (a) the MCU has actually issued a cmd-0x70 self-test command
     // (st70_seen, captured in the write hook), and (b) cb_reply [0x100E4] == 0 right now.
     //
-    // DEFAULT-ON (2026-06-19): Gate A is now driven by the cmd-0x70 trigger UNCONDITIONALLY (no
+    // DEFAULT-ON: Gate A is now driven by the cmd-0x70 trigger UNCONDITIONALLY (no
     // getenv — getenv is NULL in wasm, so a knob-gated Gate A is OFF on the web). With Gate A the
     // verdict ends 0x49 (bit0|bit3|bit6, bit6 SET) instead of the baseline 0x09 (bit6 clear). On
     // both native and web this REMOVES the "CONTACT SERVICE" screen (the bit6=clear text no longer
@@ -107,7 +107,7 @@ static void dsp_7110_tick(Mad2* m) {
     // parks recomputing the self-test tally checksum (loop 0x47304A over [0x17FC60..]) because
     // bit3 is still set, so the screen is blank, not an idle/clock standby.
     //
-    // DEFAULT-OFF (2026-06-19): Gate A is OFF by default (knob DSP7110_GATEA=1 enables it for native
+    // DEFAULT-OFF: Gate A is OFF by default (knob DSP7110_GATEA=1 enables it for native
     // A/B). Reason: making it default-on (incl. web) sets bit6 while bit3 stays set — an INCONSISTENT
     // verdict (pass-screen-gate vs not-complete) → the MMI parks recomputing the tally and renders
     // BLANK, which is worse than the honest, stable CONTACT SERVICE screen. Gate A is only useful once
@@ -157,7 +157,7 @@ static void dsp_7110_tick(Mad2* m) {
     // missing-EEPROM problem; the open question is what configures the boot verdict so a factory 7110
     // skips/passes this gate.) FAITHFUL-ONLY rules forbid poking bit3 / bit5 / the verdict directly, so
     // NO ring poke and NO bit5 write here. Resolving standby needs either the verdict-config path RE'd,
-    // or the external local-mode begin-self-test bus command modeled. See [[7110-bringup-state]].
+    // or the external local-mode begin-self-test bus command modeled
 }
 
 const DspOps mad2_dsp_7110 = {

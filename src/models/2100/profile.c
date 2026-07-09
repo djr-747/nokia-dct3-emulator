@@ -1,6 +1,6 @@
 // Nokia 2100 model profile — SCAFFOLD (registered 2026-06-17).
 //
-// Per Dan: "essentially the 5210, but with the LCD of the 3410." So this profile
+// "essentially the 5210, but with the LCD of the 3410." So this profile
 // reuses the 5210's NSM-class personality — NSM Family-A keypad (== 8850/5210),
 // BLB-2 Li-ion battery window, orange backlight, shared MAD2 DSP responder — but
 // swaps in the 3410's larger graphical panel (96x65 visible / 102x72 controller
@@ -52,8 +52,7 @@ const ModelProfile model_2100 = {
         .width = 96, .height = 65, .banks = 9,                 // visible
         .io_data = 0x2E, .io_cmd = 0x6E,
         .ctrl_width = 102, .ctrl_height = 72, .ctrl_banks = 9, // controller RAM
-        .x_mirror = 1,   // 2100 panel has REVERSED segment order, like the 5210 (Dan,
-                         // 2026-06-17) — text renders backwards without this.
+        .x_mirror = 1,   // 2100 panel has REVERSED segment order, like the 5210 — text renders backwards without this.
     },
     .keypad = {
         // NSM Family-A keypad, SHARED with the 5210/8850. Candybar -> has_slide stays 0.

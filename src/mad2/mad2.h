@@ -404,7 +404,7 @@ typedef struct Mad2 {
     uint64_t dsp_hb_last;
     uint64_t dsp_hb_pulses;
 
-    // TEMP(MMIOAUDIT): per-offset access counters for the 256-byte MMIO window. Set
+    // per-offset access counters for the 256-byte MMIO window. Set
     // env MMIOAUDIT=1 to enable. mad2_mmio_audit_dump() prints the table at end of
     // a run — shows fall-through (unhandled) MMIO addresses touched during boot, so
     // we can identify hardware signals we're not modeling. Strip before commit.
@@ -571,7 +571,7 @@ typedef struct Mad2 {
                                 // stands down (they never overlap — see note above)
     // DCT3 COBBA codec sample rate (Hz) = the rate at which the firmware's tone
     // oscillator assumes the codec runs, so playing one-sample-per-codec-frame at
-    // this rate reproduces the commanded pitch. PINNED from the firmware (2026-06-14):
+    // this rate reproduces the commanded pitch. PINNED from the firmware:
     // the 5110 keypad beep's phase increment is a baked 0x0C5C = 3164 over a 16-bit
     // accumulator -> 65536/3164 = 20.713 samples/cycle (confirmed by autocorrelation
     // of the captured beep). Anchored to the established 900 Hz keypad-beep identity,
@@ -707,8 +707,8 @@ typedef struct Mad2 {
 
     // Stats.
     uint64_t ccont_reads, ccont_writes;
-    uint32_t dbg_ccw_count[16];  // TEMP(clock): per-CCONT-reg write count (strip before commit)
-    uint8_t  dbg_ccw_last[16];   // TEMP(clock): per-CCONT-reg last value written
+    uint32_t dbg_ccw_count[16];  // per-CCONT-reg write count
+    uint8_t  dbg_ccw_last[16];   // per-CCONT-reg last value written
 } Mad2;
 
 // Initialise the device model for a given phone profile (geometry, ASIC config,
@@ -804,7 +804,7 @@ void mad2_render_postmortem(Mad2* m, uint32_t reason, uint32_t resume_pc,
                             uint32_t resume_cpsr, uint32_t lr_diag,
                             const char* source);
 
-// TEMP(MMIOAUDIT): dump per-offset fall-through MMIO access counts.
+// dump per-offset fall-through MMIO access counts.
 void mad2_mmio_audit_dump(const Mad2* m);
 
 #endif // MAD2_H

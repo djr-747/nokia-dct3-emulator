@@ -25,7 +25,7 @@
 // grid: keypad columns 1/2/3 sit on scan cols 2/3/4, keypad rows 1..4 on scan rows 1..4 (scan
 // row 0 unused). The col-1 nav cluster decodes to rawkeys 6/11/16/21 (rows 1..4) — ALL FOUR
 // verified via RAMWATCH=0x10B6C8 on injected presses (each cell -> its row*5+col rawkey).
-// (1,1)=Names/C and (4,1)=scroll-up are also Dan-confirmed in-GUI; (2,1)=Menu and (3,1)=scroll
+// (1,1)=Names/C and (4,1)=scroll-up are also confirmed in-GUI; (2,1)=Menu and (3,1)=scroll
 // -down follow the same cluster (rawkey 11/16) — full in-menu confirmation is gated behind the
 // FAID boot-lock ("Security code") on a virgin EEPROM.
 static const KeyLine keylines_5110[] = {

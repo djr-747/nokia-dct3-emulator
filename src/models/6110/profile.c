@@ -1,12 +1,12 @@
 // Nokia 6110 model profile — NSE-3, an EARLY MAD2 DCT3 (1998), same HW family as the 5110
 // (NSE-1): 1 MB flash (MCU+PPM, NO in-flash EEPROM), an EXTERNAL serial-bus EEPROM, and the
-// CCONT power ASIC on the bit-banged serial bus. Per Dan: "same HW profile as the 5110, just a
+// CCONT power ASIC on the bit-banged serial bus. "same HW profile as the 5110, just a
 // different keypad." So this is a near-clone of src/models/5110/profile.c with three changes:
 //
 //   1. Ident "NSE-3" (header not at flash 0x1FC; whole-image string match, like the 5110).
 //   2. ROM-4 HLE DSP on BOTH native and web — the C54x co-sim backend (mad2_dsp_c54x) loads the
 //      *5110's* recovered DSP image (re/dsp-5110), which is wrong for the 6110, so the 6110 uses
-//      the revision-correct ROM-4 HLE responder (mad2_dsp_rom4; see [[hle-dsp-by-rom-revision]]).
+//      the revision-correct ROM-4 HLE responder (mad2_dsp_rom4).
 //   3. External EEPROM = the NokiX virgin **nse-3** image — an **8 KB 24C64** (2-byte word
 //      addressing), vs the 5110's 2 KB 24C16. (firmware/nse-3.bin, baked as EE_NSE3.)
 //
@@ -21,7 +21,7 @@
 #include "mad2/ext_eeprom_blobs.h" // baked NokiX virgin external-I2C-EEPROM images
 #include "models/keylines_nsm_a.h" // NSM Family-A keypad matrix (== 8210/8850)
 
-// 6110 keypad — shares the 5110's serial-bus scan HW LINES ([[dct3-keypad-families]]) but the
+// 6110 keypad — shares the 5110's serial-bus scan HW LINES but the
 // key LAYOUT is NSM Family-A, not the 5110's. PROVEN: the 6110's position->keycode keymap
 // (@0x2BFB28) is BYTE-IDENTICAL to the 8210/8850 nsm_a keymap (soft1=(1,1)/0x19, up=(2,1)/0x17,
 // down=(3,1)/0x18, soft2=(4,1)/0x1A, send=(2,0)/0x0E, end=(3,0)/0x0F, volup=(4,0)/0x10,
@@ -43,7 +43,7 @@ const ModelProfile model_6110 = {
         .eeprom_size = 0,
     },
     .lcd = {
-        // Start with the 5110's PCD8544 84x48 + serial-bus LCD ports (Dan: same HW profile). If the
+        // Start with the 5110's PCD8544 84x48 + serial-bus LCD ports (same HW profile). If the
         // 6110 panel/controller differs, the boot logic is unaffected — fix rendering post-standby.
         .controller = LCD_PCD8544,
         .width = 84, .height = 48, .banks = 6,

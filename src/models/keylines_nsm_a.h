@@ -5,8 +5,8 @@
 // (KEY_SEND=0x0E, KEY_END=0x0F, KEY_SOFT_A=0x19, KEY_SOFT_B=0x1A, KEY_UP=0x17,
 // KEY_DOWN=0x18). Column 0 (unused on the 3310) carries the Family-A extras.
 //
-// SHARED across the NSM Family-A phones — 8850 / 8855 / 5210 / 8210 / 8250 (Dan,
-// 2026-06): same MAD2 keymap, so the (row,col) assignments are identical. This is the
+// SHARED across the NSM Family-A phones — 8850 / 8855 / 5210 / 8210 / 8250:
+// same MAD2 keymap, so the (row,col) assignments are identical. This is the
 // single source of truth; each profile points `.lines` here. `static const` so every
 // translation unit that includes it gets its own copy (no ODR/link clash) from one
 // definition. Per-model physical differences (slide cover, etc.) stay in the profile.

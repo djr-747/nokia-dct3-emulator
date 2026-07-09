@@ -293,7 +293,7 @@ const C = {
   setCharger: M.cwrap('dct3_web_set_charger', null, ['number']),   // --charger: adc[5]
   setSpike:   M.cwrap('dct3_web_set_spike', null, ['number']),
   setSeclock: M.cwrap('dct3_web_set_skip_seclock', null, ['number']),
-  // TEMP(PCRING): frozen-on-crash PC trail.
+  // frozen-on-crash PC trail.
   pcringCrashed: M.cwrap('dct3_web_pcring_crashed', 'number', []),
   pcringW:       M.cwrap('dct3_web_pcring_w', 'number', []),
   pcringN:       M.cwrap('dct3_web_pcring_n', 'number', []),
@@ -302,7 +302,7 @@ const C = {
 };
 const MODES = {0x10:'usr',0x11:'fiq',0x12:'irq',0x13:'svc',0x17:'abt',0x1b:'und',0x1f:'sys'};
 
-// TEMP(PCRING): dump the last-N executed PCs (oldest→newest), each resolved to its fn.
+// dump the last-N executed PCs (oldest→newest), each resolved to its fn.
 function pcRingDump() {
   if (!C.pcringCrashed || !C.pcringCrashed()) return '';
   const N = C.pcringN(), w = C.pcringW() >>> 0;

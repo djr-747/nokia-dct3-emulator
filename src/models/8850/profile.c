@@ -25,7 +25,7 @@ const ModelProfile model_8850 = {
         .eeprom_size = 0x00030000u,
     },
     .lcd = {
-        // 8850 drives an 84x48 PCD8544 like the 3310 (per Dan) — our existing LCD
+        // 8850 drives an 84x48 PCD8544 like the 3310 — our existing LCD
         // decode applies directly.
         .controller = LCD_PCD8544,
         .width = 84, .height = 48, .banks = 6,

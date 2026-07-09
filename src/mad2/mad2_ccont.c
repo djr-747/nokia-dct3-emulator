@@ -74,7 +74,7 @@ uint8_t ccont_read(Mad2* m) {
     else if (reg == 0x0E) v = m->cc_int_lines;   // pending interrupt lines (cascade source)
     else if (reg == 0x0F) v = m->cc_int_mask;    // interrupt mask
     else                  v = m->ccont[reg];
-    // TEMP(CCLOG): log who reads the CCONT pending-int register (reg 0x0E) — that's
+    // log who reads the CCONT pending-int register (reg 0x0E) — that's
     // the IRQ2 CCONT-cascade ISR sampling which INT fired. Strip before commit.
     {
         static int cclog = -1;
@@ -95,10 +95,10 @@ void ccont_byte(Mad2* m, uint8_t b) {
         m->ccont_have_addr = 1;
     } else {
         uint8_t reg = m->ccont_addr & 0x0F;
-        m->dbg_ccw_count[reg]++; m->dbg_ccw_last[reg] = b;   // TEMP(clock): per-reg write tracker; strip before commit
+        m->dbg_ccw_count[reg]++; m->dbg_ccw_last[reg] = b;   // per-reg write tracker
         if (reg == 0x00 && (b & 0x08)) m->adc_channel = (b >> 4) & 0x07;  // reg0: enable A/D + select channel
         if (reg == 0x0E) { m->cc_int_lines &= (uint8_t)~b; if (b & 0x80) m->rtc_alr_assert_cyc = 0; cc_int_update(m);   // write 1 to release
-            // TEMP(CCLOG): log the ISR's INT ack (which line it cleared). Strip before commit.
+            // log the ISR's INT ack (which line it cleared). Strip before commit.
             static int cclogw = -1;
             if (cclogw < 0) cclogw = getenv("CCLOG") ? 1 : 0;
             if (cclogw) printf("[cclog] ACK reg0E &= ~%02X  pc=%06X mono=%llu\n",
@@ -131,7 +131,7 @@ void ccont_byte(Mad2* m, uint8_t b) {
             m->rtc_base_cyc = m->rtc_mono - sub_cyc;   // keep the sub-second phase running
             m->rtc_writes++;
             m->rtc_wr_pc = m->cur_io_pc;
-            { static int rl = -1; if (rl < 0) rl = getenv("RTCLOG") ? 1 : 0;   // TEMP(RTCLOG); strip before commit
+            { static int rl = -1; if (rl < 0) rl = getenv("RTCLOG") ? 1: 0;
               if (rl) printf("[rtclog] wr reg%02X=%02X pc=%06X -> %02u:%02u:%02u d%u (base=%lus) mono=%llu\n",
                              reg, b, m->cur_io_pc & 0xFFFFFFu, h, mi, s, d,
                              (unsigned long)m->rtc_base_sec, (unsigned long long)m->rtc_mono); }

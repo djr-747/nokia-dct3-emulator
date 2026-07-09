@@ -45,7 +45,7 @@ addresses:
   BROKER_GATE:                     { addr: 0x002EABC0, source: overlay, role: "broker GATE — drops event unless [0x11FF28]!=0 AND subscription bitmap [0x11FF4C+(id>>11)] bit set" }
   BROKER_DECODE:                   { addr: 0x002BACEC, source: overlay, role: "broker msg-id decoder (task-4 dispatch path)" }
 
-  # --- RTOS scheduler + IPC ([[nokix-sigfind-task-map]]) ---
+  # --- RTOS scheduler + IPC ---
   START_ENGINE:                    { addr: 0x0029966C, source: overlay, role: "RTOS bootstrap" }
   TASKS_INIT:                      { addr: 0x00299510, source: overlay, role: "create the 24 tasks from TASKS_INIT_TABLE" }
   READY_QUEUE_INSERT:              { addr: 0x00298A98, source: overlay, role: "ready-queue priority insert ([node+12]=pri)" }
@@ -73,7 +73,7 @@ addresses:
   # --- Task-2 broker reboot re-issue (the SWDSP/DSP-reset catch caller) ---
   TASK2_REBOOT_REISSUE_SITE:       { addr: 0x002444C8, source: overlay, role: "bl REBOOT_FN(r0=[reboot_reason]) — supervisor overflow path" }
 
-  # --- DSP boot handshake ([[dsp-readiness-flags]], [[dsp-mcu-interface]]) ---
+  # --- DSP boot handshake ---
   DSP_MAILBOX_HANDLER:             { addr: 0x002BCEF0, source: overlay, role: "IRQ4 handler — DSP mailbox dispatch" }
   DSP_ISR_BOOTREADY:               { addr: 0x002CB418, source: overlay, role: "DSP ISR that sets [0x135664] dsp-ready-2 flag" }
 
@@ -85,7 +85,7 @@ addresses:
   SIM_TRANSMIT:                    { addr: 0x002D460E, source: overlay, role: "sim_transmit — push bytes to SIM TX" }
   SIM_RECOG_TIMEOUT_FIRES:         { addr: 0x002AF240, source: overlay, role: "SIM recognition retry timeout fires (counter [0x11FD08] >= 185)" }
 
-  # --- PPM string lookup ([[ppm-string-tracer]]) ---
+  # --- PPM string lookup ---
   GET_STRING:                      { addr: 0x002BBFAC, source: overlay, role: "get_string(id) -> nokstr ptr (v5.79 — NokiX locator misses)" }
   W_GET_STRING:                    { addr: 0x002BBCB8, source: overlay, role: "wide get_string variant" }
 
@@ -95,7 +95,7 @@ addresses:
   FIQ5_TIMER1_HANDLER:             { addr: 0x002E4418, source: overlay, role: "FIQ5/Timer1-overflow handler — drives soft-timer/LED-timeout walk" }
   LED_TIMEOUT_WALKER:              { addr: 0x00298F68, source: overlay, role: "soft-timer LIST walk — ages timeouts, turns backlight off" }
 
-  # --- MMI / display ([[project-state]] session 7-9) ---
+  # --- MMI / display ---
   WINDOW_MGR_FN:                   { addr: 0x002A9FF8, source: overlay, role: "window manager — sole framebuffer allocator" }
   CREATE_WIN_HANDLER:              { addr: 0x0026DFEE, source: overlay, role: "msg 0x4C3A (create-window) handler" }
   STANDBY_APP_DISPATCH:            { addr: 0x002E5D96, source: overlay, role: "standby app proc (table 0x324AFC)" }

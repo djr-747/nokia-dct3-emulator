@@ -8,7 +8,7 @@
 //      and task14_state/status still miss (restructured in v5.46 — need RE; both are
 //      post-boot, so non-blocking). mad2 degrades gracefully on the remaining 0s.
 //
-//   2. The LCD controller is the SAME PCD8544-compatible family as the 3310 (per Dan) —
+//   2. The LCD controller is the SAME PCD8544-compatible family as the 3310 —
 //      same command set, so mad2.c's existing LCD decode path applies directly. Only the
 //      geometry differs: 102x72 controller RAM, 96x65 visible. Two small mad2.c geometry
 //      tweaks are still needed for FULL fidelity (deferred — scaffold only):
@@ -43,7 +43,7 @@ static const KeyLine keylines_3410[] = {
     {KK_STAR,4,4,0}, {KK_0,0,2,0}, {KK_HASH,4,2,0},
     {KK_UP,4,3,0}, {KK_DOWN,0,3,0},
     {KK_SOFT1,0,4,0}, {KK_SOFT2,0,1,0},   // KEY_SOFT_A(0x19) / 0x1A
-    {KK_SEND,1,4,0}, {KK_END,1,1,0},      // green / red — swapped per Dan (RE guess was inverted)
+    {KK_SEND,1,4,0}, {KK_END,1,1,0},      // green / red — swapped (RE guess was inverted)
     {KK_PWR,0,0,0x02},                     // special-scan bit1 (faithful)
 };
 
@@ -69,7 +69,7 @@ const ModelProfile model_3410 = {
     },
     .lcd = {
         // 3410 graphical display: 96x65 visible, 102x72 controller RAM. Same PCD8544-
-        // compatible controller as the 3310 (per Dan) — reuse the existing decode path;
+        // compatible controller as the 3310 — reuse the existing decode path;
         // see the geometry caveats (a)/(b) in the header comment. io_data/io_cmd are the
         // 3310 GENSIO offsets (shared MAD2 bus — verify the 3410 wiring).
         .controller = LCD_PCD8544,
