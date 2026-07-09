@@ -739,10 +739,14 @@
     }
     function buildShell(def) {
       shellHost.innerHTML = "";                   // detaches #lcd if it lived here — re-added below
-      // Fit the phone to BOTH a max width and ~92% of the viewport height, so tall
-      // candybars (3310/3410) don't overflow the page.
-      var maxH = (window.innerHeight || 800) * 0.92;
-      var s = Math.min(1, SHELL_MAX_W / def.w, maxH / def.h);
+      // Fit the phone to the viewport in BOTH axes so tall candybars (3310/3410)
+      // never overflow. On narrow (mobile) screens use most of the width and leave
+      // headroom for page chrome / a menu bar; on desktop cap the width.
+      var vw = window.innerWidth || 400, vh = window.innerHeight || 800;
+      var mobile = vw < 640;
+      var maxW = mobile ? vw * 0.96 : SHELL_MAX_W;
+      var maxH = vh * (mobile ? 0.70 : 0.92);
+      var s = Math.min(1, maxW / def.w, maxH / def.h);
       var root = document.createElement("div");
       root.className = "shell-root";
       root.style.width = def.w + "px"; root.style.height = def.h + "px";
@@ -1080,6 +1084,13 @@
     }
     if (chkAudio) chkAudio.addEventListener("change", function () {
       if (chkAudio.checked) audioStart(); else audioStop();
+    });
+
+    // Re-fit the phone shell on viewport changes (resize, orientation) — debounced.
+    var _refitT = 0;
+    window.addEventListener("resize", function () {
+      clearTimeout(_refitT);
+      _refitT = setTimeout(function () { if (shellRoot) applyModel(); }, 150);
     });
 
     // -------------------------------------------------------------
