@@ -7,9 +7,14 @@ and provides NokiX's host-command surface (`getbyte`, `getword`, `getlong`,
 `getldr`, `create`, `runatend`, `fail`) plus REXX functions (`getenv`,
 `setenv`, `swapenv`, `reserve_ram`, `dand`, `dor`, `dxor`, `dshr`, `dshl`).
 
-Regina autoloads NokiX's REXX macros (`LOCATE.rx`, `CREATE.rx`-style files in
-`ref/NokiX-scripts/.../macros/`) — they implement `locate(...)`, `add_5e0_id`,
-`add_action`, etc.  We only provide the C-side primitives those macros call.
+Regina autoloads NokiX's REXX macros (`LOCATE.rx`, `CREATE.rx`-style files) —
+they implement `locate(...)`, `add_5e0_id`, `add_action`, etc.  We only provide
+the C-side primitives those macros call.
+
+> **Bring your own NokiX scripts.** The NokiX `.nrx` scripts and REXX macros are
+> *not* bundled with this repo (they're third-party). Obtain them from the NokiX
+> distribution and point `REGINA_MACROS` at the macros directory (the examples
+> below use a local `ref/NokiX-scripts/…` checkout — substitute your own path).
 
 ## Build + run
 
