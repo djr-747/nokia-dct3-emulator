@@ -25,8 +25,8 @@ you supply is picked up automatically.
 | **3210** | NSE-8 v6.00 | 🟡 partial | powers on to Contact Service (CS = MMI-block launch) |
 | **8290** | NSB-7 v5.22 | 🟡 partial | Contact Service; US-band DSP-upload boot handshake RE pending |
 | **8890** | NSB-6 v12.16 | 🟡 partial | Contact Service; same as 8290 (US-band 8850) |
-| **3330** | NHM-6 v4.50 | 🔴 scaffold | Contact Service; DSP upload works, MMI verdict RE outstanding |
-| **3350** | NHM-9 v5.22 | 🔴 scaffold | Contact Service; profile/RE incomplete |
+| **3330** | NHM-6 v4.50 | 🟡 partial | Contact Service; DSP upload works, MMI verdict RE outstanding |
+| **3350** | NHM-9 v5.22 | 🟡 partial | Contact Service; profile/RE incomplete |
 | **5510** | NPM-5 v3.50 | 🔴 scaffold | clean power-off early; map/scratch unresolved |
 
 **Booting to standby: 8 of 18 registered** (2100, 3310, 3410, 5210, 8210, 8250, 8850, 8855).
