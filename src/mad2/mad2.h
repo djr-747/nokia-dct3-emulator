@@ -407,7 +407,7 @@ typedef struct Mad2 {
     // per-offset access counters for the 256-byte MMIO window. Set
     // env MMIOAUDIT=1 to enable. mad2_mmio_audit_dump() prints the table at end of
     // a run — shows fall-through (unhandled) MMIO addresses touched during boot, so
-    // we can identify hardware signals we're not modeling. Strip before commit.
+    // we can identify hardware signals we're not modeling.
     uint32_t mmio_audit_r[0x100];
     uint32_t mmio_audit_w[0x100];
     uint32_t mmio_audit_first_pc[0x100];

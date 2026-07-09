@@ -1,10 +1,8 @@
 /*
- * NOTE: superseded by flasher/arduino/dct3uni (one sketch = MBus + FBus + SIM).
- * dct3uni boots into this exact framed protocol, so sim_bridge.c / simprobe work
- * against it unchanged. Kept as the minimal SIM-only reference.
+ * The minimal SIM-only reference sketch for the emulator's real-SIM bridge.
  *
  * simbridge - ESP32 "thin" ISO-7816 SIM-card reader for the DCT3 emulator's
- * SIM bridge. Companion to flasher/arduino/dct3bridge (the MBus pump).
+ * SIM bridge.
  *
  * The host (tools/sim_bridge.c, via tools/simprobe or, later, mad2) owns the
  * whole ISO-7816 *T=0* protocol: procedure bytes, the 0x60 NULL, single-byte vs

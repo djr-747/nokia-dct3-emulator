@@ -181,7 +181,7 @@ static const uint8_t DSPUP5_MSK[12] = { 0xFF,0xFF, 0xFF,0xFF, 0xFF,0x00, 0xFF,0x
 // Same job as the 5210 overlay below, but for the NHM-5 (3310) build line. The 5210's
 // VERDICT5/DSPUP5 writer shapes DO NOT occur in the 3310 firmware (verified: they fall back
 // to the profile constant on every 3310 build), so the 3310 line needs its own anchors.
-// Both resolve UNIQUELY and correctly on v5.79 + v6.39 + the v5.57 retrohack mod — and each
+// Both resolve UNIQUELY and correctly on v5.79 + v6.39 + a community v5.57 mod — and each
 // build genuinely places these RAM cells differently (dsp_uploaded: v5.79=0x11038C,
 // v6.39=0x11079C, v5.57=0x110360), which is exactly why a single hardcoded constant was
 // silently wrong off-v5.79.

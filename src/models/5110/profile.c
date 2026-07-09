@@ -11,7 +11,7 @@
 //
 // The DCT3 RTOS/MMI core is shared with the 3310 (the sigs resolve), so our ARM core runs
 // it; RAM is shifted ~0x10000 down vs the 3310 (sim_gate 0x10FD22 vs ~0x11Fxxx). Boots to
-// "Security code" under DSP54_COSIM=1 (tools/check_5110_boot.sh).
+// "Security code" under DSP54_COSIM=1 (tools/check_5110_boot.sh;).
 
 #include "models/model.h"
 #include "models/mad2_sigs.h"      // shared DCT3 RTOS firmware-address signatures

@@ -418,8 +418,8 @@ void mad2_write(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t value)
             // it each centisecond (mad2_timers_tick) and the FIQ8 handler 0x2E6DD4 acks it by
             // writing ACT=1 ([0x20016]|=2). ACT must NOT latch set on a firmware write, or the
             // FIQ dispatch loop 0x2E6FBE re-reads it as active and re-dispatches forever -> no
-            // yield -> reason-5 watchdog reboot (the old Stopwatch-Start crash). So a
-            // write clears ACT (the ack); EN/MSK latch. FIQ5
+            // yield -> reason-5 watchdog reboot (the old Stopwatch-Start crash; see
+            //). So a write clears ACT (the ack); EN/MSK latch. FIQ5
             // (Timer1 overflow) is a SEPARATE interrupt acked via 0x20008 by handler 0x2E4418,
             // so it is not touched here (it used to be, from the old FIQ5/FIQ8 conflation).
             m->fiq8_ctrl = (uint8_t)(value & ~0x02u);            // EN/MSK latch; ACT (bit1) never latches set

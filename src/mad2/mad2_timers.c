@@ -112,7 +112,7 @@ void mad2_timers_tick(Mad2* m, uint32_t cycles) {
     // inject INT5 (RTC-MIN) edges early + unmask, to exercise the IRQ2
     // CCONT cascade ISR without waiting a full emulated minute (780M cyc). CCFORCE5_AT =
     // first fire (cycles, default 90M ~ post-idle), CCFORCE5_EVERY = re-fire period.
-    // Strip before commit. (Forced unmask is for ISR discovery only, not a fidelity claim.)
+    // (Forced unmask is for ISR discovery only, not a fidelity claim.)
     {
         static long at = -2, every = 0; static uint64_t next = 0;
         if (at == -2) {

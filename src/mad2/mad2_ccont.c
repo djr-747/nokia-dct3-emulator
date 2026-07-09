@@ -75,7 +75,7 @@ uint8_t ccont_read(Mad2* m) {
     else if (reg == 0x0F) v = m->cc_int_mask;    // interrupt mask
     else                  v = m->ccont[reg];
     // log who reads the CCONT pending-int register (reg 0x0E) — that's
-    // the IRQ2 CCONT-cascade ISR sampling which INT fired. Strip before commit.
+    // the IRQ2 CCONT-cascade ISR sampling which INT fired.
     {
         static int cclog = -1;
         if (cclog < 0) cclog = getenv("CCLOG") ? 1 : 0;
@@ -98,7 +98,7 @@ void ccont_byte(Mad2* m, uint8_t b) {
         m->dbg_ccw_count[reg]++; m->dbg_ccw_last[reg] = b;   // per-reg write tracker
         if (reg == 0x00 && (b & 0x08)) m->adc_channel = (b >> 4) & 0x07;  // reg0: enable A/D + select channel
         if (reg == 0x0E) { m->cc_int_lines &= (uint8_t)~b; if (b & 0x80) m->rtc_alr_assert_cyc = 0; cc_int_update(m);   // write 1 to release
-            // log the ISR's INT ack (which line it cleared). Strip before commit.
+            // log the ISR's INT ack (which line it cleared).
             static int cclogw = -1;
             if (cclogw < 0) cclogw = getenv("CCLOG") ? 1 : 0;
             if (cclogw) printf("[cclog] ACK reg0E &= ~%02X  pc=%06X mono=%llu\n",

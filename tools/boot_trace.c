@@ -920,7 +920,7 @@ int main(int argc, char** argv) {
     long edge_n = (long)strtoul(getenv("EDGES") ? getenv("EDGES") : "0", NULL, 0);
     if (edge_n > 4000) edge_n = 4000;
     // break the instant PC leaves flash (>=0x400000) after this step,
-    // to catch the exact jump-into-garbage of the FIQ-mode wedge. Strip before commit.
+    // to catch the exact jump-into-garbage of the FIQ-mode wedge.
     long wedgetrap = getenv("WEDGETRAP") ? atol(getenv("WEDGETRAP")) : 0;
     struct { uint32_t from, to, lr; } *edges = edge_n ? calloc((size_t)edge_n, sizeof(*edges)) : NULL;
     long edge_w = 0; uint32_t prev_pc = 0;
@@ -1115,12 +1115,12 @@ int main(int argc, char** argv) {
     uint32_t tr_disp49 = 0xFFFFFFFFu;   // last (gate<<16|sub<<8|sel) emitted, to dedup re-evals
     // print N firmware PCs after each IRQ2 (CCONT cascade) delivery, to
     // map the cascade-dispatch path (vector -> common IRQ -> CCONT int service -> send msg).
-    // IRQ2TRACE_AFTER gates to IRQ2s raised after a given step. Strip before commit.
+    // IRQ2TRACE_AFTER gates to IRQ2s raised after a given step.
     long irq2trace = getenv("IRQ2TRACE") ? atol(getenv("IRQ2TRACE")) : 0;
     long irq2trace_after = getenv("IRQ2TRACE_AFTER") ? atol(getenv("IRQ2TRACE_AFTER")) : 0;
     long irq2trace_left = 0; int irq2_seen = 0;
     // when PC first hits TRACEFROM after step TRACEAFTER, print the next
-    // TRACEN PCs (decode a routine's path). Reuses the irq2trace print. Strip before commit.
+    // TRACEN PCs (decode a routine's path). Reuses the irq2trace print.
     uint32_t tracefrom = (uint32_t)strtoul(getenv("TRACEFROM") ? getenv("TRACEFROM") : "0", NULL, 0);
     long traceafter = getenv("TRACEAFTER") ? atol(getenv("TRACEAFTER")) : 0;
     long tracen = getenv("TRACEN") ? atol(getenv("TRACEN")) : 200;
@@ -1197,7 +1197,7 @@ gui_run_start:   // in-process warm-reboot target (PWR held 30s); GUI build only
     // INTFIRE: focused interrupt-fire trace (no BL/BLX spam). Logs each FIQ/IRQ delivery
     // with source, interrupted PC, mode-before (preemption tag), pending/mask, and the
     // 0x2000C master gate (int_ctrl) at fire time — to see which line leaks into a
-    // guarded section before a wild-PC. INTFIRE_AFTER gates by step. Strip before commit.
+    // guarded section before a wild-PC. INTFIRE_AFTER gates by step.
     long intfire       = getenv("INTFIRE") ? 1 : 0;
     long intfire_after = getenv("INTFIRE_AFTER") ? atol(getenv("INTFIRE_AFTER")) : 0;
     long intfire_cap   = getenv("INTFIRE_CAP")   ? atol(getenv("INTFIRE_CAP"))   : 4000000;
@@ -1367,7 +1367,7 @@ gui_run_start:   // in-process warm-reboot target (PWR held 30s); GUI build only
         if (irq2trace_left > 0) { printf("[irq2] %06X\n", pc & 0xFFFFFFu); irq2trace_left--; }
         // log RTOS message sends — entry of send 0x29921C (task ctx) and the
         // IRQ-ctx twin 0x2997B0. r0=target task id, r1=message. Shows the live message graph
-        // (which tasks ever get messages). SENDLOG_AFTER gates by step. Strip before commit.
+        // (which tasks ever get messages). SENDLOG_AFTER gates by step.
         {
             static long sl = -2, sla = 0; static long sln = 0; static long sl_max = 4000;
             static uint32_t sl_pc = 0x29921Cu, sl_pc2 = 0x2997B0u;  // 3310 defaults; override per model
@@ -1911,7 +1911,7 @@ gui_run_start:   // in-process warm-reboot target (PWR held 30s); GUI build only
                h.mad2.pcm_rate ? h.mad2.pcm_rate : 0.0);
 
     // hexdump a RAM region at exit (16 bytes/line). For task
-    // census (TCB table 0x106130, pending counts 0x104884). Strip before commit.
+    // census (TCB table 0x106130, pending counts 0x104884).
     // NOTE: RAMDUMP is ALSO the snapshot-path knob (line ~887). Only treat it as an
     // addr-hexdump when it parses as a number — a path like "/tmp/w" parses nothing
     // (endptr unmoved) and must NOT trigger this (else it spams "0x000000..0x000040").

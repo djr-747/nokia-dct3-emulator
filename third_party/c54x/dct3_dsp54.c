@@ -76,7 +76,7 @@ Dsp54 *dsp54_create(const uint8_t *image, size_t nbytes) {
     Dsp54 *d = calloc(1, sizeof *d);
     if (!d) return NULL;
     d->s = c54x_init();
-    /* DSP54_NOXPC (faithful default ON under cosim): the early-MAD2 LEAD is C542-class — single 64K
+    /* DSP54_NOXPC (faithful default ON under cosim): the MAD2 LEAD is C542-class — single 64K
      * program page, NO XPC. Interrupt frames are the 16-bit PC alone and RETE pops only PC, so
      * the firmware's task-level `call ...; rete` (return-and-enable-ints, e.g. the sleep/wake
      * sequencer tail 0x90BE) stays stack-balanced. The lift's C548/549-style 2-word {PC,XPC}

@@ -1,4 +1,4 @@
-/* dct3_dsp54 — integration contract for the DCT3 (MAD2) DSP core.
+/* dct3_dsp54 — integration contract for the DCT3 (MAD2/MAD2) DSP core.
  *
  * Wraps the lifted TMS320C54x interpreter + the Nokia HPI/port bridge behind a
  * small API that the platform model (mad2) drives. This is the surface the
@@ -12,7 +12,7 @@
  * HPI window: the MCU sees DSP data words 0x000..0x7FF at MCU 0x10000..0x10FFF,
  * i.e. MCU_addr = 0x10000 + 2*DSP_word.  (Mailbox: cobba=0x070/0x100E0,
  * req=0x071/0x100E2, reply=0x072/0x100E4, mbox0=0x07F/0x100FE, mbox1=0x080/0x10100,
- * boot_status=0x002/0x10004.)  See .
+ * boot_status=0x002/0x10004.)
  *
  * The I/O-port mailbox (PORTR/PORTW ports 1/2/3, used by the host-command ISR
  * 0x35B9) is routed through the port callbacks — the host side decides how those

@@ -1,6 +1,6 @@
 /*
  * simprobe - bench bring-up CLI for the DCT3 SIM bridge. Talks to the ESP32 thin
- * reader (flasher/arduino/simbridge) via tools/sim_bridge.c and runs a real SIM,
+ * reader (esp32/simbridge) via tools/sim_bridge.c and runs a real SIM,
  * WITHOUT the emulator. Use this to confirm the hardware path (ATR, ICCID, IMSI)
  * before wiring the bridge into mad2.
  *

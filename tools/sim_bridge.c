@@ -20,7 +20,7 @@
 #include <sys/select.h>
 #include <sys/ioctl.h>
 
-/* ---- Bridge framing (must match flasher/arduino/simbridge) ---- */
+/* ---- Bridge framing (must match esp32/simbridge) ---- */
 #define REQ_SYNC   0xA5
 #define RSP_SYNC   0x5A
 #define CMD_PING       0x01
@@ -259,7 +259,7 @@ int sim_bridge_activate(uint8_t* atr, int* atr_len) {
                                         "re-reset, switched silently)\n", ta1, (unsigned)baud);
                     else
                         fprintf(stderr, "[simbridge] TA1=0x%02X: %u-baud switch failed (old bridge "
-                                        "fw without CMD_SETBAUD? reflash flasher/arduino/simbridge) "
+                                        "fw without CMD_SETBAUD? reflash esp32/simbridge) "
                                         "— staying at 9600\n", ta1, (unsigned)baud);
                 }
             }

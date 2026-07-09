@@ -135,7 +135,7 @@ const ModelProfile model_3210 = {
         // verdict (MMI-ready / self-test gate) is the boot-critical per-build cell and must be
         // RE'd for v6.00 (gen_sig-port from the 5110 0x10FDDD / 6110 0x10FDE1 MMI-ready gate);
         // 0x10FDE1 is the v6-era closest guess until located.
-        // verdict = 0x11FED1 — the MMI startup-screen display gate, RE'd (was the
+        // verdict = 0x11FED1 — the MMI startup-screen display gate, RE'd 2026-06-19 (was the
         // unlocated 6110 fallback 0x10FDE1, a dead cell never written on v6.00). The "CONTACT
         // SERVICE" decision is at 0x237B52: `ldr r5,=0x11FE68; ldrb r0,[0x69+r5]` (=[0x11FED1])
         // `lsr #7; bcs` — bit7 SET = standby, CLEAR = draw the inline "CONTACT SERVICE" string

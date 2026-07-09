@@ -1,4 +1,4 @@
-// Nokia 8855 model profile — BOOTS TO STANDBY (EEPROM image). NSM-4, 4 MB MAD2
+// Nokia 8855 model profile — BOOTS TO STANDBY (2026-06-06, EEPROM image). NSM-4, 4 MB MAD2
 // SLIDE phone — the updated 8850; same NSM Family-A class (shared keypad matrix + BLB-2
 // battery) and a slide cover, but a 4 MB image (8850/8210/8250 are 2 MB). verdict/dsp_uploaded
 // are RE'd below and the DSP upload completes natively (acks ~3589) so the self-test RUNS.

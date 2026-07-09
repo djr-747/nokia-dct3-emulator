@@ -64,7 +64,7 @@ static void i2c_load(Mad2* m) {
         if (getenv("I2CLOG")) printf("[i2c] tune checksum finalized @0x11E = 0x%04X\n", s);
 
         // Provision the DSP-fault latch (record 0x607, 1 byte @EE[0x29E]) on a virgin image.
-        // RE'd (the legacy reason-0x68 idle reset, 5110 v5.30): the firmware's DSP
+        // RE'd 2026-06-12 (the legacy reason-0x68 idle reset, 5110 v5.30): the firmware's DSP
         // watchdog (msg-29 handler 0x291C1C -> checker 0x288962, one check per ~94M steps
         // ~= 7.2 s) reads this PERSISTED fault latch from the external 24C16 via the record
         // store (group table flash 0x2A6438; rec 0x607 -> {off 0x29E, len 1} — format proven

@@ -3,7 +3,7 @@
 // of behaviourally faking the mailbox. Native-only (the 635 KB C54x interpreter is
 // kept out of the wasm build); the 5110 profile selects it under #ifndef __EMSCRIPTEN__.
 //
-// GOAL ( §7e): make the real DSP produce the boot reply in the
+// GOAL: make the real DSP produce the boot reply in the
 // HPI shared-RAM window so the firmware's DSP-block loader builds a valid branch table
 // and sets [0x10A9E4]=1 ITSELF — clearing the "DSP ROM MISMATCH" screen faithfully,
 // not by poking the flag.
@@ -123,7 +123,7 @@ static void port_lazy(void) {
     const char *w2 = getenv("DSP54_PORT2WADDR"); if (w2 && *w2) g_port2_waddr = (uint32_t)strtoul(w2,0,0);
 }
 
-// === DSP54_CMDLEVEL — the early-MAD2 glue level comparator on the host-cmd INT2 line ===========
+// === DSP54_CMDLEVEL — the MAD2 glue level comparator on the host-cmd INT2 line ===========
 // RE-grounded 2026-06-11. The C54x INT0-INT3 pins are EDGE-SAMPLED (SPRS039C: two-flip-flop
 // synchronizer latches a falling edge into IFR), but the firmware's shared INT1/2/3 ISR
 // (0x3598) is written against a LEVEL source: its exit (0x35F7) pulses port2=0xFFFF then
@@ -232,7 +232,7 @@ static void cmdlevel_eval(Mad2 *m) {
 // values makes the self-test PASS organically (the real CONTACT SERVICE fix — SELFTEST_MEAS
 // patched the OUTPUT, this models the INPUT). Register-level model: latch addr from 0x2C,
 // return the reg file on 0x2D with bit12=0 (ready, so the bring-up spin at 0x45F8 exits).
-// === COBBA serial protocol (RE'd, dsp_prom.s54 0x465C/0x4610/0x4604) ===========
+// === COBBA serial protocol (RE'd 2026-06-11, dsp_prom.s54 0x465C/0x4610/0x4604) ===========
 // The DSP↔COBBA serial link is a register-addressed transfer over I/O ports 0x2C (select) and
 // 0x2D (data + bit12 busy/ready flag). Decoded from the silicon:
 //
@@ -413,7 +413,7 @@ static uint16_t c54x_port_read(void *opaque, uint16_t pa) {
     else if (pa == 0x3B) { cobba_par_lazy();                    // AGC/meas readback B
         if (g_cobba_par.on) { rv = (uint16_t)(g_cobba_par.meas_b & 0x0FFF); g_c54x_pmap_handled = 1; } }
     // Host-cmd mailbox ports: on MAD2 the DSP's ports 0-3 ARE the MCU 0x100xx window mailbox
-    // ( §7). Under the single-store model the window IS
+    // (docs/archive/5110-dsp/dsp-). Under the single-store model the window IS
     // api_ram — m->mem at those addresses is an invisible shadow (MCU reads route to api_ram),
     // so both port READS and port WRITES must use the api_ram cell or the conversation splits
     // (the audit class: the DSP's version/checksum reply landed where the MCU never looks ->
@@ -433,7 +433,7 @@ static uint16_t c54x_port_read(void *opaque, uint16_t pa) {
     return rv;
 }
 // === DSP54_PCMCAP — tap the DSP's COBBA codec output (port 0x21 DAC) ======================
-// ARCHITECTURE (RE'd eve): MAD2 audio is NOT a C54x McBSP/serial-MMR path — the
+// ARCHITECTURE (RE'd 2026-06-11 eve): MAD2 audio is NOT a C54x McBSP/serial-MMR path — the
 // transmit interrupt vectors (0xFFD4/D8/DC) are STUBS (return_fast), so there is no XINT-driven
 // serial transmit. Audio is the COBBA codec over I/O-PORT 0x21 (bidirectional: read = mic ADC,
 // write = earpiece DAC), driven per codec frame by the vec16 ISR (0x3204): read input, process
@@ -714,7 +714,7 @@ static void c54x_lazy_init(Mad2 *m) {
     // COLD reset-RELEASE edge (see 0x20002 handler in c54x_write), NOT here. Seeding at t=0 was
     // unfaithful: the MCU's HPI window-clear during its own boot (28k-397k) wiped it, forcing a
     // reseed. The faithful HPI boot order is: MCU clears the window -> drops the loader -> releases
-    // the DSP. So we seed loader1 exactly at the release edge (t=0 seed removed).
+    // the DSP. So we seed loader1 exactly at the release edge (2026-06-09; t=0 seed removed).
     // (Manual block-upload knobs DSP54_BLOCKS / DSP54_BLOCKONLY REMOVED 2026-06-17: they
     // loaded extracted re/dsp-5110/blockNN.bin into DSP memory by hand — a debugging crutch
     // from before the firmware drove its own upload faithfully. The MCU now uploads every
@@ -827,7 +827,7 @@ static int c54x_read(Mad2 *m, uint32_t addr, int size, uint32_t ram_value, uint3
         // runs wild (taskbmp garbage, never idles, vocoder/BIST dominant) while still booting the
         // MCU LCD, so it LOOKS fine. An entire Phase-1 investigation (the "never-reaches-idle /
         // write-coherence-breaks / vocoder-limit-cycle" findings) was measured on this diverged
-        // substrate and was WRONG ( §8s). LIVEVER is NOT a DSP-work substrate.
+        // substrate and was WRONG. LIVEVER is NOT a DSP-work substrate.
         // For ANY DSP-internal work use the HEALTHY substrate: DSP54_COSIM=1 DSP54_HPIAPI=1
         // (no LIVEVER) — there the DSP correctly parks at idle ~98.6%.
         //
@@ -1129,8 +1129,8 @@ static int c54x_write(Mad2 *m, uint32_t addr, int size, uint32_t value) {
         // ack-stale+unmask of FIQ1=FIQ_MDISND (ref/Nok-MADos-master/include/hw/int.h), the DSP->MCU
         // flow-control source we now raise faithfully on the MDISND-head advance (DSP54_RINGFIQ).
         // It does NOT reach the DSP. Firing a DSP interrupt from it was the old "unified doorbell"
-        // stand-in for the real host doorbell [0x30000]->vec25 (HPINT) — now that that is
-        // wired correctly (g_hpivec=25), the stand-in is RETIRED (DSP54_RINGDOORBELL, default OFF). Kept
+        // HACK that stood in for the real host doorbell [0x30000]->vec25 (HPINT) — now that that is
+        // wired correctly (g_hpivec=25), the hack is RETIRED (DSP54_RINGDOORBELL, default OFF). Kept
         // only for A/B; DSP54_UNIDOORBELL likewise requires it. (The MDISND consumer's wake is HPINT
         // ([0x866]bit1 via 0x3772); its dequeue ARM is INT2/vec18 — a separate, non-MCU-pulsed
         // source still to be modelled. Neither is [0x20008].)
@@ -1866,7 +1866,7 @@ static void c54x_tick(Mad2 *m) {
           }
         }
         // === DSP54_COBBA — fake COBBA-GJ codec: the codec FRAME CLOCK (vec20 RINT0) =========
-        // RE'd: MAD2 audio = the COBBA codec over I/O-port 0x21 (read=mic ADC,
+        // RE'd 2026-06-11: MAD2 audio = the COBBA codec over I/O-port 0x21 (read=mic ADC,
         // write=ear DAC), clocked per sample by the vec20 RINT0 serial ISR (0x3416 -> 0x3558
         // -> tone gen 0xA617 / FIR). The C54x transmit vectors are STUBS, so there is no McBSP
         // transmit — COBBA *is* the frame clock + the data exchange. Our cosim has no codec, so
@@ -1936,7 +1936,7 @@ static void c54x_tick(Mad2 *m) {
           }
         }
         // === DSP54_COBBA — COBBA BSP serial DIGITAL LOOPBACK (DXR -> DRR) ===================
-        // RE'd (docs/research/5110-, phase-2): the cmd-0x70
+        // RE'd 2026-06-12 (docs/research/5110-, phase-2): the cmd-0x70
         // self-test's loader2 routine (demand-page block 18, flash 0x298934, dest 0x0D80) runs
         // a TWO-PHASE COBBA codec check that folds the verdict cell data[0x06F9] (== MCU verdict
         // byte[9] = [0x101441]; gate = byte9&3==0):
@@ -2125,7 +2125,7 @@ static void c54x_tick(Mad2 *m) {
         // working self-test reference). Requires the self-test to actually execute (the MDISND dequeue
         // armed — organic under DSP54_CMDLEVEL).
         // Fires once per builder entry (re-arms on exit, so a self-test retry is also covered).
-        // Faithful default ON under cosim (end-to-end validated with CMDLEVEL): models
+        // Faithful default ON under cosim (2026-06-11, end-to-end validated with CMDLEVEL): models
         // the analog front-end's NOMINAL idle reading. Without it the organically-drained report
         // carries garbage -> the validator faithfully REJECTS -> the firmware's real one-shot retry
         // reboot ([0x10FDDE] 0x5A/0xA5 marker protocol, reason-4 @0x258D2E) -> exposes the (open)

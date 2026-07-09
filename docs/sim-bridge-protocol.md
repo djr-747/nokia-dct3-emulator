@@ -3,7 +3,7 @@
 > **Firmware note:** the SIM reader is now one role of the unified `dct3uni` sketch
 > (MBus + FBus + SIM). `dct3uni` boots into the
 > exact framed protocol below, so everything here is unchanged; the standalone
-> `flasher/arduino/simbridge` is kept only as the SIM-only reference.
+> `esp32/simbridge` is kept only as the SIM-only reference.
 
 > **Context:** 3310 v5.79 (`firmware/Factory Reset 3310 NR1 v5.79.fls`). mad2 SIM
 > model lives in `src/mad2/mad2.c` (SIMI regs `0x20036–0x2003F`, `sim_run_apdu`,
@@ -31,7 +31,7 @@ ESP32** + host owns T=0.
 
 - **ESP32 = electrical only.** Generates the card clock, drives RST/VCC, shuttles
   bytes on the half-duplex I/O line. **No T=0 logic, no APDU awareness.** Mirrors
-  the existing `flasher/` philosophy (smart host, dumb wire) — but it must *own the
+  the existing smart-host, dumb-wire philosophy — but it must *own the
   clock*, which a SIM requires.
 - **Host (`tools/sim_bridge.c`) = T=0 TPDU state machine.** Procedure bytes, the
   `0x60` NULL, single-byte vs all-remaining ACK, SW1/SW2. POSIX `termios`; built

@@ -122,7 +122,7 @@ static uint64_t  g_cycles64 = 0;     // true elapsed CPU cycles (rebase-correcte
                                       // for the real-time cycle-paced run loop.
 static uint32_t  g_rtc_wr_lr = 0;    // external caller of the CCONT RTC-reg write (diag)
 // capture (LR, logical-reg, value) at the CCONT write-reg helper entry
-// 0x2E98D4 (r0=packed reg<<8|mask, r1=value). Finds who writes the RTC regs. Strip before commit.
+// 0x2E98D4 (r0=packed reg<<8|mask, r1=value). Finds who writes the RTC regs.
 #define CCWR_N 24
 static uint32_t g_ccwr_lr[CCWR_N], g_ccwr_reg[CCWR_N], g_ccwr_val[CCWR_N];
 static uint32_t g_ccwr_w = 0;
@@ -219,7 +219,7 @@ static int      g_dbg_any = 0;
 // (exception-vector / null) range. The clock-tick null-callback crash lands at PC=0x20
 // via a bx/blx to a 0-handler; a heuristic stack-walk mislabels the frames, so this
 // records the EXACT instruction trail into the bad branch. Freeze-on-crash keeps the
-// lead-up from being overwritten by post-crash garbage execution. Strip before commit.
+// lead-up from being overwritten by post-crash garbage execution.
 #define PCRING_N 96
 static uint32_t g_pcring[PCRING_N];        // RAW gprs[15] (= PC + pipeline) at each step
 static uint32_t g_pcring_cpsr[PCRING_N];   // full cpsr.packed at each step (mode + T bit)
@@ -275,7 +275,7 @@ static uint32_t g_call_count = 0;     // completed calls (so JS can confirm it r
 static uint32_t g_call_result = 0;    // r0 captured at call return
 static uint32_t g_cap_pc = 0, g_cap_val = 0, g_cap_hits = 0;   // capture r0 at a PC
 // send-logger — ring of (task<<16|msg) at send 0x29921C / enqueue 0x2997B0.
-// Lets a node probe trace the post-ready message cascade. Strip before commit.
+// Lets a node probe trace the post-ready message cascade.
 #define SENDLOG_N 256
 static uint32_t g_sendlog[SENDLOG_N]; static uint32_t g_sendlog_lr[SENDLOG_N]; static uint32_t g_sendlog_w = 0; static int g_sendlog_on = 0;
 
@@ -865,7 +865,7 @@ static void web_step_once(struct ARMCore* cpu) {
             if (g_step >= g_key_seq_at) { g_key_seq_state = 0; g_key_seq_at = -1; }
         }
         // record this step's PC; freeze the ring once we branch into the
-        // low/null range so the trail into the bad branch survives. Strip before commit.
+        // low/null range so the trail into the bad branch survives.
         if (!g_pcring_frozen) {
             uint32_t raw  = (uint32_t)cpu->gprs[15];
             uint32_t cpsr = cpu->cpsr.packed;
@@ -1269,7 +1269,7 @@ double dct3_web_rtc_min_edges(void) { return (double)g_mad2.rtc_min_edges; }
 EMSCRIPTEN_KEEPALIVE
 double dct3_web_rtc_writes(void) { return (double)g_mad2.rtc_writes; }
 // read ring entry k (0..23, newest-first via w). Returns packed
-// lr (low24) | reg<<24; val via the _val accessor. Strip before commit.
+// lr (low24) | reg<<24; val via the _val accessor.
 EMSCRIPTEN_KEEPALIVE
 uint32_t dct3_web_ccwr_w(void) { return g_ccwr_w; }
 EMSCRIPTEN_KEEPALIVE
@@ -1669,7 +1669,7 @@ uint32_t dct3_web_pc(void) { return g_core ? (uint32_t)g_core->cpu.gprs[15] : 0;
 
 // frozen-on-crash PC ring. crashed = 1 once control jumped into the
 // low range; w() = total recorded (ring index = w%N); at(i) = entry i (0..N-1, raw
-// slot). Read the last N in order: for k in 0..N-1, slot=(w-N+k)%N. Strip before commit.
+// slot). Read the last N in order: for k in 0..N-1, slot=(w-N+k)%N.
 EMSCRIPTEN_KEEPALIVE int      dct3_web_pcring_crashed(void) { return g_pcring_frozen; }
 EMSCRIPTEN_KEEPALIVE uint32_t dct3_web_pcring_w(void)       { return g_pcring_w; }
 EMSCRIPTEN_KEEPALIVE int      dct3_web_pcring_n(void)       { return PCRING_N; }

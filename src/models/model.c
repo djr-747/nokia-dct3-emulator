@@ -12,7 +12,7 @@ extern const ModelProfile model_3310;
 // 3310. This drops the link dependency on every other profile — and, transitively,
 // on the C54x co-sim (only the serial-bus profiles 5110/6110/3210 reference it, under
 // #ifndef __EMSCRIPTEN__). The 3310 uses the HLE DSP (src/mad2/dsp_default.c,dsp_rom4.c),
-// so a 3310-only link needs no c54x at all. See Makefile `gui-release`.
+// so a 3310-only link needs no c54x at all. See Makefile `gui-release` +.
 #ifndef DCT3_MODEL_3310_ONLY
 extern const ModelProfile model_8850;
 extern const ModelProfile model_7110;

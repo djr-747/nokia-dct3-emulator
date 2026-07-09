@@ -2,7 +2,7 @@
  * sim_bridge - host-side ISO-7816 T=0 driver for the DCT3 SIM bridge.
  *
  * Talks the framed bridge protocol (docs/sim-bridge-protocol.md) to the ESP32
- * "thin reader" (flasher/arduino/simbridge) and runs the whole T=0 TPDU state
+ * "thin reader" (esp32/simbridge) and runs the whole T=0 TPDU state
  * machine here on the host: procedure bytes, the 0x60 NULL, single-byte vs
  * all-remaining ACK, SW1/SW2.
  *

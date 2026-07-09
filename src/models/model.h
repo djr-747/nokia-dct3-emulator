@@ -95,9 +95,10 @@ typedef struct {
     // loader 0x271AF4 requires [0x10004]==[0x10006] before it builds the DSP branch table
     // and sets the dsp_uploaded flag; without a matching second word the table is malformed
     // and "DSP ROM MISMATCH" persists). mad2 returns dsp_boot_ready for it too. 0 = unused
-    // (3310/8850 loaders have no such cross-check). See  §7e/§8e.
+    // (3310/8850 loaders have no such cross-check).
     uint32_t dsp_boot_status2; // second ready word (5110 = 0x10006); 0 = none
-    // Reset/reboot path (mad2 catches [0x20001]|=4 and discriminates by reason). All three addresses are sig-located so the
+    // Reset/reboot path (mad2 catches [0x20001]|=4 and discriminates by reason; see
+    //). All three addresses are sig-located so the
     // reset-recovery framework is firmware-agnostic — a missing signature falls back
     // to a build-specific constant or 0 (mad2 then degrades to warm-reboot).
     // `reboot_fn`     — universal reboot fn entry; LR + r0 captured at this PC give
@@ -232,7 +233,7 @@ typedef struct {
     // DDRAM left-to-right but column 0 is physically the RIGHTMOST pixel). The decode
     // path maps logical column c -> physical (width-1-c) at write time so the stored fb
     // is correctly oriented for every consumer (web unpack, native ASCII, PNG). The
-    // 5210 (NSM-5) needs this; 3310/3410/8850 etc. = 0 (normal order).
+    // 5210 (NSM-5) needs this; 3310/3410/8850 etc. = 0 (normal order)..
     uint8_t  x_mirror;
 } LcdSpec;
 
@@ -437,7 +438,7 @@ extern const DspOps mad2_dsp_7110;      // ROM-4 (7110) responder — 7110-speci
 // Real TMS320C54x co-sim backend (third_party/c54x/mad2_dsp_c54x.c). NATIVE-ONLY: the
 // 635 KB C54x interpreter is excluded from the wasm build, so the symbol exists only in
 // the native link. Reference it under #ifndef __EMSCRIPTEN__ (the wasm build keeps the
-// default backend). See  §7e + third_party/c54x/.
+// default backend). + third_party/c54x/.
 #ifndef __EMSCRIPTEN__
 extern const DspOps mad2_dsp_c54x;
 #endif

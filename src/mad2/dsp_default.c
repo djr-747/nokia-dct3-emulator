@@ -17,7 +17,7 @@
 #include <string.h>   // strcmp (DSPHEARTBEAT_SRC selector)
 
 // Real-HW captured DSP->MCU MDIRCV boot burst (3310 v6.33; NokiX RAM read of the ring,
-// frozen at standby). The ring
+// frozen at standby;). The ring
 // is BIG-ENDIAN (ARM7TDMI BE): MDIRCV_DEQUEUE 0x2BAC72 reads each word and takes
 // group = word>>8 = the even/low-address byte. The captured steady stream is KA_REPLAY_N
 // records, each TWO ring words: an 0xFF<seq> sequence/sync word (decodes to a group-0xFF
@@ -76,7 +76,7 @@ static const uint16_t ka_early[16] = {
 int dsp_default_read(Mad2* m, uint32_t addr, int size, uint32_t ram_value, uint32_t* out) {
     (void)size;
     // MAMEDSP=1 (A/B experiment): replace our faithful mailbox/FIQ0 model with MAME's
-    // nokia_3310.cpp dsp_ram_r approach — frozen constants on the four slots it special-cases
+    // nokia_3310.cpp dsp_ram_r HACK — frozen constants on the four slots it special-cases
     // ("avoid hangs when ARM try to communicate with the DSP"), RAM passthrough otherwise,
     // and NO FIQ0/IRQ4/upload protocol (see the write/tick branches). Lets us see how far
     // OUR firmware boots on MAME's stub. NOT faithful — diagnostic only, default OFF.
