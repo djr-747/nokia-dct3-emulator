@@ -237,7 +237,7 @@ static long fw_load(DCT3Core* c, const char* path, uint32_t raw_base) {
 // SWEEP_AFTER more steps, and record outcomes (msg 0x47 to task 17 = "GSM init
 // DONE", [0x10FE52] flag set, recog counter reset, reboot caught). The boot
 // loop above is the validated one; this mode just runs after it reaches the
-// chosen snapshot step. See docs/handoff-dsp-sweep-refactor.md.
+// chosen snapshot step.
 
 // Inject one MDIRCV message at the queue's current tail and raise FIQ0.
 // Mirrors the self-test reply path in src/mad2/dsp_default.c.
@@ -603,7 +603,7 @@ static void callring_flush(const char* dumppath) {
     fprintf(stderr, "[calllog] wrote %s (%ld records)\n", p, g_callring_count);
 }
 
-// --- PCMSINK=1: HAL PCM channel demo binding (docs/hal-spec.md) ---------------
+// --- PCMSINK=1: HAL PCM channel demo binding ---------------
 // Counts samples per channel + tracks ch1 peak; summary at exit. The point is a
 // zero-dependency consumer of mad2.pcm_sink so the channel has a native proof.
 static long g_pcmsink_n[2];
@@ -700,7 +700,7 @@ int main(int argc, char** argv) {
     // DSP-response message (sub-type 6 at [buf+4]) to task id19, so the DSP responder
     // can drive id19's response loop to set barrier flag 2 (0x10B20C). It mallocs an
     // 8-byte msg via 0x299AF8, sets [+4]=6, and posts via 0x299134(r0=19, r1=buf).
-    // Call it from CALLFNLIST=...,0x1F0001,... (Thumb). See docs/boot-trace-3310.md.
+    // Call it from CALLFNLIST=...,0x1F0001,... (Thumb).
     if (getenv("DSPTRAMP")) {
         // ARMv4T Thumb (NO blx — that is ARMv5). Direct BL to malloc/post, encoded for
         // this fixed load address 0x1F0000. Posts a DSP-response message to id19 with
@@ -751,7 +751,7 @@ int main(int argc, char** argv) {
     // IRQINJECT=mask[,period][,after] (experimental): periodically OR `mask` into
     // irq_pending from step `after`. Used to discover which IRQ source(s) the 8850
     // waits on (it unmasks IRQ0/5/6 but our model only asserts 2/4). e.g.
-    // IRQINJECT=0x01,30000 = pulse IRQ0 every 30k steps. See docs/8850.md.
+    // IRQINJECT=0x01,30000 = pulse IRQ0 every 30k steps.
     unsigned irqinj_mask = 0; long irqinj_period = 0, irqinj_after = 0;
     if (getenv("IRQINJECT")) {
         const char* p = getenv("IRQINJECT");
@@ -1093,7 +1093,7 @@ int main(int argc, char** argv) {
     // Emits compact, timing-stripped `[T] <TAG> ... @<step>` records for the SIM and DSP
     // handshakes — the same events the on-device monitor will stream over MBUS, so a real
     // capture diffs 1:1 against the emulator (strip the `@<step>` suffix; compare the
-    // event sequence). See docs/real-hw-trace.md for the probe table + on-device mirror.
+    // event sequence). for the probe table + on-device mirror.
     //   TRACE=dsp  DSP boot/runtime handshake (verdict, mbox acks, code-blocks, MDIRCV, IRQ4)
     //   TRACE=sim  SIM recognition (disp49 gate eval, gate var, recognition timeout) + APDUs
     //   TRACE=all  both.  All addresses are per-build via h.mad2.fw; SIM gate var is

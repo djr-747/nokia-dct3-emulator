@@ -10,7 +10,7 @@
 // from WinTesla NAM205.840 (MCU) + NAM205.84E (PPM) via tools/fls_assemble.py).
 // Header @0x1FC: "V 05.84 / 19-05-04 / NAM-2". Product code NAM-2, 2 MB image.
 //
-// Memory map: docs/dct3-flash-partition-map.md, 2100 row (2 MB):
+// Memory map:, 2100 row (2 MB):
 //   MCU 0x200000-0x35FFFF   PPM 0x360000-0x3EFFFF   EEPROM 0x3F0000-0x3FFFFF
 // (Note the EEPROM is only the top 64 KB — the 2100 carries a small PPM and no
 //  dedicated EEPROM partition like the larger NSM parts; the top boot blocks hold

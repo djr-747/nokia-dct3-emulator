@@ -8,7 +8,7 @@
 // Firmware on hand: firmware/Nokia 3350 NHM-9 v5.22 A.fls (flat 4 MB .fls). Header
 // @0x1FC: "V 05.22 / 25-06-02 / NHM-9 / (c) NMP".
 //
-// Memory map: docs/dct3-flash-partition-map.md, 3350 row (4 MB) — CONFIRMED against the
+// Memory map:, 3350 row (4 MB) — CONFIRMED against the
 // WinTesla FIASCO block addresses (Nhm9nx05.220 MCU 0x200000..0x470000; Nhm9nx05.22a PPM
 // 0x470000..0x530000):
 //   MCU 0x200000-0x46FFFF   PPM 0x470000-0x52FFFF   EEPROM 0x530000-0x5FFFFF

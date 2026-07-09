@@ -186,7 +186,7 @@ static void test_mbus(void) {
     CHECK_EQ("drained reads 0xFF", mbus_rx_pop(&g_m), 0xFF);
 }
 
-// --- Model profile HAL data (docs/hal-spec.md) -------------------------------
+// --- Model profile HAL data -------------------------------
 // Capability query + period-correct LED colours: profile DATA, so pin it here —
 // a profile edit that drops a key or a colour shows up as a test failure.
 static void test_profile_hal(void) {

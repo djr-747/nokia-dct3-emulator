@@ -113,7 +113,7 @@ const ModelProfile model_7110 = {
         .match = "NSE-5",
         .flash_size = 0,
     },
-    // 7110 DSP is ROM-4 (verified, tools/dsp/rom_fingerprint.py / docs/dct3-dsp-rom-revisions.md:
+    // 7110 DSP is ROM-4 (verified, tools/dsp/rom_fingerprint.py /:
     // F073 PROM-target range 0x0926-0xF870, ~0% related to the 3310's ROM-6). So it gets the ROM-4
     // wiring, identical in shape to the 5110: native = the real C54x co-sim (DSP54_COSIM=1; the 7110
     // uploads its OWN ROM-4 blocks onto the shared ROM-4 PROM via DSP54_REALUP — proven 2026-06-17),

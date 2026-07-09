@@ -98,7 +98,7 @@ void lcd_data(Mad2* m, uint8_t b) {
 
 // --- Framebuffer output ------------------------------------------------------
 
-// The ONE shared framebuffer unpack (docs/hal-spec.md): raw DDRAM bit + the
+// The ONE shared framebuffer unpack: raw DDRAM bit + the
 // PCD8544 display-control transform (blank/all-on/inverse). Every native
 // consumer (ascii/pgm here, gui_sdl) goes through this so blank/inverse
 // transitions render faithfully everywhere. (web/main.js mirrors it in JS —

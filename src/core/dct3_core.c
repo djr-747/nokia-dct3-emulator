@@ -416,7 +416,7 @@ void dct3_set_mem_trace(DCT3Core* core, void* ctx,
 }
 
 // Force PC + CPSR — the resume primitive for reset-reason recovery (see mad2's
-// recover_pending path and docs/watchdog-reset-3310.md). Used to land back at the
+// recover_pending path and). Used to land back at the
 // instruction the watchdog/fatal handler interrupted (reason 5: PC from *0x11FF88,
 // CPSR from *0x11FF8C). Replays the same steps the core uses on an MSR CPSR + branch:
 // write CPSR (which banks SP/LR + sets ARM/Thumb), write PC, refill the prefetch pair.

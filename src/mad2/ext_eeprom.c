@@ -133,7 +133,7 @@ void ext_eeprom_write(Mad2* m, uint8_t off, uint8_t v) {
         uint8_t lmask = (m->model && m->model->led.lcd_mask) ? m->model->led.lcd_mask : 0x40;
         m->led_lcd = (v & lmask) ? 1 : 0;
     }
-    // I2C SDA/SCL pin positions in I/O 0x20 are per-model (MAD1 default SDA=bit0/SCL=bit2;
+    // I2C SDA/SCL pin positions in I/O 0x20 are per-model (early-MAD2 default SDA=bit0/SCL=bit2;
     // the 3210 oddball drives SCL on bit3). See ModelProfile.i2c_{sda,scl}_bit.
     uint8_t sda_sh = (m->model) ? m->model->i2c_sda_bit : 0;
     uint8_t scl_sh = (m->model && m->model->i2c_scl_bit) ? m->model->i2c_scl_bit : 2;
@@ -242,7 +242,7 @@ int ext_eeprom_sda(Mad2* m) {
     return mcu & eep;
 }
 
-// --- BusOps: the early-MAD2 serial-attached bus (docs/hal-spec.md) -----------
+// --- BusOps: the early-MAD2 serial-attached bus -----------
 // On these models CCONT + an external 24C16 EEPROM hang off a bit-banged serial
 // bus rather than the memory-mapped GENSIO. This is a model BUS IMPLEMENTATION,
 // not a flag the shared dispatcher branches on: mad2_read/mad2_write give it
@@ -258,7 +258,7 @@ static int bus_serial_read(Mad2* m, uint32_t addr, int size, uint32_t ram_value,
         return 1;
     }
     if (off == 0x20) {                          // GENIO port 0: external-EEPROM I2C
-        // SDA/SCL pin positions are per-model (MAD1 SDA=bit0/SCL=bit2; 3210 SCL=bit3).
+        // SDA/SCL pin positions are per-model (MAD2 SDA=bit0/SCL=bit2; 3210 SCL=bit3).
         uint8_t sda_sh = m->model ? m->model->i2c_sda_bit : 0;
         uint8_t scl_sh = (m->model && m->model->i2c_scl_bit) ? m->model->i2c_scl_bit : 2;
         uint32_t mask = (1u << sda_sh) | (1u << scl_sh);

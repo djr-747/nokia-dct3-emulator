@@ -141,7 +141,7 @@ void mad2_render_postmortem(Mad2* m, uint32_t reason, uint32_t resume_pc,
     // *before* the visible reset edge. The cycle gap between a stage and the fire IS the
     // graceful-shutdown duration; when the gap is big (e.g. 22 s for the SWDSP/DSP-reset chain),
     // the assertion-log tail will be dominated by unrelated post-stage activity, so the
-    // stages are the real causal signal. See docs/dsp-reset-chain-3310-v579.md.
+    // stages are the real causal signal.
     uint32_t stage_total = m->stage_w;
     if (stage_total) {
         uint32_t stage_show = stage_total > MAD2_STAGE_RING_N ? MAD2_STAGE_RING_N : stage_total;
@@ -196,7 +196,7 @@ void mad2_render_postmortem(Mad2* m, uint32_t reason, uint32_t resume_pc,
     // cycle gap between fires). Walks the ring backward up to 8 raw slots to surface up
     // to 4 distinct events. The dedup is what surfaces signal in a sea of noise — the
     // charge-task heartbeat 0x5B0F repeats every ~12.6 M cyc; without dedup it would fill
-    // the tail and hide the actual fault code 0x5B06. See docs/dsp-reset-chain-3310-v579.md §"Two takeaways".
+    // the tail and hide the actual fault code 0x5B06. takeaways".
     uint32_t total = m->assert_w;
     uint32_t ring_have = total > MAD2_ASSERT_RING_N ? MAD2_ASSERT_RING_N : total;
     n += snprintf(buf + n, (n < (int)cap) ? cap - (size_t)n : 0,
@@ -259,7 +259,7 @@ void mad2_render_postmortem(Mad2* m, uint32_t reason, uint32_t resume_pc,
 // or the ARM fatal handler (m->fw.fatal_handler) AND m->reboot_early is set. Sets up the
 // same recover_pending state the late `[0x20001]|=4` catch would, just with the values
 // captured BEFORE the noreturn panic chain mutated runtime state (task notify, CTSI int-
-// control write, busy delay, persisted reason byte). See docs/watchdog-deep-re-findings.md.
+// control write, busy delay, persisted reason byte).
 //
 // The caller still must advance the CPU past the panic site — either by force-applying
 // recover_pending immediately (web_step_once already has a post-step apply) or by leaving

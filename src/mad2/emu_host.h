@@ -1,4 +1,4 @@
-// EmuHost — the single typed surface a harness binds to (docs/hal-spec.md).
+// EmuHost — the single typed surface a harness binds to.
 //
 // Every harness (web src/web/main.c, SDL tools/gui_sdl.c, headless tools/boot_trace.c,
 // node tools/nav.mjs) observes the emulated phone through THESE accessors instead of

@@ -6,8 +6,7 @@
 // in the primary I/O window (0x20000) plus the GENSIO-attached chips (CCONT
 // power controller, PCD8544 LCD) that hang off it.
 //
-// Registers/protocol are from Project Blacksphere (see docs/memory-map-3310.md,
-// docs/boot-trace-3310.md).
+// Registers/protocol are from Project Blacksphere.
 
 #ifndef MAD2_H
 #define MAD2_H
@@ -93,7 +92,7 @@ typedef struct Mad2 {
     // When the running RTC time (hour:min) matches the programmed wakeup, the CCONT
     // raises INT7 (RTC-ALR, cascade bit7) -> IRQ2 like the other CCONT ints. This
     // powers an alarm/wake-at-time. NOTE: the displayed clock does not yet advance
-    // (separate manager-scheduling wall, see rtc-clock-hunt.md) so the match is
+    // (separate manager-scheduling wall) so the match is
     // armed off the FREE-RUNNING CCONT time (same base the RTC-MIN INT5 uses); the
     // alarm path is modelled correctly for when the clock advances. The firmware
     // arms it by setting 0x0B/0x0C and unmasking INT7 (reg 0x0F bit7=0).
@@ -140,7 +139,7 @@ typedef struct Mad2 {
                                 // warm-rebooting; mad2 only flags it (never resets the CPU
                                 // itself, same rule as power_off).
 
-    // --- Reset reason discrimination (see docs/watchdog-reset-3310.md) ----------
+    // --- Reset reason discrimination ----------
     // The reboot fn 0x2EEBAE (3310 v5.79) is a universal sink: every reset path bl's it
     // with a reason in r0, the fn persists the byte to RAM (m->fw.reboot_reason), then
     // writes [0x20001]|=4 and spins. We catch the spin via the existing reset_request
@@ -208,7 +207,7 @@ typedef struct Mad2 {
     // for the trailing `[0x20001]|=4` write. Skips bl 0x2D724C (the notify -> task 0x11
     // msg 0x44 + log 0x2EDD4A), the CTSI int-control write, and the busy delay; also
     // skips the fatal handler's stmia save. Behaviour with the flag OFF is unchanged
-    // (the late catch fires as before). See docs/watchdog-deep-re-findings.md §D.
+    // (the late catch fires as before).
     // RESET_EARLY=1 / dct3_web_set_reboot_early() flip it.
     uint8_t  reboot_early;       // 1 = trigger recover at reboot_fn / fatal_handler entry
 
@@ -219,7 +218,7 @@ typedef struct Mad2 {
     // unconditionally — overhead is one PC compare/insn (gated on fw.assert_log != 0).
     // At catch time mad2_render_postmortem() pulls the last N entries to surface "the
     // firmware's own narrative" alongside the reason byte. See
-    // docs/watchdog-deep-re-findings.md §G.1, §G.6.
+    //.1, §G.6.
     #define MAD2_ASSERT_RING_N 16
     struct {
         uint64_t cyc;            // rtc_mono snapshot at the assert call
@@ -233,7 +232,7 @@ typedef struct Mad2 {
     // helper, v5.79 = 0x2E0ED8) captures every staged reason BEFORE the firmware tries
     // its graceful shutdown — often 22 seconds before the visible reboot. r0 = the
     // reason being staged, LR = the caller (= the fn that decided "this is fatal").
-    // See docs/dsp-reset-chain-3310-v579.md for the SWDSP DSP-reset walk-through.
+    // for the SWDSP DSP-reset walk-through.
     #define MAD2_STAGE_RING_N 4
     struct {
         uint64_t cyc;            // rtc_mono when the setter was entered
@@ -536,7 +535,7 @@ typedef struct Mad2 {
     uint8_t  buzz_edges;
     uint16_t buzz_div_at_edge;
 
-    // --- Host PCM sink (HAL output channel, docs/hal-spec.md) -----------------
+    // --- Host PCM sink (HAL output channel) -----------------
     // When set, every DSP codec DAC sample is delivered here as it is emitted:
     // ch1 = earpiece DAC (COBBA port/DXR 0x21), ch0 = the secondary channel
     // (0x20). Source today = the C54x cosim DXR tap (third_party/c54x
@@ -604,7 +603,7 @@ typedef struct Mad2 {
     #define DCT3_TONE_OSC2 0x000100B0u   // reg 0x22 — osc2 freq (1/4 Hz)
     #define DCT3_TONE_AMP  0x000100B6u   // reg 0x25 — amplitude gate
 
-    // --- dbgcon: EMULATOR-ONLY developer console (docs/dbgcon.md) -----------
+    // --- dbgcon: EMULATOR-ONLY developer console -----------
     // A fake MMIO port block for diagnostic patches (NokiX overlays, injected test
     // code): bytes written here render on the HOST console at run time. Lives inside
     // the hooked I/O window [0x10000,0x100000) at an address no DCT3 hardware decodes;
@@ -731,7 +730,7 @@ void dsp_default_tick (Mad2* m);
 
 // --- Interrupt fabric (CTSI) -------------------------------------------------
 // Peripherals raise/ack their interrupt LINE through these instead of poking
-// fiq_pending/irq_pending directly (docs/hal-spec.md: peripherals signal via
+// fiq_pending/irq_pending directly (: peripherals signal via
 // the shared fabric, never each other). `line` is the bit index 0..7; the
 // per-line meaning is the CTSI wiring (e.g. FIQ0=DSP/MDIRCV, FIQ2=MBUS-RX,
 // FIQ5=Timer1, FIQ6=SIM-UART, FIQ7=SIM-detect; IRQ0=keypad, IRQ2=CCONT cascade,

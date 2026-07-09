@@ -198,7 +198,7 @@ static void wrblock_append(Mad2* m, uint32_t addr, uint16_t val) {
 // Cell-level integrity trace (DSPB_CELLLOG=1): dump every HPI window cell in BOTH directions,
 // bounded to a STEP window (DSPB_CL_FROM..DSPB_CL_TO, default 780..1000 = the self-test/version
 // burst) so we can inspect the self-test upload + the DSP's version/verdict reply for byte-swap /
-// word-stride / addressing corruption. See docs/dct3-dsp-bridge-ferry-RESUME.md.
+// word-stride / addressing corruption.
 static int g_celllog = -1, g_rdlog = -1, g_cl_from, g_cl_to;
 static int cl_window(void) {   // one-time init of the log flags + step bounds; returns 1 if in window
     if (g_celllog < 0) {
@@ -425,7 +425,7 @@ static int bridge_drain_step(Mad2* m, uint8_t op, uint32_t count) {
         // the host blocks here forever (proxy stays alive + responsive). If the proxy goes silent
         // past the deadline, treat the op as DONE (the proxy already advanced the DSP for it; only
         // the ack was lost) and continue. Worst case is a rare single-step under-advance, vs. the
-        // current guaranteed infinite hang. See docs/dct3-dsp-bridge-ferry-RESUME.md.
+        // current guaranteed infinite hang.
         if (g_framed && g_reply_to > 0 && g_x.pl_pos >= g_x.pl_len) {
             struct pollfd pfd; pfd.fd = g_fd; pfd.events = POLLIN; pfd.revents = 0;
             int pr = poll(&pfd, 1, g_reply_to);
@@ -461,7 +461,7 @@ static int bridge_drain_step(Mad2* m, uint8_t op, uint32_t count) {
 // The periodic blocking STEP is retired here; instead the proxy pushes IRQ/WINDOW frames the instant
 // the DSP latches HINT / advances a ring, and we (1) throttle the MCU to ~wall-clock so the real DSP
 // keeps up, and (2) drain those pushes every tick without a round-trip. See
-// docs/dct3-dsp-bridge-edge-driven-DESIGN.md.
+//.
 static int g_edge = -1;          // DSPB_EDGE: 1 = edge-driven, 0 (default) = periodic-STEP clock
 static long g_edge_nspt = -1;    // DSPB_EDGE_NS_PER_TICK: added wall-time per tick (throttle knob)
 
@@ -490,7 +490,7 @@ static void bridge_drain_pushed(Mad2* m) {
 // on shared mailbox cells (e.g. 0x87F/0x880) that the DSP sets-and-HOLDS while the concurrently-
 // running MCU acks. Our default model samples the window only at STEP boundaries, so the DSP's
 // sub-sample mailbox pulses net out and the MCU never sees the level — the rendezvous deadlocks
-// (see docs/dsp-bridge-RESUME.md). Here a window read advances the DSP a hair (DSPB_READSTEP, =1
+//. Here a window read advances the DSP a hair (DSPB_READSTEP, =1
 // by default → 1 MCU-poll : 1 DSP-insn) and returns the DSP's CURRENT level, recreating the
 // real-dual-port-RAM coincidence: the MCU's poll loop both drives the DSP and observes every
 // level it holds. Faithful — it's exactly what the real-8210 proxy FW does (read the live HPI).

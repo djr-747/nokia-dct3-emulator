@@ -1,12 +1,7 @@
-# Nokia 3310 Emulator — beta
+# Nokia 3310 Emulator
 
-Thanks for testing! This is a native Linux build that boots a real Nokia 3310
-firmware image to a live on-screen phone.
-
-> **Confidential beta — do not re-share.** © 2026 Dan Richardson. This build is
-> licensed to **@LICENSEE@** for private evaluation only. Please don't copy,
-> upload, publish, or pass it on to anyone else. All rights reserved. (Your copy
-> is watermarked with the licensee name.)
+This is a native Linux build that boots a real Nokia 3310 firmware image to a
+live on-screen phone. Free software under the GNU GPL v2.
 
 ## 1. Install
 
@@ -78,6 +73,6 @@ Please include:
 ## Notes / limitations
 
 - **3310 only.** Other DCT3 models and the DSP co-simulation are removed from
-  this beta build.
+  this build.
 - The window is wall-clock paced, so it runs at roughly real phone speed.
 - Needs a graphical session (X11 or Wayland) and a working audio device.

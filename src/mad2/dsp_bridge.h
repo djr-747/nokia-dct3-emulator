@@ -40,7 +40,7 @@ enum {
     DSPB_DONE   = 0x09,  // D->M  end of STEP response
     DSPB_PING   = 0x0A,  // M->D  comms check         seq:u8         (no DSP touch)
     DSPB_PONG   = 0x0B,  // D->M  comms check reply    seq:u8 0xA5 0x5A   (echoes seq + marker)
-    // --- edge/transactional protocol (DSPB_EDGE=1) — see docs/dct3-dsp-bridge-fbus-scope.md ---
+    // --- edge/transactional protocol (DSPB_EDGE=1) — ---
     DSPB_TXN    = 0x0C,  // M->D  one transaction: doorbell + its dirty-window delta, applied THEN signalled
                          //       ctrl_id:u8  count:u16  count*(addr:u32,val:u16)   (ctrl_id = DSPB_CTRL_* to raise after apply)
     DSPB_EVENT  = 0x0D,  // D->M  async push at a DSP edge: irq id + the (barrier-coherent) cell delta

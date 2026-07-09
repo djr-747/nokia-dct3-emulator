@@ -33,13 +33,10 @@
 #include "harness/harness.h"  // heap_shadow_used_d() — the clean heap-used accessor
 #include <mgba/internal/arm/arm.h>  // struct ARMCore: cycles
 
-// Window title. The release/beta build (make gui-release) passes -DDCT3_ATTRIB="..."
-// (author attribution) and optionally -DDCT3_LICENSEE="..." (the named beta tester —
-// a per-recipient watermark). The dev build keeps the plain title.
+// Window title. The release build (make gui-release) passes -DDCT3_ATTRIB="..."
+// (author attribution). The dev build keeps the plain title.
 #ifndef DCT3_WIN_TITLE
-#  if defined(DCT3_ATTRIB) && defined(DCT3_LICENSEE)
-#    define DCT3_WIN_TITLE "Nokia 3310 Emulator — " DCT3_ATTRIB " · Licensed to " DCT3_LICENSEE
-#  elif defined(DCT3_ATTRIB)
+#  if defined(DCT3_ATTRIB)
 #    define DCT3_WIN_TITLE "Nokia 3310 Emulator — " DCT3_ATTRIB
 #  else
 #    define DCT3_WIN_TITLE "DCT3 emulator (boot_trace GUI)"
@@ -863,12 +860,6 @@ void gui_init(const struct ModelProfile* prof) {
     shell_try_load(prof);
     build_layout(prof);
 
-#ifdef DCT3_LICENSEE
-    // Confidential-beta watermark: name the licensed tester on launch (also in the
-    // window title). A leaked copy is therefore traceable to its recipient.
-    fprintf(stderr, "Confidential beta — Licensed to %s. Not for redistribution.\n",
-            DCT3_LICENSEE);
-#endif
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         fprintf(stderr, "GUI: SDL_Init failed: %s\n", SDL_GetError());
         return;

@@ -70,7 +70,7 @@ def fnv1a32(data: bytes) -> int:
 
 def fw_build_id(fw_bytes: bytes) -> int:
     """Stable firmware id: hash the canonical 32-byte MCU version header, NOT the whole
-    file. MAD2 puts it at flash 0x1FC; the V1/MAD1 family (5110/6110/8810/...) has no
+    file. MAD2 puts it at flash 0x1FC; the V1/MAD2 family (5110/6110/8810/...) has no
     0x1FC header — its version header lives in the PPM/content block at a 64 KB-block
     boundary +4 (0xN0004). Mirrors disfw/nokix/dump_nokix."""
     HDR_LEN = 32
@@ -84,7 +84,7 @@ def fw_build_id(fw_bytes: bytes) -> int:
     off = 0x4
     while off + HDR_LEN <= len(fw_bytes):
         if _is_hdr(fw_bytes[off:off + HDR_LEN]):
-            return fnv1a32(fw_bytes[off:off + HDR_LEN])   # V1/MAD1 block header
+            return fnv1a32(fw_bytes[off:off + HDR_LEN])   # V1/MAD2 block header
         off += 0x10000
     return fnv1a32(fw_bytes)                              # last resort
 

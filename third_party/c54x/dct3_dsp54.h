@@ -1,4 +1,4 @@
-/* dct3_dsp54 — integration contract for the DCT3 (MAD1/MAD2) DSP core.
+/* dct3_dsp54 — integration contract for the DCT3 (MAD2) DSP core.
  *
  * Wraps the lifted TMS320C54x interpreter + the Nokia HPI/port bridge behind a
  * small API that the platform model (mad2) drives. This is the surface the
@@ -12,7 +12,7 @@
  * HPI window: the MCU sees DSP data words 0x000..0x7FF at MCU 0x10000..0x10FFF,
  * i.e. MCU_addr = 0x10000 + 2*DSP_word.  (Mailbox: cobba=0x070/0x100E0,
  * req=0x071/0x100E2, reply=0x072/0x100E4, mbox0=0x07F/0x100FE, mbox1=0x080/0x10100,
- * boot_status=0x002/0x10004.)  See docs/dsp-5110-mad1.md.
+ * boot_status=0x002/0x10004.)  See .
  *
  * The I/O-port mailbox (PORTR/PORTW ports 1/2/3, used by the host-command ISR
  * 0x35B9) is routed through the port callbacks — the host side decides how those
@@ -120,7 +120,7 @@ void dsp54_zero_range(Dsp54 *d, uint16_t lo, uint16_t hi);
 /* Static-upload regression guard: returns 1 (and warns) only if DSP54_ALLOW_STATIC=1, else
  * prints a "retired/non-faithful" notice and returns 0. Gates the NON-FAITHFUL static
  * shortcuts (DSP54_OVERLAY/BLOCKS/UPLOAD/LOADERGO) so future sessions rely on the MCU's real
- * block upload. See memory 5110-dsp-staged-upload-pivot + docs/dsp-blocks-re-3310.md. */
+ * block upload. See memory 5110-dsp-staged-upload-pivot +. */
 int dsp54_static_allowed(const char *knob);
 
 /* Dump live DSP memory (BE words) for offline disassembly (tic54x-objdump). */

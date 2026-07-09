@@ -10,7 +10,7 @@ The keypad is a matrix on the MAD UIF block: rows driven on `0x20028`
 power key), columns read on `0x2002A` (active-low: a 0 bit = pressed). The
 firmware scans the matrix (v6.39 scan `0x290A28`, repeat `0x290A64`, no-key
 reset `0x290A90`) and is wake-on-keypress via **IRQ0**. See the I/O Rosetta
-table in `mad2-gap-analysis-vs-mados.md` §1/§7.
+table in `` §1/§7.
 
 > Gap (from the MADos comparison): mad2 does **not** raise an organic keypad
 > IRQ0 on a matrix change — key delivery is driven by the web shim

@@ -9,7 +9,7 @@
 // DSP self-test fails -> CONTACT SERVICE. This is NOT a blank EEPROM (the partition is
 // populated) — only one checksum is stale. Boot the pre-fixed image
 // `firmware/Nokia 8210 NSM-3 v5.31 A (EEPROM).fls` (signature-located CKFIX: framed journal
-// header `08 f7 02 54`, stored BE u16 -> 0x77E2). See docs/8210-8250-bringup.md.
+// header `08 f7 02 54`, stored BE u16 -> 0x77E2).
 
 #include "models/model.h"
 #include "models/mad2_sigs.h"      // shared MAD2 RTOS firmware-address signatures

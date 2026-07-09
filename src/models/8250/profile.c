@@ -4,7 +4,7 @@
 // addresses shift) — verdict/dsp_uploaded below were re-pinned against this image. Unlike
 // the 8210, the stock 8250 EEPROM dump is self-consistent (no stale-checksum fix needed),
 // so it boots straight to standby from the unmodified image. Firmware on hand:
-// firmware/Nokia 8250 NSM-3D v6.02 J.fls. See docs/8210-8250-bringup.md.
+// firmware/Nokia 8250 NSM-3D v6.02 J.fls.
 
 #include "models/model.h"
 #include "models/mad2_sigs.h"      // shared MAD2 RTOS firmware-address signatures

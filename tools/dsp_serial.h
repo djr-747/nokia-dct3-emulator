@@ -8,7 +8,7 @@
 // decoded frame payloads). The existing incremental recv pattern (read tag, then the per-tag
 // body) works unchanged — those reads just drain the current frame's payload.
 //
-// See docs/dct3-dsp-bridge-hw.md.
+//
 
 #ifndef DSP_SERIAL_H
 #define DSP_SERIAL_H

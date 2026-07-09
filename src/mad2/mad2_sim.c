@@ -128,7 +128,7 @@ uint8_t EF_PHASE[1]           = {0x03};  // real fixture card = Phase 2+ (SIMPHA
 //   byte3 0x03 = svc13 (LND)
 static const uint8_t EF_SST[15]     = {0xCF,0x30,0xCF,0x0F,0x03,0x00,0xDC,0x03,0x00,0x0C,0x00,0xC0,0x00,0x00,0x00};  // real fixture card SST
 // EF_SPN (6F46, service provider name, 17 bytes): display-condition + "Service Provider".
-// (Name matches Nokia's own test-SIM fixture sim_init.sd@0x3511 — see docs/3330-sim-fixture.md.)
+// (Name matches Nokia's own test-SIM fixture sim_init.sd@0x3511 —)
 static const uint8_t EF_SPN[17]     = {0x00,'A','L','D','I','m','o','b','i','l','e',0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};  // real fixture card SPN
 // EF_LOCI (6F7E, location information, 11 bytes): TMSI invalid, LAI, "not updated".
 static const uint8_t EF_LOCI[11]    = {0xFF,0xFF,0xFF,0xFF,0x05,0xF5,0x10,0xFF,0xFE,0x00,0x03};  // real fixture card LOCI
@@ -142,7 +142,7 @@ static const uint8_t EF_ACC[2]      = {0x00,0x10};  // real fixture card access 
 static const uint8_t EF_BCCH[16]    = {0x10,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0xFF,0xFF,0xFE,0x00,0x00};  // real fixture card BCCH
 // EF_ECC (6FB7, emergency call codes): linear-fixed, 3-byte swapped-BCD records (F=pad).
 // 112 (universal), 999 (UK/legacy), 911 (NA). Matches the choice in Nokia's own 3330 test SIM
-// fixture sim_init.sd@0x34F5+ (ASCII "112"/"999"/"911"; see docs/3330-sim-fixture.md). The
+// fixture sim_init.sd@0x34F5+ (ASCII "112"/"999"/"911"). The
 // prior set used 000 (Australia/NZ) instead of 911; aligning to Nokia's defaults so any MMI
 // path that probes for canonical Nokia ECC content sees what the same MMI on 3330 expected.
 static const uint8_t EF_ECC[15]     = {0x00,0xF0,0xFF, 0x11,0xF2,0xFF, 0xFF,0xFF,0xFF, 0xFF,0xFF,0xFF, 0xFF,0xFF,0xFF};  // real fixture card ECC (transparent, 15B)
@@ -963,7 +963,7 @@ void sim_tick(Mad2* m) {
     // route msgs to wrong handlers and SIM APDU exchange stops. The proper fix
     // requires modeling the upstream signal that resets the counter in firmware-
     // native code (a message from the recognition-complete msg handler). See
-    // docs/handoff-sim-dispatcher-decoded.md cont(2)/(3) for the kill-chain decode.
+    // cont(2)/(3) for the kill-chain decode.
     // Keep FIQ6 asserted while unread RX bytes remain and the line is unmasked-ready.
     if (sim_rx_count(m) > 0 && (m->sim_uart_int & SIM_INT_RXRDY))
         mad2_raise_fiq(m, 6);

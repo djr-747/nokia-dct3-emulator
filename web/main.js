@@ -511,7 +511,7 @@
       const chkRecover = document.getElementById("chk-recover");
       if (chkRecover && C.setRecover) C.setRecover(chkRecover.checked ? 1 : 0);
       // Eager panic-chain intercept (mad2_init defaults to OFF); re-apply so a user
-      // toggle persists across reboots. See docs/watchdog-deep-re-findings.md.
+      // toggle persists across reboots.
       const chkRebootEarly = document.getElementById("chk-reboot-early");
       if (chkRebootEarly && C.setRebootEarly) C.setRebootEarly(chkRebootEarly.checked ? 1 : 0);
       if (C.spikeInfo) {            // report the version-independent boot-spike smart-match
@@ -631,7 +631,7 @@
     // Post-mortem reader. mad2 populates a UTF-8 buffer at every reset catch with the
     // firmware's own narrative (reason, caller-site label, exception type for reason 5,
     // assertion-ring tail). Returns "" if no catch yet this session. See
-    // docs/watchdog-deep-re-findings.md §G.
+    //.
     function readPostmortem() {
       try {
         const len = C.postmortemLen ? (C.postmortemLen() >>> 0) : 0;
@@ -2443,7 +2443,7 @@
       C.setBypass(e.target.checked ? 1 : 0);
     });
     // "Skip security code": neutralise the FuBu v6.39 disp77 FAID lock (checksum
-    // completeness — see docs/security-code-3310.md). Takes effect on next reboot.
+    // completeness —). Takes effect on next reboot.
     const chkSeclock = document.getElementById("chk-skip-seclock");
     if (chkSeclock) chkSeclock.addEventListener("change", (e) => C.setSkipSeclock(e.target.checked ? 1 : 0));
     // "Boot spike" (HLE self-test verdict pin): override the per-firmware auto

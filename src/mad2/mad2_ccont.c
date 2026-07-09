@@ -60,7 +60,7 @@ uint8_t ccont_read(Mad2* m) {
     // self-test (test #7, 0x2D2318 via reader 0x2E99A4) reads reg 3 and requires
     // (v & 0xFC) == 0xB0 — else it writes fail code 0xFD to the self-test table and
     // the MMI shows CONTACT SERVICE. Return the ID in the high bits so both readers
-    // are satisfied. See docs/boot-trace-3310.md.
+    // are satisfied.
     else if (reg == 0x03) v = (uint8_t)(0xB0u | ((m->adc[_ch] >> 8) & 0x03)); // chip-ID | A/D[9:8]
     else if (reg >= 0x07 && reg <= 0x0A) {   // RTC: base time + elapsed seconds (13 MHz clock)
         uint32_t now = m->rtc_base_sec + (uint32_t)((m->rtc_mono - m->rtc_base_cyc) / 13000000u);

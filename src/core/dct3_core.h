@@ -96,7 +96,7 @@ static inline uint32_t dct3_cpsr(const DCT3Core* core) { return (uint32_t)core->
 static inline int      dct3_mode(const DCT3Core* core) { return core->cpu.privilegeMode; }
 
 // Force PC + CPSR — the resume primitive used to recover from a firmware-self-reset
-// (mad2's reset-reason discriminator; see docs/watchdog-reset-3310.md). `cpsr` encodes
+// (mad2's reset-reason discriminator). `cpsr` encodes
 // privilege mode (low 5 bits) and Thumb (bit5 .t) of the resume context. ARM/Thumb is
 // switched correctly and the prefetch pipeline is refilled, so execution continues at
 // `pc` exactly as if the exception or panic never happened.

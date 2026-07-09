@@ -1,5 +1,5 @@
 # 3410 NHM-2 v5.46 (fw-id c3bc5705) — hand-curated + promoted overlay.
-# Multi-model bring-up; see docs/3410-bringup.md.
+# Multi-model bring-up
 firmware:
   id: c3bc5705
   file: firmware/Nokia 3410 NHM-2 v5.46 (assembled).fls

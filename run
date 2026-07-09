@@ -98,7 +98,7 @@ scenario() {
       KNOBS="SIMABSENT=1"
       DESC="boot with an empty SIM tray" ;;
     faid-bake)
-      # 5110/MAD1: boot with the external 24C16, then persist it (EE5110SAVE) so a
+      # 5110/MAD2: boot with the external 24C16, then persist it (EE5110SAVE) so a
       # one-time FAID/calibration provisioning is captured for re-load via EE5110=.
       STEPS=40000000; KNOBS="EE5110SAVE=firmware/nse-1-faid.bin"
       DESC="5110: boot + persist the external EEPROM (FAID/calibration bake)" ;;
@@ -166,13 +166,13 @@ FW="$(fw_for "$MODEL")" || { echo "run: unknown model '$MODEL' (have: $MODELS)" 
 scenario "$SCEN"        || { echo "run: unknown scenario '$SCEN' (have: $SCENARIOS  |  tools: noktool eeprom faid koci nfree)" >&2; exit 2; }
 
 # ── model-specific knobs (appended to the scenario's KNOBS) ───────────────
-# 5110 (NSE-1, MAD1 V1-DCT3) — THE CANONICAL CONFIG (docs/5110-DSP-CANONICAL-STATE.md):
+# 5110 (NSE-1, MAD2 V1-DCT3) — THE CANONICAL CONFIG:
 #   * DSP54_COSIM=1 is the WHOLE faithful recipe: real C54x core + real MCU upload, and
 #     every faithful sub-knob (COBBA codec model incl. BSP loopback + frame clock,
 #     CMDLEVEL, SELFTEST_MEAS, …) defaults ON under it. No other knobs. DSP54_X=0
 #     opts a single sub-knob out for A/B.
 #   * EEPROM: prefers the baked firmware/nse-1-faid.bin (./run 5110 faid-bake) and falls
-#     back to the virgin NokiX blob. EITHER is made good at load (mad1_i2c.c finalize):
+#     back to the virgin NokiX blob. EITHER is made good at load (ext_eeprom.c finalize):
 #     tune checksum @0x11E recomputed + the DSP-fault latch rec 0x607 @0x29E provisioned
 #     (virgin 0xFF would trip the legacy reason-0x68 watchdog reset ~283M). EE5110_RAW=1
 #     opts the finalize out.
@@ -202,7 +202,7 @@ case "$MODEL" in
     [ "$SCEN" = boot ] && STEPS=320000000 ;;
   7110)
     # 7110 (NSE-5) DSP is ROM-4 (tools/dsp/rom_fingerprint.py — F073 range 0x0926-0xF870,
-    # docs/dct3-dsp-rom-revisions.md), same family as the 5110, so the real C54x co-sim runs
+    #), same family as the 5110, so the real C54x co-sim runs
     # it (proven 2026-06-17). Default cosim ON like the 5110: DSP54_COSIM is a presence-check,
     # so DSP54_COSIM=0 turns it off (dropped entirely via the global arg scan below).
     _ucos=""; for a in "$@"; do case "$a" in DSP54_COSIM=*) _ucos="${a#DSP54_COSIM=}";; esac; done
@@ -242,7 +242,7 @@ fi
 if [ ! -f "$FW" ]; then
   echo "run: firmware image missing: $FW" >&2
   case "$MODEL" in
-    3410) echo "     rebuild: tools/fls_assemble.py -o \"$FW\" <MCU> <PPM> <eeprom>  (see docs/3410-bringup-HANDOFF.md)" >&2 ;;
+    3410) echo " rebuild: tools/fls_assemble.py -o \"$FW\" <MCU> <PPM> <eeprom>" >&2;;
     *)    case "$FW" in
             firmware/Nokia*) echo "     rebuild the library:  tools/build_fls_library.py --model $MODEL --go" >&2 ;;
           esac ;;

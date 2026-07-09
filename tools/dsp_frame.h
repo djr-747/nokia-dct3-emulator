@@ -9,7 +9,7 @@
 //       drops the frame, and NO partial state survives a flag — so any single corruption resyncs
 //       on the next good frame. Header-only (static inline) so both ends just #include it.
 //
-// See docs/dct3-dsp-bridge-hw.md for how this fits the real-8210 proxy path.
+// for how this fits the real-8210 proxy path.
 
 #ifndef DSP_FRAME_H
 #define DSP_FRAME_H

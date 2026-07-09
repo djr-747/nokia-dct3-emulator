@@ -20,7 +20,7 @@ DEFS     := -DENABLE_DEBUGGERS          # compile in the vendored disassembler
 # Kept under third_party/ (NOT src/) so the wasm APP_SRCS glob never picks it up — the
 # 635 KB interpreter would bloat the wasm core. Every NATIVE target that links the model
 # profiles (the 5110 profile references mad2_dsp_c54x under #ifndef __EMSCRIPTEN__) must
-# also link these objects. See third_party/c54x/ + docs/dsp-5110-mad1.md §7e.
+# also link these objects. See third_party/c54x/.
 C54X_DIR  := third_party/c54x
 C54X_SRCS := $(C54X_DIR)/calypso_c54x.c $(C54X_DIR)/stubs.c $(C54X_DIR)/dct3_dsp54.c $(C54X_DIR)/mad2_dsp_c54x.c
 C54X_INC  := -I$(C54X_DIR) -I$(C54X_DIR)/inc
@@ -214,7 +214,7 @@ $(GUI_BIN): $(GUI_SRCS)
 	$(CC) $(TRACE_CFLAGS) $(C54X_INC) -DDCT3_SDL $(SDL_CFLAGS) $(GUI_SRCS) $(SDL_LIBS) -o $@
 
 # --- Beta/release GUI: lean 3310-only, no co-sim, debug knobs compiled out --------
-# For sharing with a beta tester (see docs/beta-gui.md + `make deb`). Differences vs
+# For sharing with a beta tester (+ `make deb`). Differences vs
 # the dev `gui` target above:
 #   -DDCT3_MODEL_3310_ONLY  registry compiles down to the 3310 (src/models/model.c),
 #                           so NO other profile links → NO C54x co-sim linked at all
@@ -234,17 +234,14 @@ GUIREL_SRCS  := tools/boot_trace.c tools/gui_sdl.c src/core/dct3_core.c src/core
 # baked into __FILE__ strings (assert/error text), so the shared binary carries no
 # /home/<user>/... build path. Override the attribution:  make gui-release DCT3_ATTRIB='...'
 DCT3_ATTRIB   ?= By Dan Richardson <djrichardson747@gmail.com>
-# DCT3_LICENSEE → the named beta tester this build is watermarked for (window title +
-# launch banner + docs). Per-tester build:  make deb DCT3_LICENSEE='someone.else'
-DCT3_LICENSEE ?= retrohack.eu
 GUIREL_SCRUB  := -g0 -ffile-prefix-map=$(CURDIR)=dct3-emu -ffile-prefix-map=$(HOME)=~
 gui-release: $(GUIREL_BIN)
 $(GUIREL_BIN): $(GUIREL_SRCS)
 	@mkdir -p build
 	$(CC) $(TRACE_CFLAGS) $(GUIREL_SCRUB) $(C54X_INC) -DDCT3_SDL -DDCT3_MODEL_3310_ONLY -DDCT3_RELEASE \
-	      '-DDCT3_ATTRIB="$(DCT3_ATTRIB)"' $(if $(DCT3_LICENSEE),'-DDCT3_LICENSEE="$(DCT3_LICENSEE)"') \
+	      '-DDCT3_ATTRIB="$(DCT3_ATTRIB)"' \
 	      $(SDL_CFLAGS) $(GUIREL_SRCS) $(SDL_LIBS) -o $@
-	@echo "  [gui-release] $(GUIREL_BIN) — 3310-only, no co-sim, knobs stripped, path-scrubbed, licensed to '$(DCT3_LICENSEE)'"
+	@echo "  [gui-release] $(GUIREL_BIN) — 3310-only, no co-sim, knobs stripped, path-scrubbed"
 
 # --- .deb installer for the beta GUI --------------------------------------------
 # Assembles a Debian package around the gui-release binary + wrapper + desktop entry
@@ -264,8 +261,8 @@ deb: $(GUIREL_BIN)
 	@install -Dm0644 packaging/deb/dct3-emu.desktop $(DEB_ROOT)/usr/share/applications/dct3-emu.desktop
 	@install -Dm0644 /dev/null                      $(DEB_ROOT)/usr/share/doc/dct3-emu/README.md
 	@install -Dm0644 /dev/null                      $(DEB_ROOT)/usr/share/doc/dct3-emu/copyright
-	@sed 's/@LICENSEE@/$(DCT3_LICENSEE)/g' packaging/deb/README.md > $(DEB_ROOT)/usr/share/doc/dct3-emu/README.md
-	@sed 's/@LICENSEE@/$(DCT3_LICENSEE)/g' packaging/deb/copyright > $(DEB_ROOT)/usr/share/doc/dct3-emu/copyright
+	@install -Dm0644 packaging/deb/README.md  $(DEB_ROOT)/usr/share/doc/dct3-emu/README.md
+	@install -Dm0644 packaging/deb/copyright  $(DEB_ROOT)/usr/share/doc/dct3-emu/copyright
 	@ISIZE=$$(du -k -s $(DEB_ROOT)/usr | cut -f1); \
 	  mkdir -p $(DEB_ROOT)/DEBIAN; \
 	  sed -e 's/@VERSION@/$(DEB_VERSION)/' -e 's/@ARCH@/$(DEB_ARCH)/' \

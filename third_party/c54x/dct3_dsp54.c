@@ -23,9 +23,9 @@ struct Dsp54 {
 static Dsp54 *g_active;   /* single active instance for the global bridge hooks */
 
 /* === Static-upload regression guard (2026-06-08) =========================================
- * The FAITHFUL 5110/MAD1 DSP boot is the MCU firmware's REAL staged block-upload: the MCU
+ * The FAITHFUL 5110/MAD2 DSP boot is the MCU firmware's REAL staged block-upload: the MCU
  * pages each DSP code block through the HPI window + a 5-word UPLOADHEADER and the DSP loader
- * scatters it to its dest (docs/dsp-blocks-re-3310.md; memory 5110-dsp-staged-upload-pivot).
+ * scatters it to its dest (; memory 5110-dsp-staged-upload-pivot).
  * The DSP54_OVERLAY / DSP54_BLOCKS / DSP54_UPLOAD / DSP54_LOADERGO knobs are NON-FAITHFUL
  * static shortcuts: they pre-place code or poke the handshake instead of letting the MCU
  * upload. They provably TOP OUT (a one-shot static image can't model the multi-stage DARAM
@@ -48,7 +48,7 @@ int dsp54_static_allowed(const char *knob) {
             "[dsp54] *** %s IGNORED — the static-upload path is RETIRED (non-faithful). The\n"
             "[dsp54]     faithful boot is the MCU's REAL block upload. Set DSP54_ALLOW_STATIC=1\n"
             "[dsp54]     ONLY for a deliberate A/B reference run. See memory\n"
-            "[dsp54]     5110-dsp-staged-upload-pivot + docs/dsp-blocks-re-3310.md.\n", knob);
+            "[dsp54] 5110-dsp-staged-upload-pivot +.\n", knob);
         return 0;
     }
     fprintf(stderr, "[dsp54] WARNING: %s active under DSP54_ALLOW_STATIC — NON-FAITHFUL A/B path\n", knob);
@@ -76,7 +76,7 @@ Dsp54 *dsp54_create(const uint8_t *image, size_t nbytes) {
     Dsp54 *d = calloc(1, sizeof *d);
     if (!d) return NULL;
     d->s = c54x_init();
-    /* DSP54_NOXPC (faithful default ON under cosim): the MAD1 LEAD is C542-class — single 64K
+    /* DSP54_NOXPC (faithful default ON under cosim): the early-MAD2 LEAD is C542-class — single 64K
      * program page, NO XPC. Interrupt frames are the 16-bit PC alone and RETE pops only PC, so
      * the firmware's task-level `call ...; rete` (return-and-enable-ints, e.g. the sleep/wake
      * sequencer tail 0x90BE) stays stack-balanced. The lift's C548/549-style 2-word {PC,XPC}
@@ -85,7 +85,7 @@ Dsp54 *dsp54_create(const uint8_t *image, size_t nbytes) {
     if (dsp54_faithful("DSP54_NOXPC")) {
         c54x_set_no_xpc(d->s, 1);
         /* c54x_init() already ran its (Calypso-only) boot-ROM prog[0x7080+]->DARAM copy
-         * before this flag could gate it — undo: MAD1 DARAM powers up clean and is
+         * before this flag could gate it — undo: MAD2 DARAM powers up clean and is
          * populated only by the MCU upload + the DSP's own stores. Kills the ghost
          * data[] words the api_ram fetch can never see. */
         for (uint32_t a = 0x80; a < 0x2800; a++) d->s->data[a] = 0;
@@ -299,7 +299,7 @@ void dsp54_load_block(Dsp54 *d, uint16_t dest, const uint8_t *bytes, size_t nbyt
 }
 
 /* HPI window: MCU 0x10000 + 2k <-> DSP shared word k.
- * CRITICAL (docs/dsp-blocks-re-3310.md): the DSP accesses the shared mailbox/ring
+ * CRITICAL: the DSP accesses the shared mailbox/ring
  * region at DSP data 0x800+k (the C54x API RAM — MDIRCV tail at DSP 0x8E4 = MCU
  * 0x101C8), and the core routes [0x800,0x2800) to api_ram[] (calypso_c54x.c:2207/3168).
  * So MCU 0x10000+2k <-> api_ram[k], NOT data[k]. The old data[k] mapping left the
@@ -307,7 +307,7 @@ void dsp54_load_block(Dsp54 *d, uint16_t dest, const uint8_t *bytes, size_t nbyt
  * only because it lands below 0x800 = data[], OVLY-shared). DSP54_HPIDATA=1 restores
  * the old data[] mapping for A/B. */
 // ASYMMETRIC surgical api_ram bridge (DSP54_HPIAPI=1): the DSP accesses the shared mailbox/ring
-// at DSP 0x800+k = api_ram[k] (docs/dsp-blocks-re-3310.md). For the shared sub-region (words
+// at DSP 0x800+k = api_ram[k]. For the shared sub-region (words
 // 0x000..0x0E5 = MDISND ring + upload mailbox + MDIRCV ring + version slots) the MCU *reads* from
 // api_ram[] so it sees the real DSP version/ring — but MCU *writes* stay on data[] so they DON'T
 // clobber the DSP's api_ram working copy (a full read+write bridge stops the DSP idling). Outside
@@ -382,7 +382,7 @@ void dsp54_warm_reset(Dsp54 *d, uint16_t pc) {
 
 /* DSP54_UNIDARAM: collapse the OVLY window [0x800,0x2800) to a single store (api_ram) shared by
  * program-fetch, DSP data access, and the MCU HPI window — the faithful C54x OVLY + HPI dual-port
- * model (docs/dsp-c54x-memory-model.md). */
+ * model. */
 void dsp54_set_ovly_unified(Dsp54 *d, int on) { if (d && d->s) c54x_set_ovly_unified(d->s, on); }
 
 void dsp54_host_interrupt(Dsp54 *d, int vec) {

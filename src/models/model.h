@@ -95,10 +95,9 @@ typedef struct {
     // loader 0x271AF4 requires [0x10004]==[0x10006] before it builds the DSP branch table
     // and sets the dsp_uploaded flag; without a matching second word the table is malformed
     // and "DSP ROM MISMATCH" persists). mad2 returns dsp_boot_ready for it too. 0 = unused
-    // (3310/8850 loaders have no such cross-check). See docs/dsp-5110-mad1.md §7e/§8e.
+    // (3310/8850 loaders have no such cross-check). See  §7e/§8e.
     uint32_t dsp_boot_status2; // second ready word (5110 = 0x10006); 0 = none
-    // Reset/reboot path (mad2 catches [0x20001]|=4 and discriminates by reason; see
-    // docs/watchdog-reset-3310.md). All three addresses are sig-located so the
+    // Reset/reboot path (mad2 catches [0x20001]|=4 and discriminates by reason). All three addresses are sig-located so the
     // reset-recovery framework is firmware-agnostic — a missing signature falls back
     // to a build-specific constant or 0 (mad2 then degrades to warm-reboot).
     // `reboot_fn`     — universal reboot fn entry; LR + r0 captured at this PC give
@@ -129,15 +128,15 @@ typedef struct {
     // r1 is a code-specific data half-word; LR is the asserting call site. The platform
     // hooks PC == assert_log and records {cyc,code,data,lr} into a small ring buffer so
     // every reset catch can dump the firmware's own narrative of what went wrong. See
-    // docs/watchdog-deep-re-findings.md §G.1.
+    //.1.
     uint32_t assert_log;      // generic assertion logger     (3310 v5.79 = 0x2EDD4A)
     // Reason-byte setter — 3-instruction Thumb fn (ldr r1,=reboot_reason; strb r0,[r1];
     // bx lr). 13 callers in v5.79 — every code path that wants to STAGE a future reset
     // (with a graceful-shutdown sequence in between) writes the reason through this fn,
     // then posts a shutdown request. Hooking it captures the *cause* of a reset, often
     // many seconds before the visible [0x20001]|=4 edge fires. See
-    // docs/dsp-reset-chain-3310-v579.md (the 22-second gap between stage and fire) and
-    // docs/watchdog-deep-re-findings.md §G.8.
+    // (the 22-second gap between stage and fire) and
+    //.8.
     uint32_t reason_setter;   // staged-reset reason-byte setter (3310 v5.79 = 0x2E0ED8)
     // Heap allocation-failure PC. The blocking allocator (v5.79 = 0x299AF8, ~1564 callers)
     // calls the heap core (0x2E533E); when that returns NULL (no free block) it branches to
@@ -152,7 +151,7 @@ typedef struct {
     // post-boot MDIRCV traffic the firmware consumes to advance task-14 to its
     // state-6 completion, so task-14's OWN STATE_FANOUT (0x267734) cancels the 0xE4
     // (MSG_T4_MDI_FAULT) DSP-liveness watchdog soft-timer (docs/dsp-reset-chain-3310-
-    // v579.md §1.5). The keep-alive READS these to confirm/gate the cancel — it
+    //.5). The keep-alive READS these to confirm/gate the cancel — it
     // NEVER writes them (the firmware owns every write; the keep-alive only delivers
     // the mailbox message + FIQ0). Both are sig-located off STATE_FANOUT's prologue
     // (ldr r4,=0x10AE58 + 9 = state byte; ldr r6,=0x10B1FC = per-state status base).
@@ -258,7 +257,7 @@ typedef enum {
     KK_PWR,      // power: special-scan, not the normal matrix
     // Scroll wheel (7110 Navi Roller). A detent = a momentary key tap, so the
     // KeyLine machinery absorbs it; no model maps these yet (7110 wiring = open
-    // RE item, docs/hal-spec.md). APPEND-ONLY here: web/main.js hardcodes the
+    // RE item). APPEND-ONLY here: web/main.js hardcodes the
     // KK numbering — never renumber existing ids.
     KK_WHEEL_UP, KK_WHEEL_DOWN, KK_WHEEL_PRESS,
     KK_COUNT
@@ -296,7 +295,7 @@ typedef struct {
     KeypadFamily family;              // GUI visual-layout selector
     const KeyLine* lines;             // per-model matrix (NULL = legacy/unmapped)
     int            n_lines;
-    // --- Behaviour as composable capability DATA (docs/hal-spec.md) -----------
+    // --- Behaviour as composable capability DATA -----------
     // These describe what the keypad HARDWARE does — the model owns its behaviour
     // through them; the shared scan/dispatch never branch on model identity.
     KeypadScan     scan;              // matrix scan style (default PLAIN = 3310-class)
@@ -328,7 +327,7 @@ typedef struct {
 // --- Backlight LED colour (presentation data, period-correct per model) -------
 // 0xRRGGBB; 0 = the classic Nokia yellow-green default (harness fallback). The
 // on/off STATE stays m->led_lcd / m->led_kbd; this is only what colour the lit
-// state renders as (5210 = orange, 8250 = blue, ...). docs/hal-spec.md.
+// state renders as (5210 = orange, 8250 = blue,...)..
 typedef struct {
     uint32_t lcd_rgb;   // LCD backlight glow
     uint32_t kbd_rgb;   // keypad button backlight (0 = follow lcd_rgb)
@@ -349,7 +348,7 @@ typedef struct {
 // The CCONT chip is reached over the GENSIO bus, but at DIFFERENT I/O ports on
 // MAD2 (memory-mapped GENSIO) vs serial-bus (bit-banged serial). The chip model
 // (mad2_ccont.c) is the same silicon; only WHERE it's addressed varies, so the
-// ports are profile DATA (docs/hal-spec.md: addressing as data, principle 3).
+// ports are profile DATA (: addressing as data, principle 3).
 // 0 = the MAD2 default (IO_GENSIO_* in mad2_internal.h). Collisions across
 // models are resolved by ACCESS DIRECTION: e.g. 0x2D is the MAD2 START (write)
 // but the serial-bus ccont_r (read) — ccont_r is matched on reads, start on writes.
@@ -429,7 +428,7 @@ extern const DspOps mad2_dsp_default;   // ROM-6 (3310/33xx/34xx/82xx/8850) — 
 // HLE DSP responders are organised BY Nokia DSP ROM revision (Dan, 2026-06-16): ROM 4 = 5110/6110
 // (src/mad2/dsp_rom4.c, cosim-grounded), ROM 6 = mad2_dsp_default above. Distinct TUs so ROM-4
 // fidelity work can't regress the byte-identical 3310 (ROM-6) boot. See
-// docs/research/5110-cosim-vs-hle-conversation.md.
+// docs/research/5110-.
 extern const DspOps mad2_dsp_rom4;      // ROM-4 (5110/6110/3210) responder — shared
 // ROM-4 but a SEPARATE responder for the 7110 (NSE-5): same revision, but its own DSP self-test
 // conversation (cmd-0x70 sub-0x04/0x06/0x0E via the PORT1 API path) — kept distinct so the 7110
@@ -438,7 +437,7 @@ extern const DspOps mad2_dsp_7110;      // ROM-4 (7110) responder — 7110-speci
 // Real TMS320C54x co-sim backend (third_party/c54x/mad2_dsp_c54x.c). NATIVE-ONLY: the
 // 635 KB C54x interpreter is excluded from the wasm build, so the symbol exists only in
 // the native link. Reference it under #ifndef __EMSCRIPTEN__ (the wasm build keeps the
-// default backend). See docs/dsp-5110-mad1.md §7e + third_party/c54x/.
+// default backend). See  §7e + third_party/c54x/.
 #ifndef __EMSCRIPTEN__
 extern const DspOps mad2_dsp_c54x;
 #endif
@@ -448,7 +447,7 @@ extern const DspOps mad2_dsp_c54x;
 // and an external 24C16 EEPROM off a BIT-BANGED SERIAL bus instead of the later
 // memory-mapped GENSIO + in-flash EEPROM. That is a genuine BEHAVIOUR difference
 // (transport), so it is a model implementation, NOT a flag the shared dispatcher
-// branches on (docs/hal-spec.md). A model with `bus` set gets first crack at an
+// branches on. A model with `bus` set gets first crack at an
 // MMIO access: read sets *out + returns 1 when it owns the port; write returns 1
 // when handled. `bus == NULL` = the default memory-mapped MAD2 path (most models).
 typedef struct BusOps {
@@ -503,13 +502,13 @@ typedef struct ModelProfile {
     // upload window already coincides with the control window, so behaviour is unchanged).
     uint32_t       dsp_hpi_alias_base;
     // Early-MAD serial-bus external-EEPROM I2C bit-bang pin positions within I/O 0x20
-    // (PUP_GENIO). The MAD1 default (5110/6110) is SDA=bit0, SCL=bit2. The 3210 (oddball)
+    // (PUP_GENIO). The early-MAD2 default (5110/6110) is SDA=bit0, SCL=bit2. The 3210 (oddball)
     // keeps SDA=bit0 but drives SCL on bit3 (RE'd: its bit-bang routine 0x2B0332 sets bit3
     // as the clock; bit2 is held high there, so a fixed bit2-SCL reader sees a constant
     // "clock high" and never advances the I2C FSM → the EEPROM never reads). 0 values =
-    // the MAD1 default (sda_bit 0 = bit0; scl_bit 0 = bit2). ext_eeprom.c reads these.
+    // the early-MAD2 default (sda_bit 0 = bit0; scl_bit 0 = bit2). ext_eeprom.c reads these.
     uint8_t        i2c_sda_bit;   // SDA bit in I/O 0x20 (0 = bit0)
-    uint8_t        i2c_scl_bit;   // SCL bit in I/O 0x20 (0 = MAD1 default bit2)
+    uint8_t        i2c_scl_bit;   // SCL bit in I/O 0x20 (0 = early-MAD2 default bit2)
     // CCONT power-on cause (reg 0x0E) latched at cold power-on. The DCT3 power button is
     // wired to the CCONT (PWRONX), not (only) the keypad matrix: at startup the firmware
     // reads CCONT reg 0x0E and, if no power-on-cause bit is set, treats the boot as having

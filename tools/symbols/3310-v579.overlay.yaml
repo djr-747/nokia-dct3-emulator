@@ -26,7 +26,7 @@ firmware:
   type: NHM-5
 
 addresses:
-  # --- Reset / fault chain (docs/watchdog-reset-3310.md, docs/dsp-reset-chain-3310-v579.md) ---
+  # --- Reset / fault chain ---
   REBOOT_FN:                       { addr: 0x002EEBAE, source: overlay, role: "universal reboot fn (noreturn; r0=reason)" }
   FATAL_HANDLER:                   { addr: 0x002F0BA4, source: overlay, role: "ARM exception vector trampoline -> reason 5" }
   CCONT_RESET_WDT:                 { addr: 0x002EEB94, source: overlay, role: "chip-level WDT kicker (aka NokiX DEV_RESET_WATCHDOGS)" }
@@ -37,7 +37,7 @@ addresses:
   SELFTEST_DIRECT_RESET:           { addr: 0x002D1EBA, source: overlay, role: "self-test fault direct reset (writes [0x20001]=4)" }
   BROKER_FAULT_NOTIFIER:           { addr: 0x002D724C, source: overlay, role: "send task 17 msg 0x44 + assert_log(0x5B06)" }
 
-  # --- SWDSP/DSP-reset chain (was SIM-fatal) (docs/dsp-reset-chain-3310-v579.md) ---
+  # --- SWDSP/DSP-reset chain (was SIM-fatal) ---
   SWDSP_STAGER:                { addr: 0x002D11F4, source: overlay, role: "DSP-reset stager — scenario→reason mapper (1→0x68 SWDSP, 3→0x73); calls REASON_SETTER + RESET_POSTER. Reached via task-4 MDI/DSP receiver (SWDSP / DSP-watchdog reset, reason 0x68)" }
   CHARGE_HEARTBEAT_HELPER:         { addr: 0x002D7146, source: overlay, role: "charge-task idle assert(0x5B0F) — heartbeat ~1s — NOT SIM" }
   ASSERT_LOG:                      { addr: 0x002EDD4A, source: overlay, role: "generic assert_log(code:r0, data:r1) — broker pubsub publish" }
@@ -45,7 +45,7 @@ addresses:
   BROKER_GATE:                     { addr: 0x002EABC0, source: overlay, role: "broker GATE — drops event unless [0x11FF28]!=0 AND subscription bitmap [0x11FF4C+(id>>11)] bit set" }
   BROKER_DECODE:                   { addr: 0x002BACEC, source: overlay, role: "broker msg-id decoder (task-4 dispatch path)" }
 
-  # --- RTOS scheduler + IPC (docs/task-map-3310.md, [[nokix-sigfind-task-map]]) ---
+  # --- RTOS scheduler + IPC ([[nokix-sigfind-task-map]]) ---
   START_ENGINE:                    { addr: 0x0029966C, source: overlay, role: "RTOS bootstrap" }
   TASKS_INIT:                      { addr: 0x00299510, source: overlay, role: "create the 24 tasks from TASKS_INIT_TABLE" }
   READY_QUEUE_INSERT:              { addr: 0x00298A98, source: overlay, role: "ready-queue priority insert ([node+12]=pri)" }
@@ -53,7 +53,7 @@ addresses:
   TASK_SEND:                       { addr: 0x0029921C, source: overlay, role: "send msg to task (= NokiX SEND_TASK_MESSAGE)" }
   TASK_SEND_IRQ:                   { addr: 0x002997B0, source: overlay, role: "IRQ-context twin of TASK_SEND" }
 
-  # --- The 24 RTOS task entry points (docs/task-map-3310.md) ---
+  # --- The 24 RTOS task entry points ---
   TASK_0_IDLE:                     { addr: 0x002E0E04, source: overlay, role: "task 0 — startup/idle (the running thread)" }
   TASK_1_KEYPAD:                   { addr: 0x00290730, source: overlay, role: "task 1 — keypad" }
   # NOTE: canonical task names cross-referenced from the Nokia 3330 emulator x86 decomp
@@ -77,7 +77,7 @@ addresses:
   DSP_MAILBOX_HANDLER:             { addr: 0x002BCEF0, source: overlay, role: "IRQ4 handler — DSP mailbox dispatch" }
   DSP_ISR_BOOTREADY:               { addr: 0x002CB418, source: overlay, role: "DSP ISR that sets [0x135664] dsp-ready-2 flag" }
 
-  # --- SIM I/O (docs/sim-subsystem-3310.md) ---
+  # --- SIM I/O ---
   SIM_INIT:                        { addr: 0x002D49C8, source: overlay, role: "SIM driver init" }
   SIM_RESET:                       { addr: 0x002D455E, source: overlay, role: "SIM card reset (ATR re-deliver)" }
   SIM_FIQ6_ISR:                    { addr: 0x002D490E, source: overlay, role: "FIQ6 — SIM UART RX/TX events" }
@@ -85,11 +85,11 @@ addresses:
   SIM_TRANSMIT:                    { addr: 0x002D460E, source: overlay, role: "sim_transmit — push bytes to SIM TX" }
   SIM_RECOG_TIMEOUT_FIRES:         { addr: 0x002AF240, source: overlay, role: "SIM recognition retry timeout fires (counter [0x11FD08] >= 185)" }
 
-  # --- PPM string lookup (docs/security-code-3310.md, [[ppm-string-tracer]]) ---
+  # --- PPM string lookup ([[ppm-string-tracer]]) ---
   GET_STRING:                      { addr: 0x002BBFAC, source: overlay, role: "get_string(id) -> nokstr ptr (v5.79 — NokiX locator misses)" }
   W_GET_STRING:                    { addr: 0x002BBCB8, source: overlay, role: "wide get_string variant" }
 
-  # --- Timer + interrupt dispatch (docs/watchdog-reset-3310.md §3) ---
+  # --- Timer + interrupt dispatch ---
   FIQ_DISPATCH_LOOP:               { addr: 0x002E6FBE, source: overlay, role: "FIQ dispatcher — reads [0x20008]&~[0x2000A], runs handlers" }
   FIQ8_CT_TIMER_HANDLER:           { addr: 0x002E6DD4, source: overlay, role: "FIQ8 ct_timer 100Hz handler — increments [0x11139C] centisec" }
   FIQ5_TIMER1_HANDLER:             { addr: 0x002E4418, source: overlay, role: "FIQ5/Timer1-overflow handler — drives soft-timer/LED-timeout walk" }
@@ -314,7 +314,7 @@ addresses:
   BROKER_DECODE_EMPTY_GUARD:        { addr: 0x002BACF0, source: overlay, role: "BROKER_DECODE head: MDIRCV_QUEUE_DEPTH 0x2BAC58; if depth==0 -> returns 0 (no dequeue). ANSWERS dan-IRQ-hypothesis 2026-06-05: a bare FIQ0/IRQ (DSP doorbell w/ empty ring) does NOT feed the watchdog counter -> task-4 0x2EDC46 cmp r4,#0 beq loops back without bumping [0x111862]. Watchdog liveness REQUIRES an actual ring ENTRY (depth>0) per ~97M window, NOT just an interrupt. DSPINT 0x30000bit2 is MCU->DSP (outbound, irrelevant to inbound liveness) [07:16]" }
   FIQ0_TASKSEND4:                   { addr: 0x002BAB9E, source: overlay, role: "FIQ0 handler 0x2BAB82 tail: sets [0x2000A]bit, [0x20008]=1, TASK_SEND_IRQ(task=4,msg=4) UNCONDITIONALLY on every DSP MDIRCV doorbell. task-4 then BROKER_DECODEs the ring; empty ring => msg discarded (BROKER_DECODE_EMPTY_GUARD). So the doorbell is necessary but NOT sufficient - the ring must carry an entry. Content beyond group byte largely irrelevant (any non-0/non-0xE4 decode bumps counter) [07:16]" }
 ram:
-  # --- Reset/fault state (docs/watchdog-reset-3310.md, docs/dsp-reset-chain-3310-v579.md) ---
+  # --- Reset/fault state ---
   reboot_reason:                   { addr: 0x0011FF94, source: overlay, role: "persisted reset reason byte (read by classifiers, written by REASON_SETTER + REBOOT_FN)" }
   reboot_save:                     { addr: 0x0011FF88, source: overlay, role: "fatal handler 3-word save block (LR, SPSR, CPSR)" }
   task4_retry_counter:             { addr: 0x00111862, source: overlay, role: "task 4 retry counter — first msg 0xE4 → stage SWDSP/DSP reset, second → suppress" }
@@ -334,7 +334,7 @@ ram:
   centisec_counter:                { addr: 0x0011139C, source: overlay, role: "stopwatch centisecond up-counter (++ by FIQ8 100Hz)" }
   countdown_counter:               { addr: 0x00111398, source: overlay, role: "stopwatch countdown counter" }
 
-  # --- Kernel data structures (docs/task-map-3310.md) ---
+  # --- Kernel data structures ---
   tcb_table:                       { addr: 0x00106130, source: overlay, role: "TCB table — 24 entries × 16 bytes (idx+14, state+13, pri+12, ctx+8)" }
   mailbox_ring_table:              { addr: 0x00105E90, source: overlay, role: "per-task mailbox ring — 28 bytes/task (head+16, tail+17, cap from 0x10485C)" }
   per_task_pending_count:          { addr: 0x00104884, source: overlay, role: "per-task pending msg counter — indexed by task id" }
@@ -375,7 +375,7 @@ messages:
   ASSERT_CHARGE_HEARTBEAT:         { id: 0x5B0F, role: "charge-task idle heartbeat (~1s period) — NOISE, not a fault" }
   ASSERT_BROKER_CH_BOUNDARY:       { id: 0x5B0C, role: "broker pubsub channel split — codes >= this go to ch2, < to ch0" }
 
-  # --- Reset reason codes (docs/watchdog-deep-re-findings.md §B.3) ---
+  # --- Reset reason codes (.3) ---
   REASON_POWERUP:                  { id: 0x01, role: "cold boot — written by RESET_CLASSIFIER_BOOT" }
   REASON_FACTORY_RESET:            { id: 0x04, role: "factory reset (intentional)" }
   REASON_FATAL_CPU_EXCEPTION:      { id: 0x05, role: "fatal — ARM exception (undef/swi/pabort/dabort) via FATAL_HANDLER" }

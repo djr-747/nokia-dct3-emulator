@@ -1,4 +1,4 @@
-/* dbgcon.h — freestanding client for the DCT3 emulator debug console (docs/dbgcon.md).
+/* dbgcon.h — freestanding client for the DCT3 emulator debug console.
  *
  * A patch author (NokiX overlay, injected test code, hand-assembled stub) includes this
  * ONE header and calls dbgcon_puts()/dbgcon_kv()/... to print on the HOST console while the

@@ -24,7 +24,7 @@
 //   tools/fls_assemble.py -o 3410_v5.46.fls NHM2NX05.460 NHM2NX05.46E "3410 virgin eeprom.pmm"
 // Product code NHM-2, MCU header "V 05.46 / 23-12-04 / NHM-2".
 //
-// Memory map: docs/dct3-flash-partition-map.md, 3410 "04.26 <" row (v5.46 qualifies):
+// Memory map:, 3410 "04.26 <" row (v5.46 qualifies):
 //   MCU    0x200000-0x4CFFFF   PPM 0x4D0000-0x56FFFF   EEPROM 0x570000-0x5FFFFF
 
 #include "models/model.h"

@@ -7,8 +7,8 @@
 // firmware's own init — `tools/eeprom_reset 8855 --full --capture` (the 8855 is in the case
 // table: RESET_FN 0x2613F4 / EWB 0x3DC2F8 / VERDICT 0x17FDE7 / PART_RT 0x580000 / CKFIX
 // 10b0011c:0000187d — the same calib checksum as the 5210). Boot the generated image
-// `firmware/Nokia 8855 NSM-4 v5.13 P (EEPROM).fls`. See docs/eeprom-fix-howto.md +
-// docs/8210-8250-bringup.md. Firmware on hand: firmware/Nokia 8855 NSM-4 v5.13 P.fls.
+// `firmware/Nokia 8855 NSM-4 v5.13 P (EEPROM).fls`. +
+//. Firmware on hand: firmware/Nokia 8855 NSM-4 v5.13 P.fls.
 
 #include "models/model.h"
 #include "models/mad2_sigs.h"      // shared MAD2 RTOS firmware-address signatures

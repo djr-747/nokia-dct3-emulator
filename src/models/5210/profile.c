@@ -1,11 +1,11 @@
 // Nokia 5210 model profile — SCAFFOLD (bring-up in progress, following the 3410
-// method in docs/3410-bringup.md / docs/5210-bringup.md).
+// method in /).
 //
 // Firmware on hand: firmware/Nokia 5210 NSM-5 v5.40 A.fls (flat 4 MB .fls, already
 // assembled). Header @0x1FC: "V  5.40 / 11-10-03 / NSM-5 / (c) NMP", fw-id TBD.
 // Product code NSM-5, 4 MB image.
 //
-// Memory map: docs/dct3-flash-partition-map.md, 5210 row (4 MB):
+// Memory map:, 5210 row (4 MB):
 //   MCU 0x200000-0x48FFFF   PPM 0x490000-0x57FFFF   EEPROM 0x580000-0x5FFFFF
 // (Note the EEPROM start is 0x580000 — LATER than the 3410's 0x570000 because the
 //  5210 carries a larger PPM. This is the one hard difference from the 3410 map.)

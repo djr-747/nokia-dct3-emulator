@@ -1,7 +1,7 @@
 # SIM-card bridge — emulator ↔ ESP32 ↔ real GSM SIM
 
 > **Firmware note:** the SIM reader is now one role of the unified `dct3uni` sketch
-> (MBus + FBus + SIM) — see `docs/dct3-esp32-bridge.md`. `dct3uni` boots into the
+> (MBus + FBus + SIM) — see ``. `dct3uni` boots into the
 > exact framed protocol below, so everything here is unchanged; the standalone
 > `flasher/arduino/simbridge` is kept only as the SIM-only reference.
 

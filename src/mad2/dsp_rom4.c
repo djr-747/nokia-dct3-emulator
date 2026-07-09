@@ -1,5 +1,5 @@
-// ROM-4 DSP behaviour for the MAD2 platform — the 5110 / 6110 generation (NSE-1, MAD1-class
-// "LEAD" = customised TMS320C54x). See docs/research/5110-cosim-vs-hle-conversation.md.
+// ROM-4 DSP behaviour for the MAD2 platform — the 5110 / 6110 generation (NSE-1, early-MAD2
+// "LEAD" = customised TMS320C54x). See docs/research/5110-.
 //
 // WHY A SEPARATE MODULE (Dan's directive, 2026-06-16): Nokia shared one DSP ROM across whole
 // phone generations. Our HLE responder is therefore organised BY ROM REVISION, not per-model:
@@ -48,7 +48,7 @@ static void dsp_rom4_tick(Mad2* m) {
     // heartbeat is a 3310/ROM-6-ism the real ROM-4 DSP does NOT do — COSIM-GROUNDED: 150M run
     // shows the DSP silent on MDIRCV after ~55M (only MCU CTSI-WDT kicks follow); the 5110 has no
     // 0xE4 MDI-activity watchdog (its reason-0x68 is the EEPROM-fault latch, fixed at EEPROM load).
-    // So suppress the keep-alive on the ROM-4 path. See docs/research/5110-cosim-vs-hle-conversation.md.
+    // So suppress the keep-alive on the ROM-4 path. See docs/research/5110-.
     m->dsp_no_keepalive = 1;
     dsp_default_tick(m);
 }

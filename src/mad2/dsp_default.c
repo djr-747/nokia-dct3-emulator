@@ -17,7 +17,7 @@
 #include <string.h>   // strcmp (DSPHEARTBEAT_SRC selector)
 
 // Real-HW captured DSP->MCU MDIRCV boot burst (3310 v6.33; NokiX RAM read of the ring,
-// frozen at standby; docs/swdsp-keepalive-and-task2-heap-leak-3310-v579.md §A). The ring
+// frozen at standby). The ring
 // is BIG-ENDIAN (ARM7TDMI BE): MDIRCV_DEQUEUE 0x2BAC72 reads each word and takes
 // group = word>>8 = the even/low-address byte. The captured steady stream is KA_REPLAY_N
 // records, each TWO ring words: an 0xFF<seq> sequence/sync word (decodes to a group-0xFF
@@ -263,7 +263,7 @@ void dsp_default_tick(Mad2* m) {
     // The MDI subsystem consumes that traffic and reports task-14 (the readiness state
     // machine) its state-6 completion, so task-14's OWN STATE_FANOUT (0x267734) cancels
     // the 0xE4 (MSG_T4_MDI_FAULT) DSP-liveness watchdog soft-timer it armed once at boot
-    // (@step 4.95M). See docs/dsp-reset-chain-3310-v579.md §1.5.
+    // (@step 4.95M).5.
     //
     // HISTORICAL NOTE (pre-ASIC-fix): a silent DSP used to leave that watchdog uncancelled
     // → it expired ~106M / ~296M cyc → 0xE4 → SWDSP_STAGER 0x2D11F4 → reason 0x68. That is

@@ -27,13 +27,13 @@ void my_patch(unsigned regval) {
 }
 ```
 
-Full API + the port map + a hand-assembled (no-compiler) stub are in
-[`../../docs/dbgcon.md`](../../docs/dbgcon.md).
+The full API + the port map + a hand-assembled (no-compiler) stub are described in
+`dbgcon.h` alongside this file.
 
 ## Getting your code to run
 
 `dbgcon.h` gives you the *API*; you still need your code executing inside the firmware. Two
-routes, both covered in `docs/dbgcon.md`:
+routes, both covered in ``:
 
 1. **C overlay** — compile your patch (incl. `dbgcon.h`) with the NokiX SDK ARM toolchain
    (`ref/NokiX-all-retrohack/sdk/`) and inject it. Cleanest.

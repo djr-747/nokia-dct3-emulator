@@ -1,20 +1,20 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: dct3-emu
-Source: https://github.com/djr-747/nokia-dct3-emu
+Source: https://github.com/djr-747/nokia-dct3-emulator
 
 Files: *
 Copyright: 2026 Dan Richardson <djrichardson747@gmail.com>
-License: proprietary-beta
- Confidential beta software. Copyright (C) 2026 Dan Richardson
- <djrichardson747@gmail.com>. All rights reserved.
+License: GPL-2
+ This program is free software; you can redistribute it and/or modify it under
+ the terms of the GNU General Public License version 2 as published by the Free
+ Software Foundation.
  .
- Licensed to: @LICENSEE@ (named beta tester).
+ This program is distributed in the hope that it will be useful, but WITHOUT ANY
+ WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+ PARTICULAR PURPOSE. See the GNU General Public License for more details.
  .
- This build is provided to the named beta tester above for private evaluation
- only. You may NOT copy, redistribute, re-share, upload, publish, sublicense, or
- otherwise make it available to any third party, in whole or in part. No licence
- or right to redistribute is granted. Please delete all copies on request or when
- testing ends.
+ On Debian systems the full text of the GNU General Public License version 2 can
+ be found in /usr/share/common-licenses/GPL-2.
 
 Files: usr/lib/dct3-emu/*
 Comment:

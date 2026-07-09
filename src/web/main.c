@@ -59,7 +59,7 @@ void ARMRaiseFIQ(struct ARMCore* cpu);
 // [0x111B8A] = 0x03B7 does that: the check returns not-locked and the FAID state
 // is internally consistent, so the phone boots past the lock with no reboot-spin.
 // (Merely skipping/forcing the screen leaves FAID inconsistent and spins at
-// 0x2EEBEC — verified.) See docs/security-code-3310.md. Gated by g_skip_seclock,
+// 0x2EEBEC — verified.) Gated by g_skip_seclock,
 // default OFF. The FAID sum address + expected value are per-image, carried in the
 // model profile (g_mad2.fw.faid_cksum / .faid_cksum_val).
 
@@ -413,7 +413,7 @@ static void resolve_spike(void) {
     // (LED still times out, then 0x2EEBEC); with the verdict left alone it runs clean to
     // budget. So the pin must NOT be applied to firmware whose self-test we model well.
     //
-    // UPDATE: the faithful DSP self-test responder (mad2; see docs/dsp-responder-build-plan.md)
+    // UPDATE: the faithful DSP self-test responder (mad2)
     // now passes the verdict ORGANICALLY for v6.39 (group-0x74 reply -> command-13 -> 0xC8),
     // and retail v5.79 always self-tested organically. So NO firmware needs the HLE verdict
     // pin any more -> default OFF. (Pinning v5.79 froze its state machine into the 0x2EEBEC
@@ -457,7 +457,7 @@ int dct3_web_boot(void) {
     // store [0x10B6C8] until 3-4 RTOS scheduler ticks (~70k insns each) after the down-edge
     // — measured 197k-293k. The default 200k sits *under* that floor so taps are released
     // before decode and dropped; the profile holds them 400k. Snappy 200k elsewhere.
-    // See docs/5110-keypad-irq-HANDOFF.md.
+    //
     g_key_hold_insns = (g_model && g_model->keypad.hold_insns) ? g_model->keypad.hold_insns
                                                                : KEY_HOLD_INSNS;
 
@@ -1110,7 +1110,7 @@ int dct3_web_leds(void) { return emu_led_bits(&g_mad2); }
 // Backlight LED colour, 0xRRGGBB from the model profile (period-correct: 5210
 // orange, 8250 blue, ...). which: 0 = LCD glow, 1 = keypad buttons (falls back
 // to the LCD colour). 0 = no profile colour — page keeps its classic
-// yellow-green palette. docs/hal-spec.md (host-interface outputs).
+// yellow-green palette. (host-interface outputs).
 EMSCRIPTEN_KEEPALIVE
 int dct3_web_led_rgb(int which) {
     return (int)emu_led_rgb(&g_mad2, which);
@@ -1492,7 +1492,7 @@ int  dct3_web_get_wdt_service(void)   { return g_mad2.wdt_service_mode; }
 EMSCRIPTEN_KEEPALIVE
 uint32_t dct3_web_wdt_inhibited(void) { return (uint32_t)g_mad2.wdt_inhibited_count; }
 
-// Eager panic-chain intercept (off by default; see docs/watchdog-deep-re-findings.md).
+// Eager panic-chain intercept (off by default).
 // When on, the host step loop intercepts at the reboot fn / ARM fatal handler entry,
 // arming recover_pending before any of the noreturn panic chain runs. Behaviour with
 // the flag off is byte-identical to the existing late `[0x20001]|=4` catch.

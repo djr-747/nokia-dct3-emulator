@@ -60,7 +60,7 @@ about moving boxes from the right column to the left:
 **Faithful hardware models:** CCONT (power/RTC chip, GENSIO bus), PCD8544 LCD, keypad matrix,
 Timer0/Timer1 + FIQ/IRQ controller, flash/CFI + EEPROM/NVRAM (persisted), SIM/SIMI (ATR, T=0,
 CHV1/PIN), buzzer/vibra, charger + battery ADC, and — as of the DSP milestone — the **DSP
-mailbox + self-test handshake** (see `dsp-responder-build-plan.md`, `dsp-protocol-spec.md`).
+mailbox + self-test handshake** (see ``, ``).
 
 **Still HLE / shortcut (shrinking):** the boot ROM (above); the SIM-manager scheduling and
 FAID checks (the `Bypass SIM` / `FAID Pass` toggles); **RF/HAGAR + the GSM stack + COBBA audio

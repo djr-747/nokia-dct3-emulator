@@ -269,7 +269,7 @@ const C = {
   sendlogLr:     M.cwrap('dct3_web_sendlog_lr', 'number', ['number']),
   resetReq:  M.cwrap('dct3_web_reset_request', 'number', []),
   warmReset: M.cwrap('dct3_web_warm_reset', 'number', []),
-  // Reset-reason discriminator (see docs/watchdog-reset-3310.md). mad2 catches every
+  // Reset-reason discriminator. mad2 catches every
   // [0x20001]|=4 with a per-reason counter; reset_recovered tracks how many of those
   // were exception-returned (reason 5 today; reason 12/104 once v2 LR-cap lands).
   resetTotal:     M.cwrap('dct3_web_reset_total', 'number', []),
@@ -385,7 +385,7 @@ function backtrace() {
 // task_send/recv, final call-depth, and the 24 mailbox depths) are dumped, showing
 // where/how the phone is wedged once the heap dies. Appended to summary.txt + console.
 const BR_TYPE = ['B', 'BCOND', 'CALL', 'RETURN', 'BX', 'EXC'];
-// Mailbox-ring table (docs/task-map-3310.md): 0x105E90, 28 bytes/task, head at +16,
+// Mailbox-ring table: 0x105E90, 28 bytes/task, head at +16,
 // tail at +17 (A3 RESOLVED — the doc's authoritative layout, not the 0x112EA0 the
 // plan/research had assumed). Depth ≈ (tail - head) modulo the ring capacity.
 const MAILBOX_BASE = 0x105E90, MAILBOX_STRIDE = 28, MAILBOX_HEAD = 16, MAILBOX_TAIL = 17;
@@ -464,7 +464,7 @@ function dumpWedge(label, hist) {
   leakSummaryLines.push(block);
 }
 
-// --- Reset / watchdog backtracing (firmware reboot path; see docs/watchdog-reset-3310.md).
+// --- Reset / watchdog backtracing (firmware reboot path).
 // The firmware reboots via 0x2EEBAE, storing a REASON byte at 0x11FF94 then writing
 // [0x20001]|=4. mad2 catches the bit, discriminates by reason, and either RECOVERS
 // (reason 5 today: exception-return from saved fault state at 0x11FF88) or sets

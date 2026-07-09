@@ -9,7 +9,7 @@
 // 4 MB .fls). Header @0x1FC: "V 04.16 / NHM-6" (and v4.50). The "NHM-6" + 4 MB ident
 // serves both builds; the sigs resolve each build's own addresses.
 //
-// Memory map: docs/dct3-flash-partition-map.md, 3330 row (4 MB) — CONFIRMED against the
+// Memory map:, 3330 row (4 MB) — CONFIRMED against the
 // WinTesla FIASCO block addresses (NHM6NX04.160 MCU 0x200000..0x436400; NHM6NX04.16A PPM
 // 0x490000..0x550000):
 //   MCU 0x200000-0x48FFFF   PPM 0x490000-0x54FFFF   EEPROM 0x550000-0x5FFFFF

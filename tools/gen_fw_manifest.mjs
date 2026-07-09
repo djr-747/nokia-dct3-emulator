@@ -53,7 +53,7 @@ function parseName(stem) {
 // are substrings matched against the file stem; first match wins.
 //   boots   — known to reach standby in the web (HLE) build
 //   no-boot — known to wedge (CONTACT SERVICE / reset) without provisioning
-//   cosim   — needs the native DSP co-sim (5110/MAD1); web HLE differs
+//   cosim   — needs the native DSP co-sim (5110/MAD2); web HLE differs
 const SEED = [
   ["3310 NR1 v5.79", "boots"],
   ["FuBu3310 v6.39", "boots"],
@@ -64,7 +64,7 @@ const SEED = [
   ["8250 NSM-3D v6.02", "boots"],
   ["8850 NSM-2 v5.31", "boots"],
   ["5210 NSM-5 v5.40 A (EEPROM)", "boots"],
-  ["5110", "cosim"],                   // MAD1 DSP co-sim is native-only
+  ["5110", "cosim"],                   // MAD2 DSP co-sim is native-only
 ];
 function seedState(stem) {
   for (const [needle, state] of SEED) if (stem.includes(needle)) return state;

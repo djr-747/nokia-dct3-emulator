@@ -12,7 +12,7 @@
 // 4 MB .fls). Header @0x1FC: "V 03.50 / NPM-5" (and v3.53). The "NPM-5" + 4 MB ident
 // serves both builds; the sigs resolve each build's own addresses.
 //
-// Memory map: docs/dct3-flash-partition-map.md, 5510 row (4 MB) — CONFIRMED against the
+// Memory map:, 5510 row (4 MB) — CONFIRMED against the
 // WinTesla FIASCO block addresses (npm5nx03.500 MCU 0x200000..0x44BC00; npm5nx03.50a PPM
 // 0x490000..0x550000) AND the assembled image (PPM\0 header @0x490000; 0x550000 = 0xFF):
 //   MCU 0x200000-0x48FFFF   PPM 0x490000-0x54FFFF   EEPROM 0x550000-0x5FFFFF

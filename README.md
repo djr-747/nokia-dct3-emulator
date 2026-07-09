@@ -2,7 +2,7 @@
 
 An open-source emulator and architectural-analysis toolkit for Nokia DCT3-era phones —
 the 3310, 3410, 5210, 8210, 8250, 8850 and their siblings. It boots **real firmware** in
-the browser and in a native SDL GUI, faithfully modelling the MAD2/MAD1 platform ASIC, the
+the browser and in a native SDL GUI, faithfully modelling the MAD2 platform ASIC, the
 CCONT power controller, the TMS320C54x DSP, the PCD8544/SED-class LCD, the keypad matrix,
 the SIM, and the internal + external EEPROM.
 
@@ -41,18 +41,24 @@ version are read from the flash header — nothing is hardcoded per image.
 |---|---|---|---|
 | **3310** | NHM-5 v5.79 | ✅ standby | reference baseline (kept byte-identical by `make guard`) |
 | **3410** | NHM-2 v5.46 | ✅ standby | minor set-time clock-tick gap tracked separately |
-| **5210** | NSM-5 v5.40 | ✅ standby | needs a repaired-EEPROM image (blank-EEPROM regen) |
-| **8210** | NSM-3 v5.31 | ✅ standby | needs a one-byte stale-checksum EEPROM fix |
-| **8250** | NSM-3D v6.02 | ✅ standby | stock image, EEPROM self-consistent |
+| **2100** | NAM-2 v5.84 | ✅ standby | |
+| **5210** | NSM-5 v5.40 | ✅ standby | |
+| **8210** | NSM-3 v5.31 | ✅ standby | |
+| **8250** | NSM-3D v6.02 | ✅ standby | |
 | **8850** | NSM-2 v5.31 | ✅ standby | NSM Family-A reference |
-| **8855** | NSM-4 v5.13 | ✅ standby | needs a repaired-EEPROM image |
-| **8290 / 8890** | NSB v5.22 / v12.16 | 🟡 partial | reach Contact Service; DSP-upload handshake RE pending |
-| **3330 / 3350** | NHM v4.50 / v5.22 | 🔴 scaffold | Contact Service; verdict/dsp-upload RE outstanding |
-| **5510 / 7110** | NPM / NSE | 🔴 scaffold | early power-off / wild-PC; map + DSP scratch unresolved |
-| **5110** | NSE-1 v5.30 | 🟡 partial | **MAD1 / external-EEPROM**, native only (the web build doesn't link the C54x core). Boots to the MMI: the **C54x DSP co-sim** passes Contact Service to the "Security code" (FAID) screen faithfully; the **HLE DSP** reaches PIN/standby. See `docs/5110-DSP-CANONICAL-STATE.md`. |
-| **8810** | NSE-6 v6.02 | 🔴 scaffold | same MAD1 external-EEPROM layout as the 5110; not yet brought up |
+| **8855** | NSM-4 v5.13 | ✅ standby | |
+| **5110** | NSE-1 v5.30 | 🟡 partial | boots into the MMI. **HLE DSP** (web build) reaches PIN/standby; the **C54x DSP co-sim** (native GUI) passes Contact Service to the faithful "Security code" (FAID) screen. |
+| **6110** | NSE-3 v5.48 | 🟡 partial | boots to the "Security code" (FAID) screen |
+| **6210** | NPE-3 v5.56 | 🟡 partial | boots to Contact Service (DSP-gated) |
+| **7110** | NSE-5 v5.01 | 🟡 partial | renders (SED1565); Contact Service |
+| **3210** | NSE-8 v6.00 | 🟡 partial | powers on to Contact Service |
+| **8290** | NSB-7 v5.22 | 🟡 partial | Contact Service; DSP-upload handshake RE pending |
+| **8890** | NSB-6 v12.16 | 🟡 partial | Contact Service (US-band 8850) |
+| **3330** | NHM-6 v4.50 | 🔴 scaffold | Contact Service; verdict / DSP-upload RE outstanding |
+| **3350** | NHM-9 v5.22 | 🔴 scaffold | Contact Service; profile incomplete |
+| **5510** | NPM-5 v3.50 | 🔴 scaffold | early power-off; map unresolved |
 
-Seven models boot to standby today. Per-model detail lives in [`docs/MODELS.md`](docs/MODELS.md).
+Eight models boot to standby today. Per-model detail lives in [`docs/MODELS.md`](docs/MODELS.md).
 
 ---
 

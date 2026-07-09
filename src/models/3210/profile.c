@@ -1,4 +1,4 @@
-// Nokia 3210 model profile — NSE-8 (v6.00), an EARLY MAD2 / MAD1-class DCT3 (1999), same
+// Nokia 3210 model profile — NSE-8 (v6.00), an early MAD2 DCT3 (1999), same
 // peripheral attachment family as the 5110 (NSE-1) and 6110 (NSE-3): the CCONT power ASIC
 // and an EXTERNAL serial-bus EEPROM hang off a BIT-BANGED SERIAL bus (mad2_bus_serial), not
 // the later memory-mapped GENSIO + in-flash EEPROM. Per Dan: "hw is 5110, but may differ;
@@ -198,7 +198,7 @@ const ModelProfile model_3210 = {
     // accesses back into the 0x10000 window. (NATIVE cosim only; see model.h.)
     .dsp_hpi_alias_base = 0x00011000u,
     // 3210 oddball #2: its external-EEPROM I2C clock is bit-banged on I/O 0x20 bit3, not the
-    // MAD1-default bit2 (RE'd: bit-bang routine 0x2B0332 sets bit3 as SCL; bit2 is held high).
+    // early-MAD2 default bit2 (RE'd: bit-bang routine 0x2B0332 sets bit3 as SCL; bit2 is held high).
     // With the default bit2 reader the FSM saw a constant clock-high → 53k START/STOP, zero
     // reads → the EEPROM never provisioned. SDA stays bit0. (5110/6110 keep SCL=bit2.)
     .i2c_sda_bit = 0,

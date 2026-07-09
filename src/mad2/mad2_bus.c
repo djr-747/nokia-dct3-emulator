@@ -72,7 +72,7 @@ uint32_t mad2_read(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t ram
     if (addr >= MMIO_BASE && addr < MMIO_END) {
         // CCONT readback over GENSIO — the port is profile DATA (MAD2 0x6C / serial-bus
         // 0x2D; 0 -> MAD2 default). Matched on READ, so it never collides with the
-        // MAD2 START write at 0x2D. (docs/hal-spec.md: addressing as data.)
+        // MAD2 START write at 0x2D. (: addressing as data.)
         uint8_t ccont_rp = m->model->gensio.ccont_r ? m->model->gensio.ccont_r : IO_GENSIO_CCONT_R;
         if ((addr - MMIO_BASE) == ccont_rp) return ccont_read(m);
         // Keypad COLUMN read — port is profile DATA (MAD2 0x2A / serial-bus 0x30; 0 -> 0x2A).
@@ -244,7 +244,7 @@ void mad2_write(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t value)
     if (addr < MMIO_BASE || addr >= MMIO_END) return;
     // LCD + CCONT routing is profile DATA: per-model ports (MAD2 GENSIO LCD 0x2E/0x6E +
     // CCONT 0x2C/START 0x2D; serial-bus LCD 0x2B/0x2C + CC_WR 0x2A). ONE implementation each
-    // (docs/hal-spec.md: addressing as data). LCD is matched FIRST so serial-bus's LCD-cmd
+    // (: addressing as data). LCD is matched FIRST so serial-bus's LCD-cmd
     // 0x2C wins; the CCONT ports are model-correct (serial-bus ccont_w=0x2A) so no collision.
     {
         uint32_t off = addr - MMIO_BASE;
@@ -270,7 +270,7 @@ void mad2_write(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t value)
             // persists the reason byte to RAM at m->fw.reboot_reason, writes [0x20001]|=4,
             // then spins at `b .`. We discriminate by reading the persisted reason and
             // either recover (reason 5: exception-return from saved fault state) or fall
-            // through to warm-reboot via reset_request. See docs/watchdog-reset-3310.md.
+            // through to warm-reboot via reset_request.
             if (((uint8_t)value & 0x04) && !(m->reset_ctrl & 0x04)) {
                 uint32_t mask = m->mem_mask ? m->mem_mask : 0x00FFFFFFu;
                 uint8_t reason = 0;
@@ -418,8 +418,8 @@ void mad2_write(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t value)
             // it each centisecond (mad2_timers_tick) and the FIQ8 handler 0x2E6DD4 acks it by
             // writing ACT=1 ([0x20016]|=2). ACT must NOT latch set on a firmware write, or the
             // FIQ dispatch loop 0x2E6FBE re-reads it as active and re-dispatches forever -> no
-            // yield -> reason-5 watchdog reboot (the old Stopwatch-Start crash; see
-            // docs/watchdog-reset-3310.md). So a write clears ACT (the ack); EN/MSK latch. FIQ5
+            // yield -> reason-5 watchdog reboot (the old Stopwatch-Start crash). So a
+            // write clears ACT (the ack); EN/MSK latch. FIQ5
             // (Timer1 overflow) is a SEPARATE interrupt acked via 0x20008 by handler 0x2E4418,
             // so it is not touched here (it used to be, from the old FIQ5/FIQ8 conflation).
             m->fiq8_ctrl = (uint8_t)(value & ~0x02u);            // EN/MSK latch; ACT (bit1) never latches set

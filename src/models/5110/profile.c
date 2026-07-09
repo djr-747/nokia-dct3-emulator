@@ -11,7 +11,7 @@
 //
 // The DCT3 RTOS/MMI core is shared with the 3310 (the sigs resolve), so our ARM core runs
 // it; RAM is shifted ~0x10000 down vs the 3310 (sim_gate 0x10FD22 vs ~0x11Fxxx). Boots to
-// "Security code" under DSP54_COSIM=1 (tools/check_5110_boot.sh; docs/5110-DSP-CANONICAL-STATE.md).
+// "Security code" under DSP54_COSIM=1 (tools/check_5110_boot.sh).
 
 #include "models/model.h"
 #include "models/mad2_sigs.h"      // shared DCT3 RTOS firmware-address signatures
@@ -63,7 +63,7 @@ const ModelProfile model_5110 = {
     .lcd = {
         // 84x48 PCD8544. The early-MAD2 5110 LCD ports DIFFER (MADos ioports.h PHONE_5110):
         // GENSIO_LCD_DATA 0x2B, GENSIO_LCD_CMD 0x2C (vs the later 0x2E/0x6E). io_data/io_cmd
-        // are LOAD-BEARING: mad2_bus routes LCD writes by these per-model ports. docs/hal-spec.md.
+        // are LOAD-BEARING: mad2_bus routes LCD writes by these per-model ports..
         .controller = LCD_PCD8544,
         .width = 84, .height = 48, .banks = 6,
         .io_data = 0x2B, .io_cmd = 0x2C,
@@ -104,7 +104,7 @@ const ModelProfile model_5110 = {
     // — ccont_r matches on reads only. The serial bus self-frames via CFG 0x28 (no START).
     .gensio = { .ccont_w = 0x2A, .ccont_r = 0x2D, .start = 0 },
     // Early-MAD2 serial-attached transport: external 24C16 EEPROM I2C + GENSIO bus
-    // status (BusOps, not a flag — docs/hal-spec.md). The CCONT/keypad/LCD PORTS are
+    // status (BusOps, not a flag —). The CCONT/keypad/LCD PORTS are
     // the gensio/keypad/lcd spec data above; this owns the EEPROM lines + status.
     .bus = &mad2_bus_serial,
     .asic = {
@@ -114,7 +114,7 @@ const ModelProfile model_5110 = {
         // DSP self-test verdict / DSP-upload-done flag — gen_sig-ported from 3310 v5.79
         // (5110 is NSE-1, same NSM/MMI+RTOS core). CONTACT SERVICE here is the DSP verdict
         // gate, identical in shape to 3310/8210/8250/8850 — NOT the external EEPROM (the
-        // 24C16 I2C bus is never driven before standby; see docs/v1-dct3-5110-spike.md).
+        // 24C16 I2C bus is never driven before standby).
         //
         // verdict = 0x0010FDDD (analog of 3310 0x11FF15): the MMI-ready / self-test verdict
         // byte. 3310 site 0x24389A `ldr =0x11FF15; ldrb; lsr #7` (read bit7 = MMI ready)
@@ -144,7 +144,7 @@ const ModelProfile model_5110 = {
         // upload the DSP code blocks (block-ack IRQ4 sets dsp_uploaded). 0x10004 is the
         // hardware-fixed HPI status slot, shared with 8210/8850.
         // VERSION = 4 is COSIM-GROUNDED: the real C54x DSP writes VERSION_A/B = 0x0004 at boot
-        // (docs/research/5110-cosim-vs-hle-conversation.md). The old shared path faked 6 (a ROM-6
+        // (docs/research/5110-). The old shared path faked 6 (a ROM-6
         // value); the loader (0x271AF4) only cross-checks [0x10004]==[0x10006], so 4 boots faithfully.
         .dsp_boot_status = 0x00010004u, .dsp_boot_ready = 4,
         // serial-bus loader (0x271AF4) cross-checks [0x10004]==[0x10006] before accepting the DSP

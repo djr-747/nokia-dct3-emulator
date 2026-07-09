@@ -153,7 +153,7 @@ void mad2_init(Mad2* m, const ModelProfile* prof) {
     // user-driven shutdowns behave faithfully.
     m->wdt_service_mode = getenv("WDTSERVICE") ? 1 : 0;
     m->wdt_inhibited_count = 0;
-    // Eager panic-chain intercept (docs/watchdog-deep-re-findings.md §D-E). Off by default
+    // Eager panic-chain intercept. Off by default
     // — the existing `[0x20001]|=4` late catch fires as before, byte-identical behaviour.
     // RESET_EARLY=1 arms the entry-time intercept (reboot_fn + fatal_handler hooks).
     m->reboot_early = getenv("RESET_EARLY") ? 1 : 0;

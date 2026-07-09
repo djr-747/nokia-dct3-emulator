@@ -6,7 +6,7 @@ boots the 3310 first. Goal: support 8850, 7110, 3210, 3330, … without per-mode
 [`architecture-3310.md`](architecture-3310.md) first for the core/platform/model
 split this builds on.
 
-## The invariant (from PROJECT.md)
+## The invariant (from)
 
 ```
 core      never knows what a phone is        (src/core — already true)

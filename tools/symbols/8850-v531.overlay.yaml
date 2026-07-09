@@ -1,6 +1,6 @@
 # 8850 NSM-2 v5.31 (fw-id 7f61ef73) — hand-curated + promoted overlay.
 # Multi-model bring-up; merged with 8850-v531.nokix.yaml at lookup time
-# (this file wins on name conflicts). See docs/8850-boot-HANDOFF.md.
+# (this file wins on name conflicts).
 firmware:
   id: 7f61ef73
   file: firmware/FuBu8850 v5.31 (PPM C).fls

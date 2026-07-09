@@ -95,7 +95,7 @@ const ModelProfile model_8850 = {
         // reply of 5 or 6 (fn 0x2CAE26) makes the firmware upload the 115 DSP code
         // blocks (handshaked via dsp_mbox0/1) and keeps the DSP-ready flag 0x135665
         // set. Without it the poll times out -> minimal task startup -> CONTACT SERVICE.
-        // (Flag 0x135664 still needs IRQ4; see docs/8850.md.)
+        // (Flag 0x135664 still needs IRQ4)
         .dsp_boot_status = 0x00010004u, .dsp_boot_ready = 6,
     },
     .sigs = MAD2_SIGS,            // shared MAD2 RTOS sigs locate reboot_fn/fatal_handler/

@@ -6,7 +6,7 @@
 (`hw/arm/calypso/calypso_c54x.{c,h}`), license **GPL-2.0-or-later** (SPDX
 headers in the sources). It has been substantially extended in this repo
 (decode fixes, PC histogram/halt/snapshot instrumentation, OVLY/warm-boot
-modelling — see `docs/5110-DSP-CANONICAL-STATE.md` and the c54x memory docs);
+modelling — see `` and the c54x memory docs);
 those extensions are contributions under the same GPL license. `inc/` carries
 the 3-symbol stub surface that replaces the QEMU PCB/debug environment.
 
