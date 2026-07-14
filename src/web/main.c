@@ -435,6 +435,8 @@ static void resolve_spike(void) {
     if (g_spike_force >= 0) g_pin_verdict = g_spike_force;   // UI/CLI override (Boot-spike toggle)
 }
 
+static void roll_reset(void);  // rest the Navi-roller encoder at a valid detent (defined below)
+
 // Boot the firmware: load flash, wire mad2, HLE the boot ROM. Returns 0 on ok.
 EMSCRIPTEN_KEEPALIVE
 int dct3_web_boot(void) {
@@ -528,6 +530,7 @@ int dct3_web_boot(void) {
     harness_init(&g_hc, &g_mad2, g_web_recover, 0 /*spin default*/, 16 /*wild warmup*/);
     g_harness_init = 1;
     g_fault_reported = 0;
+    roll_reset();      // rest the Navi encoder at a valid detent (7110) — faithful I/O init
     return 0;
 }
 
@@ -968,8 +971,11 @@ static void web_step_once(struct ARMCore* cpu) {
 // Run n instructions (instruction-paced). Used for the flat-out boot fast-forward
 // and headless node harnesses; emulated-clock speed then tracks cpu cpi.
 EMSCRIPTEN_KEEPALIVE
+static void roll_pump(void);   // Navi-roller detent pump (paced; defined below)
+
 void dct3_web_run(int n) {
     if (!g_core) return;
+    roll_pump();                 // drain one queued roller detent per batch
     struct ARMCore* cpu = &g_core->cpu;
     for (int i = 0; i < n && !web_parked(); ++i) web_step_once(cpu);
     emu_audio_render(&g_mad2);   // flush the buzzer voice up to now (onset already stamped at writes)
@@ -985,6 +991,7 @@ void dct3_web_run(int n) {
 EMSCRIPTEN_KEEPALIVE
 void dct3_web_run_cycles(int target_cycles) {
     if (!g_core || target_cycles <= 0) return;
+    roll_pump();                 // drain one queued roller detent per batch
     struct ARMCore* cpu = &g_core->cpu;
     uint64_t until = g_cycles64 + (uint64_t)target_cycles;
     // Safety cap: a pathological low-cpi tight loop shouldn't spin unbounded.
@@ -1120,6 +1127,7 @@ int dct3_web_warm_reset(void) {
     harness_init(&g_hc, &g_mad2, g_web_recover, 0 /*spin default*/, 16 /*wild warmup*/);
     g_harness_init = 1;
     g_fault_reported = 0;
+    roll_reset();      // rest the Navi encoder at a valid detent (7110) — faithful I/O init
     return 0;
 }
 
@@ -1518,22 +1526,69 @@ double dct3_web_dbg_count(int slot) {
 // three phase bits into the RAM-backed MMIO, and raise IRQ7 so the firmware's own ISR
 // decodes the rotation. up != 0 = scroll up, else down. The roller PRESS is a matrix key
 // (keycode 0x12 -> KK_WHEEL_PRESS); the slide switch is a separate line ([0x200F1] bit7).
+// The roller must emit ONE clean phase transition per detent AND let the firmware's
+// IRQ7 decode ISR fully run before the next one. If fast/successive notches write the
+// phase lines back-to-back, the single pending IRQ7 bit collapses N writes into one
+// ISR that samples only the FINAL phase — a >1-step jump the decode misreads (a
+// coalesced double-up can read as one up then one down) or drops entirely. Symptom:
+// notches that don't scroll, or a jump-then-stick. Fix: queue detents and pump exactly
+// ONE per run batch. A batch is ~216k cycles (~16 ms phone time), so the ISR always
+// completes a detent before the next is written — no coalescing, at any wheel speed.
+//
+// The position is HOST-AUTHORITATIVE (a self-contained one-hot 1->2->3), seeded once
+// from the live phase lines. We drive only the three GenIO phase LINES (0x200F1 bit1 /
+// 0x200F2 bit0 / 0x200F3 bit5 — MMIO, hardware-fixed across firmware builds) + IRQ7;
+// we do NOT read the decode's stored position ([0x168A34]), which is a build-specific
+// RAM cell (differs 7110 v5.00 vs v5.01) and drove the roller erratic after a fw swap.
+static int      g_roll_queue = 0;   // signed pending detents (+ = up), clamped
+static uint8_t  g_roll_pos = 1;     // host one-hot position (1/2/3) — the wheel's detent
+
+// Write the current one-hot detent onto the three GenIO phase LINES (the faithful
+// encoder outputs). This is the ONLY roller state we touch — no firmware RAM cells.
+static void roll_write_lines(void) {
+    uint32_t f1 = 0x000200F1u & DCT3_RAM_MASK, f2 = 0x000200F2u & DCT3_RAM_MASK,
+             f3 = 0x000200F3u & DCT3_RAM_MASK;
+    g_core->ram[f1] = (uint8_t)((g_core->ram[f1] & ~0x02u) | (g_roll_pos == 1 ? 0x02u : 0));
+    g_core->ram[f2] = (uint8_t)((g_core->ram[f2] & ~0x01u) | (g_roll_pos == 2 ? 0x01u : 0));
+    g_core->ram[f3] = (uint8_t)((g_core->ram[f3] & ~0x20u) | (g_roll_pos == 3 ? 0x20u : 0));
+}
+
+// Rest the encoder at a valid detent (position 1 = phase A) at boot/reset. A physical
+// optical encoder always outputs the phase code of its current detent — never all-lines-
+// low — so the firmware reads a real position when it starts monitoring and its
+// previous-position reference matches ours. Without this the first notch decodes against
+// an undefined rest and scrolls the wrong way ("one back then forward").
+static void roll_reset(void) {
+    if (!g_core || !g_model || g_model->keypad.family != KP_FAMILY_7110) return;
+    g_roll_queue = 0;
+    g_roll_pos = 1;
+    roll_write_lines();          // hold the lines at the rest detent; no IRQ (no motion)
+}
+
+static void roll_emit_one(int up) {
+    g_roll_pos = up ? (g_roll_pos == 1 ? 3 : g_roll_pos == 3 ? 2 : 1)    // up:   1<-3<-2<-1
+                    : (g_roll_pos == 1 ? 2 : g_roll_pos == 2 ? 3 : 1);   // down: 1->2->3->1
+    roll_write_lines();
+    mad2_raise_irq(&g_mad2, 7);   // GenIO-change IRQ -> roller ISR
+}
+
+// Drain at most ONE queued detent per call; the run loop calls this once per batch, so
+// each detent's ISR completes before the next is written.
+static void roll_pump(void) {
+    if (!g_core || g_roll_queue == 0) return;
+    int up = g_roll_queue > 0;
+    roll_emit_one(up);
+    g_roll_queue += up ? -1 : 1;   // consume one detent toward 0
+}
+
 EMSCRIPTEN_KEEPALIVE
 void dct3_web_roll(int up) {
     if (!g_core) return;
-    // Sync to the firmware's own current detent ([0x168A34], the encoder-decode's stored
-    // position) so the step direction is always correct — no first-click glitch from a
-    // host-side counter drifting out of phase with the firmware.
-    int pos = g_core->ram[0x00168A34u & DCT3_RAM_MASK];
-    if (pos < 1 || pos > 3) pos = 1;
-    pos = up ? (pos == 1 ? 3 : pos == 3 ? 2 : 1)    // up:   1<-3<-2<-1
-             : (pos == 1 ? 2 : pos == 2 ? 3 : 1);   // down: 1->2->3->1
-    uint32_t f1 = 0x000200F1u & DCT3_RAM_MASK, f2 = 0x000200F2u & DCT3_RAM_MASK,
-             f3 = 0x000200F3u & DCT3_RAM_MASK;
-    g_core->ram[f1] = (uint8_t)((g_core->ram[f1] & ~0x02u) | (pos == 1 ? 0x02u : 0));
-    g_core->ram[f2] = (uint8_t)((g_core->ram[f2] & ~0x01u) | (pos == 2 ? 0x01u : 0));
-    g_core->ram[f3] = (uint8_t)((g_core->ram[f3] & ~0x20u) | (pos == 3 ? 0x20u : 0));
-    mad2_raise_irq(&g_mad2, 7);   // GenIO-change IRQ -> roller ISR 0x4CA37C
+    // QUEUE ONLY — never emit here. Emitting on the JS call would let a fast wheel write
+    // several phase steps within one frame (before the ISR runs) = the coalescing bug.
+    // The run-loop pump releases one detent per batch instead.
+    int d = up ? 1 : -1;
+    if (d > 0 ? g_roll_queue < 8 : g_roll_queue > -8) g_roll_queue += d;  // clamp backlog
 }
 
 // Release / press the power key (special-scan col1). Held by default so the
