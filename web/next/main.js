@@ -214,7 +214,6 @@
 
         // Optional — UI features that depend on these self-disable.
         setKeyHold:     optWrap("dct3_web_set_key_hold", null, ["number"]),
-        setBypass:      optWrap("dct3_web_set_bypass", null, ["number"]),
         setSkipSeclock: optWrap("dct3_web_set_skip_seclock", null, ["number"]),
         setRecover:     optWrap("dct3_web_set_recover", null, ["number"]),
         setCharger:     optWrap("dct3_web_set_charger", null, ["number"]),
@@ -227,13 +226,6 @@
         // "no coverage" message (visible only when this gate is open).
         setSimPinEnabled: optWrap("dct3_web_set_sim_pin_enabled", null, ["number"]),
         setSimPin:        optWrap("dct3_web_set_sim_pin", null, ["number"]),
-        // Boot spike: explicit set to 0 (force OFF) rather than leaving
-        // at -1 (auto). The 3310 profile's pin_verdict_default is also 0,
-        // so the effective state should be identical, but setting it
-        // explicitly removes any ambiguity and makes getSpike() report
-        // the value we actually want.
-        setSpike:         optWrap("dct3_web_set_spike", null, ["number"]),
-        getSpike:         optWrap("dct3_web_get_spike", "number"),
         // Audio paths. Two distinct sources on a 3310:
         //   - "Buzzer" = the piezo: square-wave, freq = 13 MHz / buzzerDiv.
         //     buzzerOn = sustained; buzzerChirp = sub-frame edges + the
@@ -256,10 +248,8 @@
         // For the boot fast-forward branch — legacy busy-loops dct3_web_run
         // (instruction count) until C.step() crosses ~46M, then switches
         // to real-time cycle pacing. Without this, the boot animation
-        // plays at real time and any firmware path that depends on early
-        // ordering may diverge — including the SIM-gate bypass arming,
-        // which only activates after the DSP responder writes the 0xC8
-        // verdict (src/web/main.c:579-581).
+        // plays at real time; 46M also covers the organic SIM init
+        // (disp49 reaches its standby/insert-SIM state ~24-32M steps).
         run:    optWrap("dct3_web_run", null, ["number"]),
         step:   optWrap("dct3_web_step", "number"),
 
@@ -295,13 +285,10 @@
       try { setter(value ? 1 : 0); }
       catch (e) { showError("toggle", e); }
     }
-    var chkBypass     = document.getElementById("chk-bypass");
     var chkSkip       = document.getElementById("chk-skip-seclock");
     var chkRecover    = document.getElementById("chk-recover");
     var chkCharger    = document.getElementById("chk-charger");
     var chkSim        = document.getElementById("chk-sim");
-    if (chkBypass)  { applyToggle(C.setBypass, chkBypass.checked);
-                      chkBypass.addEventListener("change", function () { applyToggle(C.setBypass, chkBypass.checked); }); }
     if (chkSkip)    { applyToggle(C.setSkipSeclock, chkSkip.checked);
                       chkSkip.addEventListener("change", function () { applyToggle(C.setSkipSeclock, chkSkip.checked); }); }
     if (chkRecover) { applyToggle(C.setRecover, chkRecover.checked);
@@ -310,10 +297,6 @@
                       chkCharger.addEventListener("change", function () { applyToggle(C.setCharger, chkCharger.checked); }); }
     if (chkSim)     { applyToggle(C.setSim, chkSim.checked);
                       chkSim.addEventListener("change", function () { applyToggle(C.setSim, chkSim.checked); }); }
-
-    // Force boot spike OFF before C.boot() runs (not -1/auto). g_spike_force
-    // is a static C global that survives the boot reset, so this sticks.
-    if (C.setSpike) tryDo("setSpike-init", function () { C.setSpike(0); });
 
     var slBattery  = document.getElementById("sl-battery");
     var outBattery = document.getElementById("out-battery");
@@ -337,8 +320,8 @@
     // state actually matches what the model sees. Without this the
     // phone boots SIM-present even when the box is unchecked, sending
     // it down the SIM-rejected timeout path that diverges from /web/.
-    // (g_bypass_sim and g_skip_seclock are static and survive boot,
-    //  so their UI toggles don't need re-application.)
+    // (g_skip_seclock is static and survives boot, so its UI toggle
+    //  doesn't need re-application.)
     // -------------------------------------------------------------
     function reapplyPostBoot() {
       flushPCM();                     // clear stale audio from the previous model/boot
@@ -389,16 +372,6 @@
       }
       reapplyPostBoot();
       applyModel();                      // mount the device shell for the booted model
-      // Verify spike is actually 0 post-boot. resolve_spike() re-applies
-      // pin_verdict_default and then the override, so this is the true
-      // effective state.
-      if (C.getSpike) {
-        try {
-          var sp = C.getSpike() | 0;
-          // eslint-disable-next-line no-console
-          if (typeof console !== "undefined") console.log("[dct3] boot spike effective =", sp, sp ? "(ON — would pin verdict to 0xC8)" : "(OFF — organic verdict)");
-        } catch (_) {}
-      }
       setStatus("Running.");
       lastT = null;                      // reset frame-loop pacing
       requestAnimationFrame(frame);
@@ -545,8 +518,8 @@
         // Boot phase: busy-loop instruction-count chunks for up to 12 ms wall
         // time per frame, until the firmware crosses the OS-ready threshold.
         // Real-time pacing takes over after that. This matches /web/ exactly
-        // and ensures the early-boot ordering (DSP verdict → spike arm → SIM
-        // gate bypass) completes before any host-time-dependent UI work.
+        // and lets the organic early boot (DSP self-test verdict, SIM init)
+        // complete before any host-time-dependent UI work.
         var booting = C.step && C.step() < BOOT_INSN_TGT;
         if (booting && C.run) {
           var t0 = performance.now();

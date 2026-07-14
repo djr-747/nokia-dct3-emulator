@@ -1022,12 +1022,8 @@ if (replay) {
   // whereas re-pressing soft/menu keys could double-navigate. Floor timing (advanceTo to
   // ev.cyc) is still honoured for automatic screen transitions (the clock-gate note→field).
   const keyConfirm = !argv.includes('--no-keyconfirm');
-  // Confirm+retry is safe for digits and for up/down scrolling: a re-press only fires when
-  // the fb did NOT change (a genuine drop, or a no-op menu edge — both harmless to repeat).
-  // NOT soft1/soft2/menu: those transition screens, and a missed-but-actually-worked press
-  // would double-navigate. keyConfirmKey(k) decides eligibility.
-  const keyConfirmKey = (k) => /^[0-9]$/.test(String(k)) || k === 'up' || k === 'down';
-  const CONFIRM_CYC = 3000000;   // ~ hold+settle+scan margin; recorded key gaps exceed this
+  const DIGIT_RE = /^[0-9]$/;
+  const CONFIRM_CYC = 3000000;   // ~ hold+settle+scan margin; year-digit gaps exceed this
   for (const ev of replay) {
     const fn = () => evDue(ev);
     if (Number.isFinite(ev.cyc)) fn.cycTarget = ev.cyc;
@@ -1041,10 +1037,10 @@ if (replay) {
     console.log(`${label.padEnd(16)} step=${(C.step() / 1e6).toFixed(1)}M cyc=${(C.cycles() / 1e6).toFixed(1)}M lcd=${C.lcdw()} pc=0x${(C.pc() >>> 0).toString(16)} ${spin ? '⚠SPIN' : '     '} → press ${ev.key}`);
     if (spin) console.log(backtrace());
     pressKey(ev.key);
-    if (keyConfirm && keyConfirmKey(ev.key)) {
+    if (keyConfirm && DIGIT_RE.test(String(ev.key))) {
       let tries = 0;
       while (!advanceUntilFbChange(CONFIRM_CYC) && tries < 2) {
-        console.log(`   ↳ key '${ev.key}' didn't register (no fb change) — re-pressing (try ${tries + 1})`);
+        console.log(`   ↳ digit '${ev.key}' didn't register (no fb change) — re-pressing (try ${tries + 1})`);
         pressKey(ev.key); tries++;
       }
     }
