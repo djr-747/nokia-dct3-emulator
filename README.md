@@ -50,7 +50,7 @@ early. Model detection and version are read from the flash header — nothing is
 | **5510** | NPM-5 v3.50 | 🔴 scaffold | early power-off; map unresolved |
 | **6110** | NSE-3 v5.48 | ✅ locked | boots to the "Security code" (FAID) lock |
 | **6210** | NPE-3 v5.56 | 🟡 partial | boots to Contact Service (DSP-gated) |
-| **7110** | NSE-5 v5.01 | 🟡 partial | renders (SED1565); Contact Service |
+| **7110** | NSE-5 v5.00 | ✅ standby | SED1565 display, RE'd keypad + **Navi roller** (mouse-wheel / arrows scroll menus, press to select); SIM-present boots to a key-navigable standby |
 | **8210** | NSM-3 v5.31 | ✅ standby | |
 | **8250** | NSM-3D v6.02 | ✅ standby | |
 | **8290** | NSB-7 v5.22 | 🟡 partial | Contact Service; DSP-upload handshake RE pending |
@@ -58,7 +58,7 @@ early. Model detection and version are read from the flash header — nothing is
 | **8855** | NSM-4 v5.13 | ✅ standby | |
 | **8890** | NSB-6 v12.16 | 🟡 partial | Contact Service (US-band 8850) |
 
-Nine models boot to a usable state today (standby, or the normal Security-code lock). Seven more
+Ten models boot to a usable state today (standby, or the normal Security-code lock). Seven more
 DCT3 models (5130, 5190, 6130, 6150, 6190, 6250, 8810) have firmware but no profile yet. Per-model detail lives in [`docs/MODELS.md`](docs/MODELS.md).
 
 ---

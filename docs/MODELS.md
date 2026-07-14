@@ -21,7 +21,7 @@ Service, or a lock it can't clear faithfully) · 🔴 scaffold (stalls early).
 | **5510** | NPM-5 v3.50 | 🔴 scaffold | clean power-off early; map/scratch unresolved |
 | **6110** | NSE-3 v5.48 | ✅ locked | boots to the "Security code" (FAID) lock |
 | **6210** | NPE-3 v5.56 | 🟡 partial | boots to Contact Service (DSP-gated); 4 MB map |
-| **7110** | NSE-5 v5.01 | 🟡 partial | renders (SED1565 controller); Contact Service |
+| **7110** | NSE-5 v5.00 | ✅ standby | interactive: SED1565 display (132-col DDRAM offset), RE'd 5×5 keypad matrix + **Navi roller** (3-phase optical encoder — mouse-wheel / arrows / on-screen buttons scroll menus, press to select). SIM-present boots to a drawn, key-navigable standby; a ~2-min DSP-temp watchdog is warm-recovered. Self-test completion is HLE'd (sibling-style DSP ack; no RAM/PC pokes). |
 | **8210** | NSM-3 v5.31 | ✅ standby | |
 | **8250** | NSM-3D v6.02 | ✅ standby | |
 | **8290** | NSB-7 v5.22 | 🟡 partial | Contact Service; US-band DSP-upload boot handshake RE pending |
@@ -29,7 +29,7 @@ Service, or a lock it can't clear faithfully) · 🔴 scaffold (stalls early).
 | **8855** | NSM-4 v5.13 | ✅ standby | |
 | **8890** | NSB-6 v12.16 | 🟡 partial | Contact Service; same as 8290 (US-band 8850) |
 
-**Boots to a usable state: 9 of 18 registered** — standby (3310, 3410, 5210, 8210, 8250, 8850, 8855) or the Security-code lock (5110, 6110).
+**Boots to a usable state: 10 of 18 registered** — standby (3310, 3410, 5210, 7110, 8210, 8250, 8850, 8855) or the Security-code lock (5110, 6110).
 
 ## Not yet profiled
 
