@@ -64,44 +64,16 @@
         <div class="brand">NOKIA</div>
         <canvas id="lcd" class="lcd" width="84" height="48" aria-label="Phone screen"></canvas>
 
-        <!-- Nav + soft keys. Single-nav layout (3310-style).
-             Each button carries a layout class (navarrow-up / -down)
-             so the CSS grid can place them by class instead of via
-             `:nth-of-type`, which doesn't filter by class and would
-             silently fall back to auto-placement. -->
-        <div class="navi">
-          <button class="key softline" data-row="4" data-col="3" aria-label="Menu / select"></button>
-          <button class="key navarrow navarrow-up"   data-row="0" data-col="1" aria-label="Up">&#9650;</button>
-          <button class="key navarrow navarrow-down" data-row="1" data-col="1" aria-label="Down">&#9660;</button>
-          <button class="key auxkey"   data-row="0" data-col="4" aria-label="Clear">C</button>
-        </div>
-
-        <!-- 4x3 numeric pad. -->
-        <div class="keys">
-          <div class="row">
-            <button class="key" data-row="1" data-col="2">1</button>
-            <button class="key" data-row="1" data-col="3">2</button>
-            <button class="key" data-row="4" data-col="1">3</button>
-          </div>
-          <div class="row">
-            <button class="key" data-row="2" data-col="4">4</button>
-            <button class="key" data-row="2" data-col="3">5</button>
-            <button class="key" data-row="2" data-col="2">6</button>
-          </div>
-          <div class="row">
-            <button class="key" data-row="3" data-col="4">7</button>
-            <button class="key" data-row="3" data-col="3">8</button>
-            <button class="key" data-row="3" data-col="2">9</button>
-          </div>
-          <div class="row">
-            <button class="key" data-row="4" data-col="4">*</button>
-            <button class="key" data-row="0" data-col="2">0</button>
-            <button class="key" data-row="4" data-col="2">#</button>
-          </div>
-        </div>
+        <!-- Model-aware keypad. main.js buildKeypad(kpFamily) fills this from the
+             active model's VISUAL family: Family B (3310) = Menu/Names + up/down;
+             Family A/C = soft keys + send/end; Family 3 (7110) = Navi roller
+             (roll up / press / roll down, also driven by the mouse wheel). Every
+             button carries a LOGICAL label routed through the model's own keymap,
+             so a single builder covers all models with no photo shell. -->
+        <div class="pad" aria-label="Keypad"></div>
       </div>
 
-      <p class="hint">Keyboard: 0&ndash;9 * # &nbsp;&middot;&nbsp; &uarr;&darr; &nbsp;&middot;&nbsp; Enter = Menu &nbsp;&middot;&nbsp; Backspace = Clear</p>
+      <p class="hint">Keyboard: 0&ndash;9 * # &nbsp;&middot;&nbsp; &uarr;&darr; &nbsp;&middot;&nbsp; Enter = Menu &nbsp;&middot;&nbsp; Backspace = Names &nbsp;&middot;&nbsp; &larr;&rarr; = Call / End</p>
     </div>
 
     <!-- ============================ QUICK CONTROLS ============================ -->

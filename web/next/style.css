@@ -233,22 +233,25 @@ body.shell-mode .shell-lcd #lcd {
 .shell-zone.active { background: rgba(0,0,0,.16); }
 
 /* ----------------------------- KEYS ----------------------------- */
-.navi {
-  display: grid;
-  grid-template-columns: 1fr 1.5fr 0.9fr;
-  grid-template-areas:
-    ".    menu  up"
-    "aux  .     down";
-  gap: 8px 10px;
+/* Model-aware keypad grid. buildKeypad(family) fills .pad with one .padrow per
+   layout row (3 cells each); empty cells are spacers. A single 3-column grid keeps
+   the nav row (soft/roller/send-end) aligned with the digit columns below. */
+.pad {
   width: 252px;
-  margin: 0 auto 14px;
-  align-items: center;
-  justify-items: center;
+  margin: 0 auto 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
 }
-.navi .softline      { grid-area: menu; }
-.navi .navarrow-up   { grid-area: up; }
-.navi .navarrow-down { grid-area: down; }
-.navi .auxkey        { grid-area: aux; }
+.padrow {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 7px;
+  justify-items: stretch;
+  align-items: center;
+}
+.padcell { display: flex; }             /* wrapper so empty cells still hold a column */
+.padcell .key { flex: 1; }
 
 .key {
   color: var(--text);
@@ -259,6 +262,7 @@ body.shell-mode .shell-lcd #lcd {
   user-select: none;
   font-size: 15px;
   font-family: inherit;
+  padding: 11px 0;
   transition: background .08s ease, transform .04s ease;
 }
 .key:hover { background: var(--key-hot); }
@@ -271,33 +275,20 @@ body.shell-mode .shell-lcd #lcd {
   outline-offset: 2px;
 }
 
-.key.softline {
-  width: 78px;
-  min-height: 14px;
+/* Soft keys render as a rounded pill; send/end carry call colours; the roller /
+   nav column is tinted so it reads as the scroll control (esp. the 7110). */
+.key.softkey {
   padding: 8px 0;
-  border-radius: 20px;
+  border-radius: 18px;
   background: #2f343c;
-}
-.key.navarrow {
-  width: 46px;
-  padding: 9px 0;
   font-size: 13px;
-}
-.key.auxkey {
-  width: 46px;
-  padding: 9px 0;
-  border-radius: 8px;
-  background: #2f343c;
   font-weight: 600;
 }
-
-.keys { display: flex; flex-direction: column; gap: 7px; }
-.row { display: flex; justify-content: center; gap: 7px; }
-.row .key {
-  flex: 1;
-  max-width: 70px;
-  padding: 11px 0;
-}
+.key.nav { background: #2b2f37; font-size: 14px; }
+.key.send { color: #7CFC7A; font-size: 17px; }
+.key.end  { color: #FF6B6B; font-size: 17px; }
+.key.end .hangup { display: inline-block; transform: rotate(135deg); }
+.key.vol  { font-size: 13px; }
 
 .hint {
   color: var(--text-dim);

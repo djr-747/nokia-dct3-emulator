@@ -269,6 +269,9 @@
         lcdW:     optWrap("dct3_web_lcd_w", "number"),
         lcdH:     optWrap("dct3_web_lcd_h", "number"),
         lcdBanks: optWrap("dct3_web_lcd_banks", "number"),
+        // Keypad VISUAL family (0=3310/B, 1=NSM Family-A, 2=Family-C, 3=7110/Navi-roller)
+        // — drives the model-aware grid layout when no photo shell is registered.
+        kpFamily: optWrap("dct3_web_kp_family", "number"),
         // Model-aware logical key (KK_*): the shell sends soft1/up/1/… and the active
         // profile maps it to the matrix — so the page never hardcodes a per-model grid.
         keyLogical: optWrap("dct3_web_key_logical", null, ["number", "number"]),
@@ -577,75 +580,92 @@
     // so it doesn't render an empty LCD before the user dismisses.)
 
     // -------------------------------------------------------------
-    // Keypad: on-screen buttons + physical keyboard.
-    // Per the firmware's keymap table (flash 0x32E718), each key is
-    // identified by a (row, col) matrix pair. data-row/data-col on
-    // each button is the contract.
+    // Keypad: on-screen grid (model-aware, built below) + physical keyboard.
+    // Every input path routes LOGICAL key labels through the active model's own
+    // keymap via pressLogical()/keyLogicalRaw — the page hardcodes no per-model
+    // matrix. The firmware's own scan/repeat/long-press timing decides tap vs hold.
     // -------------------------------------------------------------
-    // Tap-vs-hold model:
-    //   - mousedown sets the matrix bit via dct3_web_key_raw.
-    //   - mouseup clears the bit, BUT guarantees a minimum 200K-insn
-    //     hold (≈15 ms wall at 1× pacing). Very-fast clicks still
-    //     register, the firmware's ~222K-insn scan period never misses.
-    //   - A real long-press keeps the bit set until physical release,
-    //     so the firmware's own long-press handlers (e.g. long-Menu
-    //     → voice dialling) trigger correctly.
-    // Fallback: if dct3_web_key_raw isn't exported, fall back to the
-    // sequenced dct3_web_key (which ignores physical release).
-    var MIN_HOLD_INSNS = 200000;
-    var MIN_HOLD_MS    = MIN_HOLD_INSNS / 13000;   // 13 MHz core ≈ 15 ms
-    var pressed = new Map();                       // (row<<8)|col → state
-
-    function press(row, col, down) {
-      var code = ((row | 0) << 8) | (col | 0);
-      if (down) {
-        if (pressed.has(code)) return;             // already down — idempotent
-        if (C.keyRaw) {
-          try { C.keyRaw(row | 0, col | 0, 1); }
-          catch (e) { showError("keyRaw down", e); return; }
-        } else {
-          try { C.key(row | 0, col | 0, 1); }     // sequenced fallback
-          catch (e) { showError("key down", e); return; }
-        }
-        pressed.set(code, { downAt: performance.now() });
-      } else {
-        var info = pressed.get(code);
-        if (!info) return;
-        pressed.delete(code);
-        if (!C.keyRaw) return;                     // fallback owns its up-edge
-        var elapsed = performance.now() - info.downAt;
-        if (elapsed >= MIN_HOLD_MS) {
-          try { C.keyRaw(row | 0, col | 0, 0); }
-          catch (e) { showError("keyRaw up", e); }
-        } else {
-          // Defer the up-edge so the firmware sees at least the scan/
-          // deliver window. Without this an extra-fast click could miss
-          // the ~222K-insn keypad scan and the press would never land.
-          setTimeout(function () {
-            try { C.keyRaw(row | 0, col | 0, 0); }
-            catch (e) { showError("keyRaw up-defer", e); }
-          }, Math.ceil(MIN_HOLD_MS - elapsed));
-        }
-      }
-    }
-
-    // Still set the sequenced auto-release window for the C.key fallback
-    // path (in case an older wasm build doesn't export key_raw).
+    var MIN_HOLD_INSNS = 200000;                   // ≈15 ms @13 MHz — one keypad-scan window
+    // Auto-release window for the queued-tap fallback (old wasm without key_logical_raw).
     if (C.setKeyHold) tryDo("setKeyHold", function () { C.setKeyHold(MIN_HOLD_INSNS); });
 
-    var buttons = document.querySelectorAll(".key");
-    buttons.forEach(function (b) {
-      var row = parseInt(b.getAttribute("data-row"), 10);
-      var col = parseInt(b.getAttribute("data-col"), 10);
-      if (!isFinite(row) || !isFinite(col)) return;
-      function down(e) { e.preventDefault(); b.classList.add("down"); press(row, col, true); }
-      function up(e)   { e.preventDefault(); b.classList.remove("down"); press(row, col, false); }
-      b.addEventListener("mousedown", down);
-      b.addEventListener("mouseup", up);
-      b.addEventListener("mouseleave", function () { b.classList.remove("down"); });
-      b.addEventListener("touchstart", down, { passive: false });
-      b.addEventListener("touchend", up, { passive: false });
-    });
+    // -------------------------------------------------------------
+    // Model-aware grid keypad (used when the active model has no photo shell).
+    // Mirrors the legacy /web builder + the native GUI's family_layout: one
+    // 3-column grid per VISUAL family, every button a LOGICAL label routed through
+    // the model's own keymap (pressLogical). Family 3 (7110) swaps up/down for the
+    // Navi roller (roll up / press / roll down), also driven by the mouse wheel.
+    var padHost = document.querySelector(".pad");
+    // ''=empty spacer cell. B(3310): Menu/Names + up/down. A/C: soft + send/end.
+    var PAD = {
+      0: [ ["soft1", "up", "soft2"], ["", "down", ""],
+           ["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["*", "0", "#"] ],
+      1: [ ["soft1", "up", "soft2"], ["send", "down", "end"],
+           ["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["*", "0", "#"] ],
+      2: [ ["soft1", "up", "soft2"], ["send", "down", "end"],
+           ["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["*", "0", "#"] ],
+      3: [ ["soft1", "wheelup", "soft2"], ["send", "wheelpress", "end"],
+           ["", "wheeldown", ""],
+           ["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["*", "0", "#"] ],
+    };
+    var GLYPH = { up:"▲", down:"▼", soft1:"Menu", soft2:"Names",
+                  send:"", end:"", wheelup:"▲", wheelpress:"●", wheeldown:"▼",
+                  volup:"V+", voldown:"V−" };
+    var KEYCLASS = { soft1:"softkey", soft2:"softkey", send:"send", end:"end",
+                     up:"nav", down:"nav", wheelup:"nav", wheelpress:"nav",
+                     wheeldown:"nav", volup:"vol", voldown:"vol" };
+    function glyphFor(family, label) {
+      if (family === 0) { if (label === "soft1") return "Menu"; if (label === "soft2") return "C"; }
+      if (label in GLYPH) return GLYPH[label];
+      return label;
+    }
+    function makeKey(family, label) {
+      var b = document.createElement("button");
+      b.className = "key" + (KEYCLASS[label] ? " " + KEYCLASS[label] : "");
+      b.dataset.key = label;
+      b.setAttribute("aria-label", label);
+      if (label === "end") {
+        var s = document.createElement("span"); s.className = "hangup"; s.textContent = "📞";
+        b.appendChild(s);
+      } else if (label === "send") {
+        b.textContent = "📞";
+      } else {
+        b.textContent = glyphFor(family, label);
+      }
+      bindZone(b, label);              // pointer down/up → pressLogical(label)
+      return b;
+    }
+    var currentFamily = 0;
+    function buildKeypad(family) {
+      if (!padHost) return;
+      family = (family | 0);
+      currentFamily = family;
+      padHost.innerHTML = "";
+      (PAD[family] || PAD[0]).forEach(function (rowarr) {
+        var r = document.createElement("div"); r.className = "padrow";
+        rowarr.forEach(function (label) {
+          var cell = document.createElement("div"); cell.className = "padcell";
+          if (label) cell.appendChild(makeKey(family, label));
+          r.appendChild(cell);
+        });
+        padHost.appendChild(r);
+      });
+    }
+    // Navi Roller via the mouse wheel — only the 7110 (family 3) has one. Wheel up =
+    // roll up, down = roll down; one detent per notch with a short cooldown so a fast
+    // scroll doesn't flood the encoder.
+    var rollAt = 0;
+    window.addEventListener("wheel", function (e) {
+      if (currentFamily !== 3) return;
+      var t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+      e.preventDefault();
+      var now = performance.now();
+      if (now - rollAt < 30) return;
+      rollAt = now;
+      pressLogical(e.deltaY < 0 ? "wheelup" : "wheeldown", true);
+      pressLogical(e.deltaY < 0 ? "wheelup" : "wheeldown", false);
+    }, { passive: false });
 
     // -------------------------------------------------------------
     // Device shell. Mounts a shared photo body (shells/<model>/) with the live
@@ -655,7 +675,10 @@
     // -------------------------------------------------------------
     var KK = { "0":1,"1":2,"2":3,"3":4,"4":5,"5":6,"6":7,"7":8,"8":9,"9":10,
                "*":11,"#":12, up:13, down:14, soft1:15, soft2:16, send:17, end:18,
-               volup:19, voldown:20, pwr:21 };
+               volup:19, voldown:20, pwr:21,
+               // 7110 Navi Roller — the profile maps these to the optical-encoder
+               // rotate/press, NOT to matrix up/down (see keylines_7110).
+               wheelup:22, wheeldown:23, wheelpress:24 };
     var SHELLS = window.DCT3_SHELLS || {};
     var ASSET = function (p) { return (window.DCT3_SHELL_PREFIX || "") + p; };
     var shellHost = document.getElementById("shell");
@@ -731,13 +754,27 @@
       b.addEventListener("pointercancel", up);
       b.addEventListener("pointerleave", up);
     }
+    // Size the grid-mode #lcd to the ACTIVE model's real aspect ratio (the CSS
+    // default only fits the 84×48 3310; a 96×65 7110 would otherwise stretch). Fixed
+    // display width, height derived from LCDH/LCDW so pixels stay square.
+    var GRID_LCD_W = 240;
+    function sizeGridLcd() {
+      if (document.body.classList.contains("shell-mode")) return;
+      var w = LCDW || 84, h = LCDH || 48;
+      canvas.style.width  = GRID_LCD_W + "px";
+      canvas.style.height = Math.round(GRID_LCD_W * h / w) + "px";
+    }
     function teardownShell() {
-      if (!shellRoot) return;
       document.body.classList.remove("shell-mode");
       shellBg = shellBgLit = shellPixel = null; shellLcdEl = null; shellLitState = -1;
-      canvas.style.width = ""; canvas.style.height = "";
-      if (lcdHome) lcdHome.appendChild(canvas);   // canvas → chassis fallback home
-      shellHost.innerHTML = ""; shellHost.style.width = ""; shellHost.style.height = "";
+      // Reseat the canvas at its grid home — ABOVE the keypad (before .pad), not
+      // appended to the end (which put the screen below the keys). Then size it.
+      if (lcdHome && canvas.parentElement !== lcdHome) {
+        if (padHost && padHost.parentElement === lcdHome) lcdHome.insertBefore(canvas, padHost);
+        else lcdHome.appendChild(canvas);
+      }
+      sizeGridLcd();
+      if (shellHost) { shellHost.innerHTML = ""; shellHost.style.width = ""; shellHost.style.height = ""; }
       shellRoot = null;
     }
     function buildShell(def) {
@@ -826,7 +863,16 @@
     function applyModel() {
       syncLcdGeometry();
       var def = tryDo("pickShell", function () { return pickShell((C.model && C.model()) || "3310"); });
-      try { if (def) buildShell(def); else teardownShell(); }
+      try {
+        if (def) { buildShell(def); }
+        else {
+          // No photo shell → the model-aware grid. Build the keypad for this model's
+          // VISUAL family (7110 = Navi roller) and reseat/size the screen above it.
+          var fam = tryDo("kpFamily", function () { return (C.kpFamily && C.kpFamily()) | 0; }) || 0;
+          buildKeypad(fam);
+          teardownShell();
+        }
+      }
       catch (e) { showError("buildShell", e); teardownShell(); }
     }
 
