@@ -1204,13 +1204,20 @@
            ["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["*", "0", "#"] ],
       2: [ ["soft1", "up", "soft2"], ["send", "down", "end"],
            ["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["*", "0", "#"] ],
+      // 7110/NSE-5: Navi Roller replaces up/down — roll up/select/down in the nav column;
+      // send/end flank it; no volume keys (the 7110 has none).
+      3: [ ["soft1", "wheelup", "soft2"], ["send", "wheelpress", "end"],
+           ["", "wheeldown", ""],
+           ["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["*", "0", "#"] ],
     };
     const SIDE_VOL = { 1: ["volup", "voldown"] };   // Family A only (left of the LCD)
     // Terse glyphs matching the GUI's KEYMETA; Family B relabels the soft keys (glyph_for).
     const GLYPH = { "0":"0","1":"1","2":"2","3":"3","4":"4","5":"5","6":"6","7":"7","8":"8","9":"9",
       "*":"*", "#":"#", up:"UP", down:"DN", soft1:"SL", soft2:"SR",
-      send:"SND", end:"END", volup:"V+", voldown:"V−" };
-    const KEYCLASS = { send:"send", end:"end", volup:"vol", voldown:"vol", up:"nav", down:"nav" };
+      send:"SND", end:"END", volup:"V+", voldown:"V−",
+      wheelup:"▲", wheelpress:"●", wheeldown:"▼" };   // Navi Roller
+    const KEYCLASS = { send:"send", end:"end", volup:"vol", voldown:"vol", up:"nav", down:"nav",
+      wheelup:"nav", wheeldown:"nav", wheelpress:"nav" };
     function glyphFor(family, label) {
       if (family === 0) { if (label === "soft1") return "MENU"; if (label === "soft2") return "C"; }
       return GLYPH[label] || label;
@@ -2015,6 +2022,20 @@
         pressKey(m, false);
       }, AUTOREPEAT_MS);
     });
+
+    // Navi Roller via the mouse wheel: on the 7110 (family 3) scrolling the wheel over
+    // the phone rotates the roller — wheel up = scroll up, wheel down = scroll down. One
+    // detent per wheel notch (deltaY sign); a small cooldown avoids flooding the encoder.
+    let rollAt = 0;
+    window.addEventListener("wheel", (e) => {
+      if (currentFamily() !== 3) return;   // only the 7110 has a roller
+      if (inField(e)) return;
+      e.preventDefault();
+      const now = performance.now();
+      if (now - rollAt < 30) return;       // one step per ~30ms burst
+      rollAt = now;
+      pressKey(e.deltaY < 0 ? "wheelup" : "wheeldown", true);
+    }, { passive: false });
 
     document.getElementById("btn-reboot").addEventListener("click", boot);
     const saveBtn = document.getElementById("btn-save-eeprom");

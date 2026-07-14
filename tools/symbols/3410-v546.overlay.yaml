@@ -90,3 +90,38 @@ addresses:
   KEYPAD_KEYCODE_LOOKUP:            { addr: 0x003E496E, source: overlay, role: "indexes KEYMAP_NORM by row*5+col [08:54]" }
   KEYPAD_MATRIX_SCAN:               { addr: 0x003DEE1C, source: overlay, role: "drives cols reads rows [08:54]" }
   KEYPAD_ISR:                       { addr: 0x002E484C, source: overlay, role: "stores raw code to 0x12EA85 [08:54]" }
+  # ---- promoted from scratch on 2026-07-14 09:27 ----
+  TASK14_STATE_FANOUT:              { addr: 0x002871C8, source: overlay, role: "readiness state*88 dispatcher; state byte [0x121A3A], status tbl 0x121DD4 (resolves task14_state/status sigs) [12:38]" }
+  TASK14_STATE:                     { addr: 0x00121A3A, source: overlay, role: "task-14 readiness state byte (0->7->0xFF idle); gates DSP keep-alive emit [12:38]" }
+  TASK14_STATUS:                    { addr: 0x00121DD4, source: overlay, role: "task-14 per-state status table base (indexed by state, cmp #17) [12:38]" }
+  SELECTOR_LOOKUP:                  { addr: 0x003EF9A8, source: overlay, role: "OO method-table lookup: walk node list at [obj], match selector key u16, return method ptr; spins forever if obj freed (settime UAF) [17:11]" }
+  SELECTOR_DISPATCH:                { addr: 0x003EFA14, source: overlay, role: "virtual dispatch: SELECTOR_LOOKUP then bx to resolved method (obj=r0, selector=r1) [17:11]" }
+  MEMCPY:                           { addr: 0x003F7586, source: overlay, role: "word/byte memcpy(dst=r0,src=r1,len=r2); overflows in settime crash with len=0xFFFE [17:11]" }
+  UI_ITEM_PROP_LOOP:                { addr: 0x0038C380, source: overlay, role: "settime Done-screen layout pass: for each objarray[i] dispatch selector 0x3242 (subkeys 0xC006/C01F/C020); objarray[0] dangling after overflow [17:11]" }
+  SEND_MESSAGE:                     { addr: 0x0039FF9C, source: overlay, role: "MMI message poster (r0=msgid|argc-in-top2bits, r1=argv0); sig-located from 3310 0x2E8A1A pattern, exact-cal. Use for keypress-char injection: send_message(KEYPRESS_MSGID|0x4000, char) [19:46]" }
+  WDP_TASK_DESC:                    { addr: 0x004C4620, source: overlay, role: "ISI task descriptor: common-tbl 0x4BC944, name 0x39EEF8, mailbox 0x12E634 [09:15]" }
+  WSP_TASK_DESC:                    { addr: 0x004C3BC8, source: overlay, role: "WAP session-layer ISI task desc; mailbox 0x12D794 [09:15]" }
+  WTP_TASK_DESC:                    { addr: 0x004C46EC, source: overlay, role: "WAP transaction-layer ISI task desc; mailbox 0x12DE34 [09:15]" }
+  WDP_DISP_MSG20A2:                 { addr: 0x0039E974, source: overlay, role: "generic control msg 0x20A2; stashes req ptr to [0x12E630] [09:15]" }
+  WDP_DISP_MSG1A1A:                 { addr: 0x0039E8CC, source: overlay, role: "generic msg 0x1A1A; reads EEPROM byte 0x4E, trace 0xF0A5/0xF087 [09:15]" }
+  WDP_INIT_MSG2004:                 { addr: 0x003E8060, source: overlay, role: "INIT/reset: clears control block r4+194 len14, registers via 0x3EF982 [09:15]" }
+  WDP_DISP_MSG5905:                 { addr: 0x003E8106, source: overlay, role: "WDP-specific data msg 0x5905; processes payload at msg+2 (datapath candidate) [09:15]" }
+  WDP_DISP_MSG59A1:                 { addr: 0x003E80AA, source: overlay, role: "WDP-specific msg 0x59A1 [09:15]" }
+  ISI_COMMON_MSG_TABLE:             { addr: 0x004BC944, source: overlay, role: "shared {msgid,handler} tbl for WSP/WDP/WTP: 0x20A0/0x20A1/0x20AA [09:15]" }
+  UDPSOCKET_CLASS:                  { addr: 0x004C4A6C, source: overlay, role: "WAP datagram bearer-adaptation class; obj: destIP@+8 port@+12 localport@+14 [09:18]" }
+  INTSOCKET_CLASS:                  { addr: 0x004C4674, source: overlay, role: "WAP IP/connected-socket class (INTSocket); PPP/CSD-backed on real HW [09:18]" }
+  UDPSOCK_INIT:                     { addr: 0x003EC538, source: overlay, role: "sel 0x2004: UDPSocket ctor; registers route via 0x3EF982 [09:18]" }
+  UDPSOCK_CLOSE:                    { addr: 0x003EC66C, source: overlay, role: "sel 0x2006: UDPSocket dtor/close [09:18]" }
+  INTSOCK_INIT:                     { addr: 0x003D6F8A, source: overlay, role: "INTSocket sel 0x2004 ctor [09:18]" }
+  UDPSOCK_EVT:                      { addr: 0x003EC5BA, source: overlay, role: "sel 0x4651 CONTROL-plane: datagram evt 0x17=recv/0x18=send, 3-state on [obj+8], flow-credit via helper 0x3EC560; NO payload copy [09:21]" }
+  UDPSOCK_SETADDR:                  { addr: 0x003EC524, source: overlay, role: "sel 0x4652: set window/addr params into obj (+8,+12,+14,+16) [09:21]" }
+  UDPSOCK_FLOWCTL:                  { addr: 0x003EC560, source: overlay, role: "credit accounting: 0x18 send=++[obj+12] vs window[obj+14]; 0x17 recv=--; selector 0x45FB code 0x7E [09:21]" }
+  INTSOCK_CONNECT:                  { addr: 0x003D6ECE, source: overlay, role: "sel 0x4652: connect(sockaddr) destIP@+8/+12/+16 port@+20 = scktnt_send seam (control only) [09:21]" }
+  INTSOCK_EVT:                      { addr: 0x003D6FB2, source: overlay, role: "sel 0x4651: bearer event handler, evt 0x1A=call-established → clears pending [obj+28]; synth this to fake CSD connect [09:21]" }
+  INTSOCK_CLOSE:                    { addr: 0x003D6F42, source: overlay, role: "sel 0x4653: disconnect/teardown [09:21]" }
+  WDP_UNITDATA_REQ_TX:              { addr: 0x003507CC, source: overlay, role: "WDP outbound: assemble datagram descriptor {type, 6-byte dest addr @+24, payload}, len=13, -> WDP_TX_BUILD_SIGNAL [09:26]" }
+  WDP_TX_BUILD_SIGNAL:              { addr: 0x00351760, source: overlay, role: "build OSE signal from WDP datagram: alloc 0x31B034 + serialize 0x350D4A; r0=len r1=buf [09:26]" }
+  WDP_ADDR_PAYLOAD_SER:             { addr: 0x00350D4A, source: overlay, role: "serialize typed WDP address (0/0x10/0x11..) + payload into signal body [09:26]" }
+  OSE_SIG_ALLOC:                    { addr: 0x0031B034, source: overlay, role: "OSE signal alloc: 8-byte header + body(size r0+2); returns body ptr [09:26]" }
+  OSE_SIG_STAMP_SEND:               { addr: 0x0031B04C, source: overlay, role: "stamp OSE hdr (sender pid [0x12BAA4], prio 0x10, dest sub-id) then call OSE_SEND [09:26]" }
+  OSE_SEND:                         { addr: 0x0031AEC0, source: overlay, role: "cross-task send choke: task tbl 0x4C24EC[curtask 0x112949], route via XBUS_SEND_FRAME 0x3E1E9A [09:26]" }

@@ -1,0 +1,86 @@
+
+# ---- archived on 2026-07-13 21:24 ----
+# NB: [addresses] header is required so disfw's load_symbols picks entries up.
+
+[addresses]
+0x0030DE18 SELFTEST_VERDICT_BUILDER  # builds verdict [0x17FE15]: sets bit3|bit6|bit7 unconditionally, bit0 iff ADC latch [0x16BC7C]==0, PASS/FAIL on leaf 0x49F548 ([0x167030]) [21:09]
+0x0049F548 SELFTEST_DSPREADY_LEAF  # 2-insn leaf: returns [0x167030]; builder PASS iff ==1 [21:09]
+0x0030DF6A SELFTEST_TALLY_LOOP  # items 0..23 @0x17FC60: any value not in {0x00,0xFE,0xFF} (item 11 exempt) clears verdict bit6 -> CONTACT SERVICE [21:09]
+0x0030DEAC SELFTEST_FAILMARK_1415  # builder FAIL branch writes fail codes item[14]=0x0E item[15]=0x0F (the [0x167030] gate fail marker) [21:09]
+0x0049F8EC OS_IDLE_SLEEP_LOOP  # scheduler idle: scans 8 queues, checks sleep-ok leaf chain, arms [0x168F08]=1 + masks [0x2000B]/[0x2000C], IRQ glue 0x4CA590 clears flag on wake. NOT the self-test loop (June misread) [21:09]
+0x004E2282 MDIRCV_RING_PUMP  # dequeues DSP->MCU ring records, dispatch on type byte [rec+3]: 0x80,0x83-0x8F,0x99,0x9A,0x9C arms; (type&0xF0)==0x70 -> 0x4E2396 forward to self-test task [21:09]
+0x003BBE28 SELFTEST_TASK_SEND  # forwards 0x7x-class DSP record as task msg to self-test manager [21:09]
+0x00310E38 SELFTEST_TASK_ROUTER  # self-test manager msg router: type@[msg+3]: 0x40->subop dispatcher 0x310F2E, 0x74->DSP record arm 0x310EDA, 0x42->0x310F12 [21:09]
+0x0030E06C SELFTEST_DSP74_HANDLER  # processes DSP type-0x74 records by sub [msg+8]: 0x0A/0xC8->0x30E166, 0x0D/0xD0->0x30E0EA, 0x10,0x33,0x34,0x35,0x36 arms; DEFAULT rewraps sub as INTERNAL dispatcher subop w/ payload (so DSP rec sub-0x64 payload[0]=2 = begin-handshake!) [21:09]
+0x0030E0EA SELFTEST_INCOMPLETE_ARM  # sub-0x0D/0xD0 arm: iff verdict bit3 set -> clear bit2, zero item[15], publish 0x8902 w/ table 0x26F9A4 (the CS/incomplete broadcast) [21:09]
+0x0030E748 SELFTEST_BIT3_SETCLEAR  # arg 0=clear bit3 / 1=set bit3, echoes internal subop-0xA4 msg; sole bit3 clear site 0x30E772 [21:09]
+0x00310B52 SELFTEST_BEGIN_HANDSHAKE  # subop-0x64 arm: iff bit3 set AND msg[9]==2 -> save requester task [0x16BCC8], set verdict bit4 [21:09]
+0x0030E14C SELFTEST_BIT5_GATE  # internal begin-msg sender 0x30E15A gated on verdict bit5 (no internal bit5 setter; DSP rewrap path bypasses this) [21:09]
+0x00310490 SELFTEST_RESULT_REPLY  # builds subop-0x64 reply msg [10]=verdict bit7 [11]=55 [12]=13.. (status report to requester) [21:09]
+0x00432E8C SELFTEST_CMD70_SENDER  # MCU->DSP HOSTCMD_REQ PORT1 [0x100A8] = 0x7004/0x7006/0x700E + API_MAILBOX [0x100E0]=1 + DSPINT [0x30000]=0x04 [21:09]
+0x00432EE0 GENINT_BIT4_STAGE_FN  # GENINT bit4 handler: sets [0x167030]=1 iff cb_reply [0x100E4]==0; also the measurement demand handler -> [0x167036]/[0x167038] [21:09]
+0x0030F180 SELFTEST_STEP_ENGINE  # internal subop-0x80 arm: walks descriptor table @0x26F684, issues cmd-8/cmd-9 pairs via 0x432B00, posts subop-0xA4 on completion (clears bit3) [21:09]
+0x0031070E SELFTEST_DISPATCH_BIT0_GATE  # dispatcher processes subops (except 0x64 begin) ONLY if verdict bit0 set; bit0-clear fallback 0x310B88 accepts only 0x72/0x7C/0xC8, else 0xFF error. REFUTES June 'bit0 moot' — bit0 (ch4<50 ADC gate) is REQUIRED for self-test completion [21:12]
+0x00473006 SELFTEST_TALLY_CHECKSUM_LOOP  # FFS/EEPROM record checksum scan (sums halfwords per record to [r4+34], walks to 0xFFFFFF term); the loop the web MMI parks in (0x47304A) when verdict is bit6-set-but-bit3-set inconsistent [21:24]
+0x00310D5A SELFTEST_CS_SEQUENCER  # sequencer: reads verdict [0x17FE15], if bit3 set clears bit6/bit2/bit7 -> CONTACT SERVICE (0x310D7E); reads requester [0x16BCC8]@0x310D9A [21:24]
+0x0049F5C0 SELFTEST_BIT0_ADC_GATE  # bit0 battery gate: CCONT ADC ch3(BSI) in [0x13F,0x172] AND ch4(BTEMP)<50 -> latch [0x16BC7C]=0 (bit0 set); else [0x16BC7C]=2 unless ch3>=0x3FA [21:24]
+
+# ---- archived on 2026-07-13 21:45 ----
+
+[addresses]
+0x0026F684 SELFTEST_STEP_DESC_TABLE  # 9-step DSP measurement descriptor table: {0600 0505,0600 0604,0600 0700,0701 09A5,0701 0AA4,0701 0BA0,0600 0D05,0600 0E04,0600 0F00}; step engine 0x30F1CC issues cmd-8=[k], cmd-9=[k+2] per step [21:45]
+0x0030E166 SELFTEST_DSP_MEAS_RESULT_ARM  # DSP74 handler arm (sub 0x0A/0xC8): reads measured value [rec+11], forwards via 0x45BA5E — the per-step measurement-result record that advances the step engine [21:45]
+0x00310BFC SELFTEST_VERDICT_FINALIZE  # self-test task verdict-finalize (contains CS sequencer 0x310D5A); called from task main-loop 0x310E46 on internal control code [0xC0,0x1BF]; bit3 set -> CONTACT SERVICE, bit3 clear + [0x17FE1E]==2 -> standby [21:45]
+0x00310E38 SELFTEST_TASK_MAINLOOP  # self-test manager task (id~2, table 0x25D3D0): get msg 0x3BB830; code in [0xC0,0x1BF] -> verdict-finalize 0x310BFC; else type-dispatch (0x40->subop 0x3106E4, 0x74->DSP-record 0x30E06C) [21:45]
+
+# ---- archived on 2026-07-14 15:40 ----
+
+[addresses]
+0x00359088 LCD_FLUSH_SHADOW  # copies shadow fb 0x154FE0 masked by 0x154C80 to SED1565 data port, polls GENSIO ready per byte, early-out if [0x154C38]==1 [15:40]
+0x0035A0F8 LCD_FULL_REDRAW  # full-screen redraw+flush, gated on dirty flag [0x154C3E]==0xFF, callers 0x35A526/0x393B42/0x393B78/0x393C6C [15:40]
+0x004B14AC LCD_PANEL_SETTINGS  # panel init+contrast writer, emits the a6/a4/a3/a1/c0/22/81/33/2f/e3/40/b0/10/00/af SED1565 sequence, contrast cache [0x16BC7F] [15:40]
+0x003BAD7A UI_TIMER_ARM  # CORRECTION: nokix UI_DIALOG+UI_MENU double-locate is wrong, arms a UI timer from 12-byte descriptor table [0x1001B4+id*12] against hw timer 0x20010, id 13 rearmed every ~100ms at idle [15:40]
+0x00154FE0 LCD_SHADOW_FB  # 96x9-bank shadow framebuffer the MMI renders into, flushed by LCD_FLUSH_SHADOW [15:40]
+0x00154C80 LCD_SHADOW_MASK  # per-byte mask ANDed-NOT over shadow at flush [15:40]
+0x00154C38 LCD_FLUSH_SUPPRESS  # 1 = LCD_FLUSH_SHADOW returns immediately, 0 during normal boot [15:40]
+0x00154C3E LCD_DIRTY_FULL  # 0xFF = full-redraw wanted, set from 2.77M and stays FF in both CS and healthy states [15:40]
+0x0017FED8 DISP_MODE  # display task mode nibble, dispatcher 0x393A62 branches on 1/3/4/5/6/7, =6 after self-test clear [15:40]
+
+# ---- archived on 2026-07-14 16:12 ----
+
+[addresses]
+0x00393104 DISPLAY_TASK_MAIN  # display server task entry, blocks at 0x393118 recv-loop until startup event 0xB1/177 then charge-classifies boot mode [16:11]
+0x00392E90 DISPLAY_TASK_RECV  # recv wrapper, translates raw codes 192/193/196/198 via RAM cells [16:11]
+0x003BB830 TASK_RECV  # RTOS per-task event recv, task id [0x100022], TCB 0x101A84+id*28, ring 0x126BB8+id*16 [16:11]
+0x001689E4 DISPLAY_TASK_EVENT  # current-event struct, +2 = event code halfword [16:11]
+0x0049F7F0 POWERON_REASON_CLASSIFIER  # reads reset-cause [0x20001], bit0 powerup writes reason 10 to [0x17FEB5], bit2 sw-reset loads persisted [0x17FEC4] [16:11]
+0x0017FEB5 POWERON_REASON  # 10 = cold powerup, feeds DISPLAY_BOOT_CLASSIFIER reason 2 = normal-boot mode 1 [16:11]
+0x004C83B6 DISPLAY_BOOT_CLASSIFIER  # maps poweron reason + battery ADC + keypad scan to display boot mode [0x16AB8C], reason-10 BTEMP windows: lt50=5, 50-306=keypad/flags path, 307-347=5, ge348=keypad/flags, key-held-129=5, mode 1=normal [16:12]
+0x0016AB8C DISPLAY_BOOT_MODE  # 1=normal 3/5=charger-temp-key screens, switch at 0x393134 [16:12]
+0x0047397C KEYPAD_RAW_SCAN  # raw special+matrix scan, returns 129 while the power key is held [16:12]
+0x004E8E4E REBOOT_FN  # universal reboot sink, r0=reason persisted to [0x17FEC4] then [0x20001] bit2, matches MAD2_SIGS reboot_fn [16:12]
+0x004E8E8A POWER_OFF_FN  # firmware power-off, busy-waits CCONT power cut at 0x4E8ED4, spins when unmodeled [16:12]
+0x00410842 DISPLAY_START_SENDER  # posts event 0xB1 to task 10 + 0x60 to task 11 unless boot-mode [0x1601A3]==13 [16:12]
+0x001601A3 BOOT_MODE_SELECT  # startup-sequencer boot mode, 13 set on web boot, ==13 skips DISPLAY_START_SENDER [16:12]
+
+# ---- archived on 2026-07-14 16:39 ----
+
+[addresses]
+0x00432B00 DSP_API_CMD  # DSP HPI mailbox command sender: polls 0x100E0 clear, jump-tables on cmd id 0..50 at 0x432B54; SET_LIGHTS uses cmd 47/49 = backlight PWM via COBBA [16:39]
+0x004B8B86 SET_LIGHTS  # backlight/LED control which,on; drives COBBA PWM via DSP_API_CMD cmd 47/49, gated on charge state 0x16BC8C bit1 [16:39]
+0x0047CBE0 IRDA_UART_RX  # GENSIO/IrDA serial RX: ctrl 0x2003D=6, poll status 0x2003C, read data 0x020037; ctx 0x1630F8 [16:39]
+0x0047C988 IRDA_UART_TX  # GENSIO/IrDA serial TX: 0x2003B=0x66, poll TX-space nibble 0x2003F, write data 0x020036; ctx 0x1630E4 [16:39]
+0x004A49EE NETMON_DSPTEMP_WATCHDOG  # UI-timer-32 period 0x9CD DSP-temp watchdog: stages reason-0x68 via REASON_SETTER iff batt-temp latch 0x16BC7C!=0; NOT the 3310 MDI watchdog [16:39]
+0x0016BC7C SELFTEST_BATT_TEMP_LATCH  # battery-temp fault latch: 0=ok(bit0 set,no wdog), 2=fail(verdict bit0 clear + NETMON 0x68). Set by 0x49F5C0 when BTEMP ch4>=50 [16:39]
+
+# ---- archived on 2026-07-14 17:18 ----
+
+[addresses]
+0x004CA37C ROLLER_ISR  # GenIO-change IRQ7 handler: reads phase lines [0x200F1]/[0x200F2]/[0x200F3], detects changes, calls ROLLER_DECODE for the Navi roller + slide ([0x200F1]bit7) [17:18]
+0x004738C4 ROLLER_DECODE  # Navi roller quadrature decode: reads 3-phase one-hot position (A=[0x200F1]bit1 B=[0x200F2]bit0 C=[0x200F3]bit5) via 0x47368C, emits keycode 0x17 up / 0x18 down -> handlers 0x4CF4A0/0x4CF4DA [17:18]
+0x0047368C ROLLER_ENCODER_READ  # reads roller phase lines, maps active phase to position 1/2/3; direction from prev-vs-new (up:1<-3<-2, down:1->2->3) [17:18]
+0x004CF4A0 ROLLER_UP  # Navi roller scroll-up handler (keycode 0x17) [17:18]
+0x004CF4DA ROLLER_DOWN  # Navi roller scroll-down handler (keycode 0x18) [17:18]
+0x004CF628 SLIDE_POLL  # slide switch poll ([0x200F1]bit7); display task polls each cycle -> scroll-list step 0x4799B0/BE [17:18]
+0x0028DC94 KEYPAD_KEYMAP_TABLE  # 5x5 keypad keymap (rawkey=row*5+col -> keycode); 0x5A=dead. Digits 0x01-0x09=1-9, 0x0A=0, 0x0B=#, 0x0C=*, 0x19=SOFT1, 0x1A=SOFT2, 0x0E=SEND, 0x0F=END, 0x12=roller-press [17:18]
+0x004CF5D6 KEYPAD_TASK_SCAN  # keypad task: KEYPAD_RAW_SCAN -> keymap 0x28DC94 -> keycode [17:18]

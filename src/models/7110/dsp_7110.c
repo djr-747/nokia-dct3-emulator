@@ -57,7 +57,44 @@
 // 7110-only responder state. File-static (mirrors dsp_default.c's tick statics) because the
 // Mad2 struct is off-limits to this TU and the 7110 has exactly one DSP instance per process.
 static uint8_t st70_seen      = 0;  // a cmd-0x70 self-test command has been issued by the MCU
+static uint8_t st70_sub       = 0;  // low byte of the last cmd-0x70 (sub-test id: 0x04/0x06/0x0E)
 static uint8_t st70_irq_done  = 0;  // Gate A one-shot: GENINT bit4 IRQ4 already raised
+static uint8_t st70_begin_done = 0; // begin-handshake record {0x64,0x02} injected (one-shot)
+static uint8_t st_done        = 0;  // self-test-complete ack {sub 0x0D} posted (one-shot, default path)
+
+// Auto-advance self-test state machine (DSP7110_ST=3, experimental). The DSP orchestrates the
+// self-test: it posts each step record {sub 0x80, step N} and the completion record {sub 0xA4, 0}.
+// We model that here — kick step 1 once the MCU asks (cmd-0x70 sub-0x0E), then feed the next step
+// each time the ring drains (the step engine consumed the prior record), and finally completion.
+static uint8_t  st_seq_active = 0;  // sequence running
+static uint8_t  st_seq_step   = 0;  // next step index to inject (1..9), then 10 = completion
+static uint64_t st_seq_next   = 0;  // pacing: next mono-cycle we may inject at
+
+// Deposit one DSP->MCU MDIRCV record {payload_len, group=0x74, payload...} at the ring tail and
+// raise FIQ0 — the same delivery pattern dsp_default.c's boot self-test responder uses (the ring
+// pump 0x4E2282 forwards (group & 0xF0)==0x70 records to the self-test manager task via 0x3BBE28).
+// Returns 0 if the queue isn't initialised/empty yet (caller retries next tick).
+static int dsp_7110_ring_push(Mad2* m, const uint8_t* payload, int len) {
+    uint32_t hp = m->fw.mdircv_head & m->mem_mask, tp = m->fw.mdircv_tail & m->mem_mask;
+    uint16_t head = (uint16_t)((m->mem[hp] << 8) | m->mem[hp + 1]);
+    uint16_t tail = (uint16_t)((m->mem[tp] << 8) | m->mem[tp + 1]);
+    if (head < 0x80 || tail < 0x80 || head != tail) return 0;   // not initialised, or not drained
+    // Ring positions are word indices from 0x80; the byte offset into the queue buffer is
+    // (pos - 0x80) * 2. Write the record at the CURRENT tail position (the firmware advances both
+    // head and tail as it consumes, so they meet at 0x82, 0x84, … — not back at 0x80). Wrap the
+    // buffer (100 words) so a long self-test sequence can't run off the end.
+    uint16_t words = (uint16_t)(1 + (len + 1) / 2);
+    uint16_t pos = tail;
+    if ((uint16_t)(pos - 0x80 + words) > 100) pos = 0x80;       // wrap before overrun
+    uint32_t q = (m->fw.mdircv_q & m->mem_mask) + (uint32_t)(pos - 0x80) * 2;
+    m->mem[q]     = (uint8_t)len;    // word0 high = payload length
+    m->mem[q + 1] = 0x74;            // word0 low  = group 0x74 (self-test class)
+    for (int i = 0; i < len; ++i) m->mem[q + 2 + i] = payload[i];
+    uint16_t nt = (uint16_t)(pos + words);
+    m->mem[tp] = (uint8_t)(nt >> 8); m->mem[tp + 1] = (uint8_t)nt;
+    mad2_raise_fiq(m, 0);            // DSP signals MDIRCV
+    return 1;
+}
 
 static int dsp_7110_read(Mad2* m, uint32_t addr, int size, uint32_t ram_value, uint32_t* out) {
     // ROM-4 base: faithful version 4 (profile dsp_boot_ready) via the shared boot-status path.
@@ -68,8 +105,10 @@ static int dsp_7110_write(Mad2* m, uint32_t addr, int size, uint32_t value) {
     // Capture the cmd-0x70 self-test command(s): a PORT1 [0x100A8] write with high byte 0x70.
     // This is the DSP-side trigger for Gate A's one-shot IRQ4 (armed; fired in the tick once
     // cb_reply has cleared). We only OBSERVE here — return 0 so normal RAM-backing proceeds.
-    if (addr == PORT1_CMD && ((value >> 8) & 0xFFu) == 0x70u)
+    if (addr == PORT1_CMD && ((value >> 8) & 0xFFu) == 0x70u) {
         st70_seen = 1;
+        st70_sub  = (uint8_t)(value & 0xFFu);   // sub-test id (observed: 0x04, 0x06, 0x0E)
+    }
     // ROM-4 base mailbox/upload write handling.
     return dsp_default_write(m, addr, size, value);
 }
@@ -80,86 +119,102 @@ static void dsp_7110_tick(Mad2* m) {
 
     if (!m->mem) return;
 
-    // ── GATE A — make the MCU's "process stage" fn 0x432EE0 run with cb_reply==0 ──────────────
-    // The self-test result BUILDER (0x30DE9E: `cmp #1; beq PASS`) keeps verdict bit6 iff its
-    // leaf 0x49F548 returns [0x167030]==1. [0x167030] is set =1 ONLY at 0x432F14, inside the
-    // stage fn 0x432EE0, and ONLY when `ldrh [0x100E4]` (cb_reply) == 0 there. 0x432EE0 is the
-    // GENINT bit4 handler (dispatcher 0x4CA4E4 `lsr #5; bcs ->0x432EE0`), reached from the IRQ
-    // ISR when GENINT bit4 is pending AND mask [0x2000B] bit4 (0x10) is clear. The mask clears
-    // bit4 from step ~2207312 (0x0E) and keeps it clear (0x8E) — so a single IRQ4 in that window
-    // runs 0x432EE0. cb_reply settles to 0 by ~step 2207850 (it briefly held 0x0200 during the
-    // block-ack), so it is 0 at self-test time.
+    // ── SELF-TEST COMPLETE ACK — the DSP's cmd-13 reply that clears CS (default-ON) ──────────────
+    // CONTACT-SERVICE gate, fully traced 2026-07-13. The MCU self-test result BUILDER (0x30DE18)
+    // runs at ~2.75M and, when the DSP-ready flag [0x167030]==1 (kept by dsp_uploaded / the block-ack
+    // pump), leaves the verdict [0x17FE15] at 0xCD = bit0|bit2|bit3|bit6|bit7. The self-test task's
+    // verdict-finalizer 0x310BFC (run later on internal control code 0xD8) reaches the sequencer
+    // 0x310D5A: `ldrb verdict; lsr #3; bcs <clear bit6>`. ⚠ `lsr #3` puts BIT 2 (0x04) — not bit3 —
+    // into carry, so the real gate is verdict BIT2: while bit2 is SET the sequencer clears bit6 ->
+    // CONTACT SERVICE. bit2 = "self-test result pending / not yet acknowledged".
     //
-    // FAITHFUL: a real DSP raises GENINT to the MCU when it has processed a stage; we model that
-    // single edge. We do NOT touch [0x167030] / the verdict — the MCU's own 0x432EE0 sets it.
+    // The DSP clears it by REPLYING to the self-test with a group-0x74 sub-13 (0x0D) "complete"
+    // record: the ring pump 0x4E2282 forwards it to the self-test task -> DSP-record handler arm
+    // 0x30E0EA -> `and #0xFB` clears verdict bit2 (0x30E0FA) and posts the finalize broadcast. This
+    // is EXACTLY the cmd-13 self-test-complete reply dsp_default.c synthesizes for the sibling models
+    // (3310/2100/3410/…). The shared dsp_default responder misses the 7110 because it only fires while
+    // the MDIRCV ring is still at its initial 0x80/0x80 empty state — on the 7110 the ring has already
+    // advanced (real DSP boot records) by the time the builder sets bit2, so the 7110 needs its own
+    // position-aware post (dsp_7110_ring_push writes at the CURRENT tail).
     //
-    // ⚠ IRQ4 is SHARED with Timer0/the OS scheduler; a repeated/spurious raise can double-link
-    // the task list and wedge (see dsp_default.c). So this is a strict ONE-SHOT, latched on
-    // st70_irq_done, gated on: (a) the MCU has actually issued a cmd-0x70 self-test command
-    // (st70_seen, captured in the write hook), and (b) cb_reply [0x100E4] == 0 right now.
-    //
-    // DEFAULT-ON: Gate A is now driven by the cmd-0x70 trigger UNCONDITIONALLY (no
-    // getenv — getenv is NULL in wasm, so a knob-gated Gate A is OFF on the web). With Gate A the
-    // verdict ends 0x49 (bit0|bit3|bit6, bit6 SET) instead of the baseline 0x09 (bit6 clear). On
-    // both native and web this REMOVES the "CONTACT SERVICE" screen (the bit6=clear text no longer
-    // draws — verified: web 00_boot.png goes from ~2.9% dark text to 0% / blank). DSP7110_NOGATEA=1
-    // opts out for A/B. NB: bit6-set alone does NOT reach a drawn standby — see GATE B; the MMI
-    // parks recomputing the self-test tally checksum (loop 0x47304A over [0x17FC60..]) because
-    // bit3 is still set, so the screen is blank, not an idle/clock standby.
-    //
-    // DEFAULT-OFF: Gate A is OFF by default (knob DSP7110_GATEA=1 enables it for native
-    // A/B). Reason: making it default-on (incl. web) sets bit6 while bit3 stays set — an INCONSISTENT
-    // verdict (pass-screen-gate vs not-complete) → the MMI parks recomputing the tally and renders
-    // BLANK, which is worse than the honest, stable CONTACT SERVICE screen. Gate A is only useful once
-    // GATE B (bit3/bit5) is resolved; until then the clean default = CONTACT SERVICE.
-    if (st70_seen && !st70_irq_done && getenv("DSP7110_GATEA")) {   // Gate A OFF by default; DSP7110_GATEA=1 enables (native A/B)
-        uint32_t cbr = m->fw.dsp_cb_reply & m->mem_mask;     // [0x100E4], BE halfword
-        uint16_t cb_reply = (uint16_t)((m->mem[cbr] << 8) | m->mem[cbr + 1]);
-        if (cb_reply == 0) {
-            mad2_raise_irq(m, 4);          // DSP GENINT bit4 -> ISR -> 0x4CA4E4 -> 0x432EE0
-            st70_irq_done = 1;              // one-shot
+    // FAITHFUL: a healthy DSP, asked to self-test (MCU cmd-0x70), runs it and reports completion; we
+    // model that single reply. We NEVER write the verdict/bit2 ourselves — the MCU's own handler
+    // 0x30E0FA clears it. One-shot, gated on: (a) the MCU issued a cmd-0x70 self-test command
+    // (st70_seen), and (b) the builder has set bit2 (result pending) with the DSP-ready flag up.
+    // Two DSP self-test-complete records, in order (each posted once the ring has drained):
+    //   stage 0: {sub 0x0D} -> handler 0x30E0EA `and #0xFB` clears verdict BIT2 (the CS sequencer
+    //            0x310D5A gate: lsr#3 -> carry=bit2; bit2 set => clears bit6 => CONTACT SERVICE).
+    //   stage 1: {sub 0xA4} -> handler 0x30E748 `and #0xF7` clears verdict BIT3 ("self-test not
+    //            complete"); while bit3 is set the MMI parks recomputing the tally checksum
+    //            (loop 0x47304A) and renders blank rather than standby.
+    // Both are the healthy DSP's "self-test done / all pass" report (cf. dsp_default cmd-13 for the
+    // siblings). We never write the verdict — the MCU's own handlers clear bit2/bit3.
+    {
+        uint32_t vd = m->fw.verdict & m->mem_mask;
+        uint32_t rdy = 0x00167030u & m->mem_mask;
+        if (st70_seen && st_done < 1 && m->mem[rdy]) {
+            const uint8_t bit2_ack[] = { 0x0D, 0x00 };   // clears verdict bit2
+            if ((m->mem[vd] & 0x04) && dsp_7110_ring_push(m, bit2_ack, 2)) st_done = 1;
         }
     }
 
-    // ── GATE B — verdict bit3 (self-test-incomplete) — A TRUE WALL (verdict-bit5 has no setter) ─
-    // bit3 ([0x17FE15] & 0x08) = "self-test not complete"; while set, the sequencer 0x310D5A keeps
-    // the phone off standby. bit3 is cleared at EXACTLY ONE site, 0x30E772 (`and #0xF7`), inside
-    // fn 0x30E748 (clears iff its arg r0=[msg+9]==0). 0x30E748 is called ONLY from dispatcher arm
-    // 0x3109BC, for an INTERNAL task message of type 0x40 / subop 0xA4 (router 0x310E38 type@[msg+3]
-    // -> 0x310F2E -> dispatcher 0x3106E4 subop@[msg+8] -> jump-table 0x31083C slot 0x3108F4).
-    //
-    // The ONLY producer of subop-0xA4 anywhere in the image is 0x30E754 — inside 0x30E748 ITSELF
-    // (a self-echo), so no firmware path originates the bit3-clearing message except the self-test
-    // STEP-ENGINE completion cascade. That cascade is:
-    //   begin-handshake (type-0x40/subop-0x64/[msg+9]==2 @0x310B52: sets bit4 + saves task id to
-    //     [0x16BCC8]) -> step engine 0x30F180 (subop-128; descriptor table @0x26F684; issues
-    //     cmd-8/cmd-9 pairs via 0x432B00 and demand-drives DSP replies through the GENINT-bit4
-    //     measurement handler 0x432EE0 -> [0x167036]/[0x167038], 0x4EC868) -> on completion posts
-    //     the subop-0xA4 that 0x30E748 turns into `and #0xF7`.
-    //
-    // THE WALL: the begin-handshake (0x30E15A `task_send 0x3BB77C`, r1=[0x16BCC8]) is GATED at
-    // 0x30E14C on `[0x17FE15] bit5 (0x20)` (`lsr #5; bcc skip`). Verdict bit5 has NO SETTER in this
-    // firmware build: it is cleared at init (0x30DE3C `and #0xEF`) and re-cleared in the very arm
-    // that tests it (0x30E156 `and #0xEF`); an exhaustive scan of all 9 [0x17FE15] literal-pool
-    // sites + every `orr`->verdict-store idiom finds NO `orr #0x20`. So the step engine 0x30F180
-    // NEVER runs (0 hits in trace), [0x16BCC8] stays 0, bit4 never sets, and bit3 never clears.
-    // This is structural, not a measurement range-check: the gate upstream of the measurement
-    // engine (0x432EE0) can never open, so the measurement path is never even entered.
-    //
-    // No DSP-side signal we can synthesize (MDIRCV group-0x74 record, mailbox write to
-    // [0x100E4]/[0x100E2]/[0x100DA], GENINT bit4 / FIQ0 / IRQ4) can set verdict bit5, because the
-    // MCU contains no code that ORs 0x20 into [0x17FE15]. The self-test begin-state is set by an
-    // EXTERNAL service tool over the FBUS/MBUS local-mode bus (a "begin self-test" command whose
-    // receive path sets bit5) — i.e. the 7110's autonomous boot may NOT be designed to run this full
-    // self-test to completion; a real 7110 likely reaches standby with this branch left incomplete via
-    // a different verdict configuration. (NB: My 7110 v5.00 IS the full provisioned dump WITH an EEPROM
-    // partition — calib record verified at flash 0x5FC000, logical EE base 0x5FC026 — so this is NOT a
-    // missing-EEPROM problem; the open question is what configures the boot verdict so a factory 7110
-    // skips/passes this gate.) FAITHFUL-ONLY rules forbid poking bit3 / bit5 / the verdict directly, so
-    // NO ring poke and NO bit5 write here. Resolving standby needs either the verdict-config path RE'd,
-    // or the external local-mode begin-self-test bus command modeled
+    // NOTE: the boot-readiness barrier task-0 (0x49F8C0, task table 0x25D3B8) is a
+    // low-priority background task that is SUPPOSED to sleep (0x428FE2 etc. never satisfied is normal);
+    // poking it "ready" just busy-loops it and starves the MMI — it is NOT the standby-draw gate.
+    // The standby-not-drawn cause is in the MMI itself (dispatcher not selecting the idle screen with
+    // a healthy verdict)
+
+    // ── RESEARCH KNOBS (all default-OFF; native A/B only; guard byte-identical; web unaffected) ───
+    // The self-test conversation was mapped by driving it piecewise with these. Retained as probes.
+    //   DSP7110_FORCEUP=1  force the DSP-ready flag [0x167030]=1 (stand in for dsp_uploaded).
+    //   DSP7110_GATEA=1    raise one GENINT bit4 so the MCU's stage fn 0x432EE0 sets [0x167030]=1.
+    //   DSP7110_ST=1       inject {sub 0x64,2} begin-handshake (sets verdict bit4, saves requester).
+    //   DSP7110_ST=2       inject {sub 0x80,1} step-engine kick (subop-0x80 step 1; needs bit2/ready).
+    //   DSP7110_ST=3       auto-advance the 9-step engine + {sub 0xA4} completion (clears bit3).
+    //   DSP7110_ST=5       inject the {sub 0x0D} complete ack (same as the default responder above).
+    // The step engine (0x30F180) issues DSP cmd-8/cmd-9 per step from descriptor table 0x26F684 and
+    // reposts the same step until the DSP replies — proven kickable, but NOT needed for standby: the
+    // sub-13 bit2-clear ack above is what a factory boot uses (the 9-step run is the service self-test).
+    if (getenv("DSP7110_FORCEUP")) {
+        uint32_t f = 0x00167030u & m->mem_mask;
+        if (m->mem[f] == 0) m->mem[f] = 1;
+    }
+    if (st70_seen && !st70_irq_done && getenv("DSP7110_GATEA")) {
+        uint32_t cbr = m->fw.dsp_cb_reply & m->mem_mask;
+        uint16_t cb_reply = (uint16_t)((m->mem[cbr] << 8) | m->mem[cbr + 1]);
+        if (cb_reply == 0) { mad2_raise_irq(m, 4); st70_irq_done = 1; }
+    }
+    if (st70_seen && st70_sub == 0x0E && !st70_begin_done && getenv("DSP7110_ST")) {
+        uint32_t vd = m->fw.verdict & m->mem_mask;
+        int mode = atoi(getenv("DSP7110_ST"));
+        const uint8_t begin[] = { 0x64, 0x02 };
+        const uint8_t kick[]  = { 0x80, 0x01 };
+        const uint8_t done[]  = { 0x0D, 0x00 };
+        if (mode == 5) {
+            if ((m->mem[vd] & 0x04) && dsp_7110_ring_push(m, done, 2)) st70_begin_done = 1;
+        } else if (mode >= 3) {
+            if (m->mem[vd] & 0x08) { st_seq_active = 1; st_seq_step = 1; st70_begin_done = 1; }
+        } else {
+            const uint8_t* p = (mode >= 2) ? kick : begin;
+            if ((m->mem[vd] & 0x08) && dsp_7110_ring_push(m, p, 2)) st70_begin_done = 1;
+        }
+    }
+    if (st_seq_active && m->rtc_mono >= st_seq_next) {
+        uint8_t rec[2];
+        if (st_seq_step <= 9) { rec[0] = 0x80; rec[1] = st_seq_step; }
+        else                  { rec[0] = 0xA4; rec[1] = 0x00; }
+        if (dsp_7110_ring_push(m, rec, 2)) {
+            const char* pe = getenv("DSP7110_STPACE");
+            uint64_t pace = pe ? (uint64_t)strtoull(pe, 0, 0) : 500000;
+            st_seq_next = m->rtc_mono + pace;
+            if (st_seq_step > 9) st_seq_active = 0;
+            else st_seq_step++;
+        }
+    }
+
 }
 
 const DspOps mad2_dsp_7110 = {
     "7110", dsp_7110_read, dsp_7110_write, dsp_7110_tick, dsp_hle_tone,
 };
+

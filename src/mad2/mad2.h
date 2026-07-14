@@ -509,6 +509,14 @@ typedef struct Mad2 {
     uint8_t lcd_seg_remap;      // A1=reverse segment order (mirror X) / A0=normal
     uint64_t lcd_data_writes;
     uint64_t lcd_cmd_writes;
+    // LCD write-stream log (diagnostic; armed by a harness, default OFF -> zero effect).
+    // Ring of raw port writes as seen by the bus: bits [7:0] = byte, bit 8 = data port
+    // (vs command port), bits [10:9] = bus write size (0=byte 1=half 2=word) so a
+    // firmware that writes wider than the port models is visible in the stream.
+#define LCDLOG_N 65536
+    uint8_t  lcdlog_on;
+    uint32_t lcdlog_w;          // total writes; ring index = w % LCDLOG_N
+    uint16_t lcdlog[LCDLOG_N];
 
     // Backlight LEDs (GenIO outputs). LCD LEDs = McuGenIO 0x20020 bit3; keypad LEDs
     // = CTRL-I/O-3 0x20033 bit1. Observed (RAM still backs the registers for readback)

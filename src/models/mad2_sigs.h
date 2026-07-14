@@ -28,7 +28,7 @@ extern const SigResolve MAD2_SIGS[];
 // Macro (not a const int) so it is a compile-time constant usable in the static
 // ModelProfile initializers (.n_sigs = MAD2_N_SIGS). mad2_sigs.c static-asserts that
 // it equals the actual array length.
-#define MAD2_N_SIGS 16
+#define MAD2_N_SIGS 17
 
 // 5210-specific overlay table (wired via ModelProfile.sigs2). Signature-resolves the two
 // per-build gate RAM variables — verdict and dsp_uploaded — whose code shape recurs across

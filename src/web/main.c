@@ -133,7 +133,7 @@ static uint32_t g_ccwr_w = 0;
 // default; enable via dct3_web_getstr_on(1), reproduce a screen, then dct3_web_getstr_dump().
 // get_string / w_get_string addresses are per-image (g_mad2.fw.get_string / .w_get_string).
 static int       g_gs_on = 0;
-static char      g_gs_log[16384];
+static char      g_gs_log[131072];
 static int       g_gs_len = 0;
 static uint32_t  g_gs_ret = 0, g_gs_lr = 0, g_gs_in = 0; static int g_gs_wide = 0;
 static uint32_t  g_gs_stk[8];        // real BL-return-addrs from the stack (call chain)
@@ -276,8 +276,12 @@ static uint32_t g_call_result = 0;    // r0 captured at call return
 static uint32_t g_cap_pc = 0, g_cap_val = 0, g_cap_hits = 0;   // capture r0 at a PC
 // send-logger — ring of (task<<16|msg) at send 0x29921C / enqueue 0x2997B0.
 // Lets a node probe trace the post-ready message cascade.
-#define SENDLOG_N 256
+#define SENDLOG_N 8192
 static uint32_t g_sendlog[SENDLOG_N]; static uint32_t g_sendlog_lr[SENDLOG_N]; static uint32_t g_sendlog_w = 0; static int g_sendlog_on = 0;
+static uint32_t g_sendlog_a1[SENDLOG_N];   // argv1 (r2)
+static uint32_t g_sendlog_a0[SENDLOG_N];   // argv0 (r1) — for a show-dialog call, the PPM string id
+static uint32_t g_sendlog_a3[SENDLOG_N];   // argv2 (r3)
+static uint32_t g_sendlog_filter = 0;      // if !=0, only log posts whose msgid (low 14 of r0>>16) matches
 
 // --- Instrument 1+2: allocator shadow + typed branch ring (now in src/harness/) -
 // The Phase-6 alloc/free leak-tracker (entry->return latch + outstanding table) and
@@ -351,11 +355,19 @@ void dct3_web_difftrace(int on, double every, double lo, double hi) { difftrace_
 EMSCRIPTEN_KEEPALIVE
 void dct3_web_sendlog_on(int en) { g_sendlog_on = en ? 1: 0; if (en) g_sendlog_w = 0; }
 EMSCRIPTEN_KEEPALIVE
+void dct3_web_sendlog_filter(uint32_t msgid) { g_sendlog_filter = msgid; }   // 0 = all posts; else only that msgid (rare notes survive the ring)
+EMSCRIPTEN_KEEPALIVE
 uint32_t dct3_web_sendlog_w(void) { return g_sendlog_w; }
 EMSCRIPTEN_KEEPALIVE
-uint32_t dct3_web_sendlog_at(int i) { return g_sendlog[i % SENDLOG_N]; }   // (task<<16|msg)
+uint32_t dct3_web_sendlog_at(int i) { return g_sendlog[i % SENDLOG_N]; }   // full r0 (mmi_send: msgid|argc in high-16); or (task<<16|msg) for RTOS hook
 EMSCRIPTEN_KEEPALIVE
-uint32_t dct3_web_sendlog_lr(int i) { return g_sendlog_lr[i % SENDLOG_N]; }   // sender LR
+uint32_t dct3_web_sendlog_lr(int i) { return g_sendlog_lr[i % SENDLOG_N]; }   // sender LR (the caller)
+EMSCRIPTEN_KEEPALIVE
+uint32_t dct3_web_sendlog_a1(int i) { return g_sendlog_a1[i % SENDLOG_N]; }   // argv1 (r2)
+EMSCRIPTEN_KEEPALIVE
+uint32_t dct3_web_sendlog_a0(int i) { return g_sendlog_a0[i % SENDLOG_N]; }   // argv0 (r1): show-dialog PPM string id
+EMSCRIPTEN_KEEPALIVE
+uint32_t dct3_web_sendlog_a3(int i) { return g_sendlog_a3[i % SENDLOG_N]; }   // argv2 (r3)
 
 EMSCRIPTEN_KEEPALIVE
 const char* dct3_version(void) { return DCT3_VERSION; }
@@ -648,10 +660,14 @@ static void web_step_once(struct ARMCore* cpu) {
                 for (int k = 0; k < DBG_NWATCH; ++k)
                     if (g_dbg_pc[k] == pc) g_dbg_cnt[k]++;
             if (g_cap_pc && pc == g_cap_pc) { g_cap_val = (uint32_t)cpu->gprs[0]; g_cap_hits++; }   // capture r0 at PC
-            if (g_sendlog_on && (pc == 0x0029921Cu || pc == 0x002997B0u)) {   // send/enqueue(task=r0,msg=r1)
+            if (g_sendlog_on && g_mad2.fw.mmi_send && pc == g_mad2.fw.mmi_send
+                && (!g_sendlog_filter || (((uint32_t)cpu->gprs[0] >> 16) & 0x3FFFu) == g_sendlog_filter)) {   // model-aware MMI poster hook (+ optional msgid filter)
                 uint32_t i = g_sendlog_w % SENDLOG_N;
-                g_sendlog[i]    = (((uint32_t)cpu->gprs[0] & 0xFFFFu) << 16) | ((uint32_t)cpu->gprs[1] & 0xFFFFu);
-                g_sendlog_lr[i] = (uint32_t)cpu->gprs[14] & 0xFFFFFFu;   // caller (sender)
+                g_sendlog[i]    = (uint32_t)cpu->gprs[0];               // full r0 (msgid|argc in high-16)
+                g_sendlog_a0[i] = (uint32_t)cpu->gprs[1];               // argv0 = r1 (show-dialog PPM string id)
+                g_sendlog_a1[i] = (uint32_t)cpu->gprs[2];               // argv1 = r2
+                g_sendlog_a3[i] = (uint32_t)cpu->gprs[3];               // argv2 = r3
+                g_sendlog_lr[i] = (uint32_t)cpu->gprs[14] & 0xFFFFFFu;  // caller (the gate)
                 g_sendlog_w++;
             }
             if (g_msglog_pc && pc == g_msglog_pc) {
@@ -724,11 +740,19 @@ static void web_step_once(struct ARMCore* cpu) {
             // send_ui_message(0x2E9684): log MSG_DISPLAY_MESSAGE (0x226) sends with their args
             // + caller -> the code that decided to show e.g. "Not charging" (text arg = a 0x562
             // nokstr) is the caller, NOT the generic renderer. (r0=msg, r1/r2=args, lr=caller.)
-            if (pc == 0x002E9684u && ((uint32_t)cpu->gprs[0] & 0x0FFFu) == 0x226u
-                && g_gs_len < (int)sizeof(g_gs_log) - 96) {
-                g_gs_len += snprintf(g_gs_log + g_gs_len, 96, "MSG %04X a0=%X a1=%06X caller=%06X\n",
-                                     (uint32_t)cpu->gprs[0] & 0xFFFFu, (uint32_t)cpu->gprs[1],
-                                     (uint32_t)cpu->gprs[2], (uint32_t)cpu->gprs[14] & ~1u);
+            // Log the DISPLAY-MESSAGE family sends via the model-aware poster (fw.mmi_send) —
+            // the "show a note/dialog" messages (MSG_DISPLAY_MESSAGE 0x226, _ICON 0x5F1,
+            // MENU_VALUE 0x5EC, STANDBY_TEXT 0x5F0). Filtering to these keeps menu/idle redraw
+            // traffic out so the one-shot note-show is always captured. At the hook r0 high-16
+            // = msgid|argc; a0 = display-msg-type id, a1 = the text (nokstr/PPM id), caller = gate.
+            if (g_mad2.fw.mmi_send && pc == g_mad2.fw.mmi_send
+                && g_gs_len < (int)sizeof(g_gs_log) - 72) {
+                uint32_t m = (((uint32_t)cpu->gprs[0] >> 16) & 0x3FFFu);
+                if (m == 0x226u || m == 0x5F1u || m == 0x5ECu || m == 0x5F0u)
+                    g_gs_len += snprintf(g_gs_log + g_gs_len, 72, "DLG %04X a0=%X a1=%X a2=%X caller=%06X\n",
+                                         ((uint32_t)cpu->gprs[0] >> 16) & 0xFFFFu, (uint32_t)cpu->gprs[1],
+                                         (uint32_t)cpu->gprs[2], (uint32_t)cpu->gprs[3],
+                                         (uint32_t)cpu->gprs[14] & ~1u);
             }
             if (g_mad2.fw.get_string && (pc == g_mad2.fw.get_string || pc == g_mad2.fw.w_get_string)
                 && g_gs_ret == 0) {
@@ -1102,6 +1126,16 @@ int dct3_web_warm_reset(void) {
 EMSCRIPTEN_KEEPALIVE
 double dct3_web_lcd_writes(void) { return (double)g_mad2.lcd_data_writes; }
 
+// LCD write-stream log (nav --lcdlog): raw port-write ring from mad2_bus (byte |
+// data-port flag bit8 | bus-write-size bits 10:9). Diagnostic for display-driver
+// bring-up — decodes the exact command/data stream the firmware sends the panel.
+EMSCRIPTEN_KEEPALIVE
+void dct3_web_lcdlog_on(int en) { g_mad2.lcdlog_on = en ? 1 : 0; if (en) g_mad2.lcdlog_w = 0; }
+EMSCRIPTEN_KEEPALIVE
+double dct3_web_lcdlog_w(void) { return (double)g_mad2.lcdlog_w; }
+EMSCRIPTEN_KEEPALIVE
+int dct3_web_lcdlog_at(double i) { return g_mad2.lcdlog[(uint32_t)i % LCDLOG_N]; }
+
 // Backlight LED state: bit0 = LCD LEDs (McuGenIO 0x20 bit3), bit1 = keypad LEDs
 // (CTRL-I/O-3 0x33 bit1). The page renders the LCD glow + keypad button backlight.
 EMSCRIPTEN_KEEPALIVE
@@ -1324,9 +1358,28 @@ void dct3_web_key(int row, int col, int down) {
 // KK_SOFT1 / KK_SEND / … and the active profile decides the matrix lines + which keys
 // exist on the device. Special-scan keys (PWR) assert kbd_special_cols directly (the
 // caller drives the up edge). Returns 1 if the key exists on this model, else 0.
+void dct3_web_roll(int up);   // Navi roller (defined below); routed from the wheel/arrow keys
+
+// True when this model scrolls via the Navi roller and the given key should drive it:
+// the wheel keys always, and (on the 7110, which has no matrix up/down) the plain
+// up/down keys too — so the mouse wheel, the on-screen roller buttons, AND the arrow
+// keys all rotate the roller.
+static int roll_key(int key_id) {
+    if (key_id == KK_WHEEL_UP)   return 1;
+    if (key_id == KK_WHEEL_DOWN) return -1;
+    if (g_model && g_model->keypad.family == KP_FAMILY_7110) {
+        if (key_id == KK_UP)   return 1;
+        if (key_id == KK_DOWN) return -1;
+    }
+    return 0;
+}
+
 EMSCRIPTEN_KEEPALIVE
 int dct3_web_key_logical(int key_id, int down) {
     if (!g_core || !g_model) return 0;
+    // Navi roller (7110): scroll wheel isn't a matrix key — one detent per down edge via
+    // the optical-encoder model. KK_WHEEL_PRESS (select) IS a matrix key, so it falls through.
+    { int r = roll_key(key_id); if (r) { if (down) dct3_web_roll(r > 0); return 1; } }
     const KeyLine* k = emu_keyline(g_model, key_id);   // shared KK_*->matrix lookup (EmuHost)
     if (!k) return 0;                                  // key not present on this model
     if (k->special) {                                  // PWR-class special-scan (no auto-release)
@@ -1368,6 +1421,8 @@ void dct3_web_key_raw(int row, int col, int down) {
 EMSCRIPTEN_KEEPALIVE
 int dct3_web_key_logical_raw(int key_id, int down) {
     if (!g_core || !g_model) return 0;
+    // Navi roller (7110): momentary — one detent on the down edge, nothing on release.
+    { int r = roll_key(key_id); if (r) { if (down) dct3_web_roll(r > 0); return 1; } }
     const KeyLine* k = emu_keyline(g_model, key_id);   // shared KK_*->matrix lookup (EmuHost)
     if (!k) return 0;                                  // key not present on this model
     if (k->special) {                                  // PWR-class special-scan
@@ -1449,6 +1504,36 @@ void dct3_web_dbg_watch(int slot, uint32_t pc) {
 EMSCRIPTEN_KEEPALIVE
 double dct3_web_dbg_count(int slot) {
     return (slot >= 0 && slot < DBG_NWATCH) ? (double)g_dbg_cnt[slot] : 0;
+}
+
+// Navi roller (7110) — a 3-phase one-hot OPTICAL rotary encoder (RE'd from the firmware,
+// My 7110 v5.00). The GenIO-change ISR (IRQ line 7, handler 0x4CA37C) reads three phase
+// lines and the encoder-decode 0x47368C maps the active phase to a "position" 1/2/3:
+//   position 1 = [0x200F1] bit1  (phase A)
+//   position 2 = [0x200F2] bit0  (phase B)
+//   position 3 = [0x200F3] bit5  (phase C)
+// The direction state machine (0x473700) emits keycode 0x17 (scroll UP) when the position
+// steps 1<-3<-2<-1 and 0x18 (scroll DOWN) when it steps 1->2->3->1 (0x4CF4A0 up / 0x4CF4DA
+// down handlers). We model one detent per call: advance the one-hot position, write the
+// three phase bits into the RAM-backed MMIO, and raise IRQ7 so the firmware's own ISR
+// decodes the rotation. up != 0 = scroll up, else down. The roller PRESS is a matrix key
+// (keycode 0x12 -> KK_WHEEL_PRESS); the slide switch is a separate line ([0x200F1] bit7).
+EMSCRIPTEN_KEEPALIVE
+void dct3_web_roll(int up) {
+    if (!g_core) return;
+    // Sync to the firmware's own current detent ([0x168A34], the encoder-decode's stored
+    // position) so the step direction is always correct — no first-click glitch from a
+    // host-side counter drifting out of phase with the firmware.
+    int pos = g_core->ram[0x00168A34u & DCT3_RAM_MASK];
+    if (pos < 1 || pos > 3) pos = 1;
+    pos = up ? (pos == 1 ? 3 : pos == 3 ? 2 : 1)    // up:   1<-3<-2<-1
+             : (pos == 1 ? 2 : pos == 2 ? 3 : 1);   // down: 1->2->3->1
+    uint32_t f1 = 0x000200F1u & DCT3_RAM_MASK, f2 = 0x000200F2u & DCT3_RAM_MASK,
+             f3 = 0x000200F3u & DCT3_RAM_MASK;
+    g_core->ram[f1] = (uint8_t)((g_core->ram[f1] & ~0x02u) | (pos == 1 ? 0x02u : 0));
+    g_core->ram[f2] = (uint8_t)((g_core->ram[f2] & ~0x01u) | (pos == 2 ? 0x01u : 0));
+    g_core->ram[f3] = (uint8_t)((g_core->ram[f3] & ~0x20u) | (pos == 3 ? 0x20u : 0));
+    mad2_raise_irq(&g_mad2, 7);   // GenIO-change IRQ -> roller ISR 0x4CA37C
 }
 
 // Release / press the power key (special-scan col1). Held by default so the

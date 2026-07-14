@@ -203,6 +203,13 @@ static const uint8_t DSPUP3_PAT[18] = { 0x48,0x00, 0x21,0x01, 0x03,0xC9, 0x80,0x
 static const uint8_t DSPUP3_MSK[18] = { 0xF8,0x00, 0xFF,0xFF, 0xFF,0xFF, 0xFF,0xFF, 0xFF,0xFF,
                                         0xFF,0xFF, 0xFF,0xFF, 0xFF,0xFF, 0xFF,0xFF };
 
+// MMI message poster (send_message): `lsl r0,#16; stmdb sp!,{r0-r3}; stmdb sp!,{r4,r5,r7,lr};
+// add r7,sp,#16`. The shift-msgid-into-high-half + 4-arg shadow-save + push is a distinctive,
+// build-invariant prologue — verified UNIQUE on 3310 v5.79 (0x2E8A1A), 3410 v5.46 (0x39FF9C),
+// 8850 v5.31 (0x301564). Fully fixed bytes (no operand drift in the prologue).
+static const uint8_t MMI_SEND_PAT[8] = { 0x04,0x00, 0xB4,0x0F, 0xB5,0xB0, 0xAF,0x04 };
+static const uint8_t MMI_SEND_MSK[8] = { 0xFF,0xFF, 0xFF,0xFF, 0xFF,0xFF, 0xFF,0xFF };
+
 // lo/hi = 0,0 → model_resolve() uses [flash_base, flash_base+flash_size) per profile.
 const SigResolve MAD2_SIGS[] = {
     { "sim_gate", offsetof(FwAddrs, sim_gate),
@@ -243,6 +250,10 @@ const SigResolve MAD2_SIGS[] = {
       { SIG_LITERAL, STATE_FANOUT2_PAT, STATE_FANOUT2_MSK, 20, /*lit_off*/6, /*addend*/2, 0, 0 } },
     { "task14_status", offsetof(FwAddrs, task14_status),
       { SIG_LITERAL, STATE_FANOUT2_PAT, STATE_FANOUT2_MSK, 20, /*lit_off*/18, /*addend*/0, 0, 0 } },
+    // MMI message poster — SIG_CODE (match offset IS the fn entry). Diagnostic-only
+    // (SENDLOG monitor); not boot-critical, so a miss on an untested build is harmless.
+    { "mmi_send", offsetof(FwAddrs, mmi_send),
+      { SIG_CODE, MMI_SEND_PAT, MMI_SEND_MSK, 8, 0, 0, 0, 0 } },
 };
 // Build-time guard: the MAD2_N_SIGS macro (mad2_sigs.h) must match the table length.
 // (Portable C99 static assert via a negative array size on mismatch.)

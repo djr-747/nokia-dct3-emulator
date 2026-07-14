@@ -21,6 +21,7 @@
 
 #include "core/dct3_core.h"
 #include "mad2/mad2.h"
+#include "mad2/emu_host.h"     // emu_keyline: shared KeyId -> active model's (row,col)
 #include "models/model.h"
 #include "harness/harness.h"   // shared fault-detect + reset-recovery (Phase 8 H0)
 #include "harness/seccode.h"   // SECCODE=1 validation knob (firmware-oracle code reader)
@@ -159,6 +160,12 @@ static void on_write(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t v
 static uint32_t rd32(DCT3Core* c, uint32_t a) {
     const uint8_t* p = c->ram + (a & DCT3_RAM_MASK);
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+static int hexval(char ch) {   // single hex nibble -> 0..15, or -1
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
 }
 static void disasm(DCT3Core* c, uint32_t addr, int count, int thumb) {
     struct ARMInstructionInfo info;
@@ -1059,10 +1066,29 @@ int main(int argc, char** argv) {
             }
             if (stepv >= 0 && kname[0]) {
                 int row = 0, col = 0, matrix = 0, known = 0;
-                for (size_t ki = 0; ki < sizeof(KEYS)/sizeof(KEYS[0]); ++ki)
-                    if (strcmp(KEYS[ki].name, kname) == 0) {
-                        row = KEYS[ki].row; col = KEYS[ki].col; matrix = KEYS[ki].matrix; known = 1; break;
-                    }
+                // Model-aware logical resolve FIRST: map the canonical key name -> KeyId,
+                // then ask the ACTIVE profile for its (row,col). The KEYS[] table below is
+                // the 3310 matrix and is WRONG for other models' nav/soft keys (e.g. 3410
+                // relocates up/down/soft1/soft2), so the shared emu_keyline resolver wins.
+                static const struct { const char* n; int id; } KIDMAP[] = {
+                    {"0",KK_0},{"1",KK_1},{"2",KK_2},{"3",KK_3},{"4",KK_4},{"5",KK_5},
+                    {"6",KK_6},{"7",KK_7},{"8",KK_8},{"9",KK_9},{"*",KK_STAR},{"#",KK_HASH},
+                    {"up",KK_UP},{"down",KK_DOWN},{"soft1",KK_SOFT1},{"soft2",KK_SOFT2},
+                    {"menu",KK_SOFT1},{"c",KK_SOFT2},{"names",KK_SOFT2},{"send",KK_SEND},{"end",KK_END},
+                };
+                if (h.mad2.model) {
+                    for (size_t ki = 0; ki < sizeof(KIDMAP)/sizeof(KIDMAP[0]); ++ki)
+                        if (strcmp(KIDMAP[ki].n, kname) == 0) {
+                            const KeyLine* kl = emu_keyline(h.mad2.model, KIDMAP[ki].id);
+                            if (kl && !kl->special) { row = kl->row; col = kl->col; matrix = 1; known = 1; }
+                            break;
+                        }
+                }
+                if (!known)
+                    for (size_t ki = 0; ki < sizeof(KEYS)/sizeof(KEYS[0]); ++ki)
+                        if (strcmp(KEYS[ki].name, kname) == 0) {
+                            row = KEYS[ki].row; col = KEYS[ki].col; matrix = KEYS[ki].matrix; known = 1; break;
+                        }
                 // Explicit row/col in the record override the name table (lets a GUIKEYLOG
                 // capture replay any model's matrix verbatim — e.g. 3410 SL/DN/UP nav keys).
                 { const char* rp = strstr(rec_start, "\"row\"");
@@ -1082,7 +1108,7 @@ int main(int argc, char** argv) {
         }
         free(buf);
         printf("REPLAY: %d step-keyed event(s) parsed (cadence = INSTRUCTION count, dur=%ld); "
-               "KEYS matrix matches nav.mjs\n", replay_n, replay_dur);
+               "keys resolved via active model's profile (emu_keyline)\n", replay_n, replay_dur);
         for (int e = 0; e < replay_n; ++e)
             printf("  [replay] @step %ld  key=%s  (row %d,col %d)%s\n",
                    replay_evts[e].step, replay_evts[e].name, replay_evts[e].row,
@@ -1365,23 +1391,28 @@ gui_run_start:   // in-process warm-reboot target (PWR held 30s); GUI build only
             printf("[trc] >>> hit %06X @step %ld\n", pc & 0xFFFFFFu, steps);
         }
         if (irq2trace_left > 0) { printf("[irq2] %06X\n", pc & 0xFFFFFFu); irq2trace_left--; }
-        // log RTOS message sends — entry of send 0x29921C (task ctx) and the
-        // IRQ-ctx twin 0x2997B0. r0=target task id, r1=message. Shows the live message graph
-        // (which tasks ever get messages). SENDLOG_AFTER gates by step.
+        // SENDLOG: log message sends. DEFAULT hook = the sig-resolved MMI poster
+        // (fw.mmi_send, model-aware) — every menu/handler/dialog/note is raised through it,
+        // so this is a per-model MMI message monitor (r0 high-16 = msgid|argc, r1/r2/r3 =
+        // argv, LR = caller). SENDLOG_PC/PC2 override to hook any address (e.g. the RTOS
+        // task_send). Falls back to the 3310 RTOS-send constants if the sig missed.
+        // SENDLOG_AFTER gates by step.
         {
             static long sl = -2, sla = 0; static long sln = 0; static long sl_max = 4000;
-            static uint32_t sl_pc = 0x29921Cu, sl_pc2 = 0x2997B0u;  // 3310 defaults; override per model
+            static uint32_t sl_pc = 0x29921Cu, sl_pc2 = 0x2997B0u;  // fallback (3310 RTOS send)
             if (sl == -2) {
                 sl = getenv("SENDLOG") ? 1 : 0; sla = getenv("SENDLOG_AFTER") ? atol(getenv("SENDLOG_AFTER")) : 0;
+                if (h.mad2.fw.mmi_send) { sl_pc = h.mad2.fw.mmi_send; sl_pc2 = 0; }  // model-aware default
                 if (getenv("SENDLOG_PC"))  sl_pc  = (uint32_t)strtoul(getenv("SENDLOG_PC"), NULL, 0);
                 if (getenv("SENDLOG_PC2")) sl_pc2 = (uint32_t)strtoul(getenv("SENDLOG_PC2"), NULL, 0);
                 if (getenv("SENDLOG_MAX")) sl_max = atol(getenv("SENDLOG_MAX"));
             }
             if (sl && steps >= sla && (pc == sl_pc || pc == sl_pc2) && sln < sl_max) {
                 sln++;
-                printf("[send] %s task=%lu msg=%04lX LR=%06lX @%ld\n",
+                printf("[send] %s r0=%08lX r1=%08lX r2=%08lX r3=%08lX LR=%06lX @%ld\n",
                        pc == sl_pc ? "snd" : "irq",
-                       (unsigned long)(cpu->gprs[0] & 0xFF), (unsigned long)(cpu->gprs[1] & 0xFFFF),
+                       (unsigned long)cpu->gprs[0], (unsigned long)cpu->gprs[1],
+                       (unsigned long)cpu->gprs[2], (unsigned long)cpu->gprs[3],
                        (unsigned long)(cpu->gprs[14] & 0xFFFFFF), steps);
             }
         }
@@ -1449,6 +1480,84 @@ gui_run_start:   // in-process warm-reboot target (PWR held 30s); GUI build only
             for (int pk = 0; pk < poke_n; ++pk) c->ram[poke_addr[pk] & DCT3_RAM_MASK] = poke_val[pk];
         if (getenv("POKE2") && steps >= poke_after2)
             for (int pk = 0; pk < poke2_n; ++pk) c->ram[poke2_addr[pk] & DCT3_RAM_MASK] = poke2_val[pk];
+        // WAPINJ: controlled mailbox inject (3410 WAP NBS inbound spike). Places
+        // WAPINJ_FRAME bytes at a guest scratch buffer and REPLICATES TASK_SEND
+        // (0x2F8A0C) — writes the frame ptr into task WAPINJ_TASK's ring (table
+        // 0x1134F0 stride 28: head[+16] tail[+17] ringptr[+12], ring-size from
+        // [0x112958][task*12+7]), bumps the ready counter [0x112948+task+40] and
+        // the scheduler signal [0x11497C+task]. NO trampoline (plain RAM writes).
+        // WAPINJ_STATE=1 also flips the task-state byte [0x114778+task*16+13] 4->2
+        // (the one part of TASK_SEND's blocked-task wake that is a pure RAM write;
+        // the run-queue insert + semaphore-open are firmware calls we deliberately
+        // skip — this spike tests whether the receiver drains without them).
+        // One-shot at WAPINJ_AT. Default target = XBUS router task 8 (forwards to
+        // frame[+1]). Iterate task/frame purely via env (no recompile).
+        {
+            static int wi = -2; static long wi_at = 0; static int wi_done = 0;
+            static uint32_t wi_task = 8, wi_scr = 0x142000; static int wi_setstate = 0;
+            static uint8_t wi_frame[512]; static int wi_flen = 0;
+            if (wi == -2) {
+                if (getenv("WAPINJ")) {
+                    wi = 1;
+                    wi_at = getenv("WAPINJ_AT") ? atol(getenv("WAPINJ_AT")) : 230000000;
+                    wi_task = getenv("WAPINJ_TASK") ? (uint32_t)strtoul(getenv("WAPINJ_TASK"), 0, 0) : 8;
+                    wi_scr = getenv("WAPINJ_SCRATCH") ? (uint32_t)strtoul(getenv("WAPINJ_SCRATCH"), 0, 0) : 0x142000;
+                    wi_setstate = getenv("WAPINJ_STATE") ? atoi(getenv("WAPINJ_STATE")) : 0;
+                    const char* hx = getenv("WAPINJ_FRAME");
+                    while (hx && *hx && wi_flen < 512) {
+                        while (*hx == ' ' || *hx == ',' || *hx == ':') hx++;
+                        int hi = hexval(hx[0]); if (hi < 0) break;
+                        int lo = hexval(hx[1]); if (lo < 0) break;
+                        wi_frame[wi_flen++] = (uint8_t)((hi << 4) | lo); hx += 2;
+                    }
+                    printf("WAPINJ: task=%u scratch=0x%X frame=%d bytes at step %ld (setstate=%d)\n",
+                           wi_task, wi_scr, wi_flen, wi_at, wi_setstate);
+                } else wi = 0;
+            }
+            if (wi == 1 && !wi_done && steps >= wi_at) {
+                for (int i = 0; i < wi_flen; ++i) c->ram[(wi_scr + (uint32_t)i) & DCT3_RAM_MASK] = wi_frame[i];
+                if (getenv("WAPINJ_PLACEONLY")) {
+                    // Stage the frame only; delivery is done by the real firmware send via
+                    // the CALL mechanism (CALL=0x2F8A0C CALLR0=<task> CALLR1=<scratch>), which
+                    // performs the genuine scheduler wake that pure RAM writes cannot.
+                    printf("WAPINJ: staged %d-byte frame at 0x%X (PLACEONLY; deliver via CALL) at step %ld\n",
+                           wi_flen, wi_scr, steps);
+                    wi_done = 1;
+                    goto wapinj_done;
+                }
+                uint32_t base = 0x1134F0u + wi_task * 28u;
+                uint8_t head = c->ram[(base + 16) & DCT3_RAM_MASK];
+                uint32_t szp = rd32(c, 0x112958u);
+                uint8_t ringsz = c->ram[(szp + wi_task * 12u + 7u) & DCT3_RAM_MASK];
+                uint8_t nh = (uint8_t)(head + 1); if (nh == ringsz) nh = 0;
+                uint8_t tail = c->ram[(base + 17) & DCT3_RAM_MASK];
+                if (nh == tail) {
+                    printf("WAPINJ: ring FULL for task %u (head=%u tail=%u sz=%u) — dropped\n",
+                           wi_task, head, tail, ringsz);
+                } else {
+                    c->ram[(base + 16) & DCT3_RAM_MASK] = nh;
+                    uint32_t ringp = rd32(c, base + 12);
+                    uint32_t slot = ringp + (uint32_t)nh * 4u;
+                    c->ram[(slot + 0) & DCT3_RAM_MASK] = (uint8_t)(wi_scr >> 24);
+                    c->ram[(slot + 1) & DCT3_RAM_MASK] = (uint8_t)(wi_scr >> 16);
+                    c->ram[(slot + 2) & DCT3_RAM_MASK] = (uint8_t)(wi_scr >> 8);
+                    c->ram[(slot + 3) & DCT3_RAM_MASK] = (uint8_t)(wi_scr);
+                    uint32_t rc = (0x112948u + wi_task + 40u) & DCT3_RAM_MASK;
+                    c->ram[rc] = (uint8_t)(c->ram[rc] + 1);
+                    uint8_t nc = c->ram[rc];
+                    uint32_t ss = (0x11497Cu + wi_task) & DCT3_RAM_MASK;
+                    if (nc > c->ram[ss]) c->ram[ss] = nc;
+                    if (wi_setstate) {
+                        uint32_t st = (0x114778u + wi_task * 16u + 13u) & DCT3_RAM_MASK;
+                        if (c->ram[st] == 4) c->ram[st] = 2;
+                    }
+                    printf("WAPINJ: enqueued 0x%X -> task %u ring[%u] (head %u->%u tail %u sz %u cnt %u) at step %ld\n",
+                           wi_scr, wi_task, nh, head, nh, tail, ringsz, nc, steps);
+                }
+                wi_done = 1;
+            }
+            wapinj_done: ;
+        }
         // A hijacked call is "active" between fire and its return to the hijack PC; we
         // save the full register/flag context on fire and restore it on return, so the
         // call can be fired mid-execution (e.g. resuming tasks from any boot context)

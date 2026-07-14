@@ -164,6 +164,13 @@ typedef struct {
     //                 and is advanced on completion. Read-only cancel-confirmation.
     uint32_t task14_state;    // task-14 state byte           (3310 v5.79 = 0x10AE61)
     uint32_t task14_status;   // per-state status table base  (3310 v5.79 = 0x10B1FC)
+    // MMI message poster (the "send a UI message" entry, SDK send_message). Distinctive
+    // prologue: `lsl r0,#16; stmdb sp!,{r0-r3}` — the msg id is shifted into r0's high
+    // half and the 4 args are shadow-saved. Every menu/handler/dialog/note is raised
+    // through here (r0 high-16 = msgid|argc, r1/r2/r3 = argv, LR = caller), so hooking it
+    // gives a model-agnostic MMI message monitor (SENDLOG default). 3310 v5.79 = 0x2E8A1A,
+    // 3410 v5.46 = 0x39FF9C, 8850 v5.31 = 0x301564.
+    uint32_t mmi_send;        // MMI message poster / send_message
 } FwAddrs;
 
 // Table-driven signature → FwAddrs field. model_resolve() walks the profile's sigs[]
@@ -235,6 +242,14 @@ typedef struct {
     // is correctly oriented for every consumer (web unpack, native ASCII, PNG). The
     // 5210 (NSM-5) needs this; 3310/3410/8850 etc. = 0 (normal order)..
     uint8_t  x_mirror;
+    // SED1565 (LCD_NAVI) DDRAM column of the leftmost VISIBLE pixel. The SED1565's
+    // internal RAM is 132 columns; a narrower glass is mounted centered, so the
+    // firmware addresses visible content at DDRAM cols col_offset..col_offset+width-1
+    // (7110: (132-96)/2 = 18 — confirmed from the firmware's own full-frame writes,
+    // always cols 18..113). The decode path translates DDRAM column -> visible column
+    // at write time; writes outside the window scan to no glass and are dropped.
+    // 0 = window starts at DDRAM col 0 (and is the PCD8544 don't-care default).
+    uint8_t  col_offset;
 } LcdSpec;
 
 // --- Keypad -------------------------------------------------------------------
@@ -279,6 +294,8 @@ typedef enum {
     KP_FAMILY_3310 = 0,  // B: Menu/Names(C), up/down, digits, * #  (no soft/send/end/vol)
     KP_FAMILY_8210 = 1,  // A: 2 soft keys, up/down, send/end, vol+/-, digits, * #
     KP_FAMILY_3410 = 2,  // C: 2 soft keys, up/down, send/end, digits, * #  (no vol)
+    KP_FAMILY_7110 = 3,  // 7110/NSE-5: 2 soft keys, send/end, digits, * #, Navi ROLLER
+                         // (scroll up/down + press-select) + slide; NO up/down or vol keys.
 } KeypadFamily;
 
 // Matrix scan style — honest hardware capability, not a model flag. The scan

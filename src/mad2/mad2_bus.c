@@ -248,8 +248,16 @@ void mad2_write(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t value)
     // 0x2C wins; the CCONT ports are model-correct (serial-bus ccont_w=0x2A) so no collision.
     {
         uint32_t off = addr - MMIO_BASE;
-        if (off == m->model->lcd.io_data) { lcd_data(m, (uint8_t)value); return; }
-        if (off == m->model->lcd.io_cmd)  { lcd_command(m, (uint8_t)value); return; }
+        if (off == m->model->lcd.io_data || off == m->model->lcd.io_cmd) {
+            int is_data = (off == m->model->lcd.io_data);
+            if (m->lcdlog_on)
+                m->lcdlog[m->lcdlog_w++ % LCDLOG_N] =
+                    (uint16_t)((value & 0xFF) | (is_data ? 0x100 : 0) |
+                               ((size == 2 ? 1u : size == 4 ? 2u : 0u) << 9));
+            if (is_data) lcd_data(m, (uint8_t)value);
+            else         lcd_command(m, (uint8_t)value);
+            return;
+        }
         uint8_t ccont_wp = m->model->gensio.ccont_w ? m->model->gensio.ccont_w : IO_GENSIO_CCONT_W;
         uint8_t start_p  = m->model->gensio.start   ? m->model->gensio.start   : IO_GENSIO_START;
         if (off == ccont_wp) { ccont_byte(m, (uint8_t)value); return; }   // CCONT reg-select / value

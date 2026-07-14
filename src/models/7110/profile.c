@@ -9,6 +9,31 @@
 // dump is 0x390000 = MCU+PPM only, no EEPROM partition).
 
 #include "models/model.h"
+#include "models/mad2_sigs.h"   // shared MAD2 RTOS firmware-address signatures
+
+// 7110 keypad matrix — RE'd from the firmware keymap table @0x28DC94 (My 7110 v5.00).
+// The scanner KEYPAD_RAW_SCAN 0x47397C builds a 5x5 rawkey = row*5 + col; the keypad
+// task 0x4CF5D6 indexes the 25-byte table with it (0x5A = dead cell). Each cell's
+// firmware keycode was mapped to a function by cross-referencing the 5110's verified
+// keymap (both are ROM-4 sharing the same keycode space): keycode 0x01-0x09 = digits
+// 1-9, 0x0A = 0, 0x0B = #, 0x0C = *, 0x19 = left soft (Menu), 0x1A = right soft (C/Back).
+// (row,col) below is what the emulator drives; the firmware's own scan+keymap then
+// decodes the intended key. Digit wiring is physically scattered — trust the table.
+// The three 7110-only keycodes 0x0E/0x0F/0x12 (no 5110 analog) are the send/end/roller
+// cluster — assigned provisionally, pending per-key confirmation (the Navi roller's
+// rotation is a separate encoder, not a matrix key —).
+static const KeyLine keylines_7110[] = {
+    {KK_1,2,1,0}, {KK_2,3,1,0}, {KK_3,4,1,0},   // keycodes 0x01/0x02/0x03
+    {KK_4,2,3,0}, {KK_5,3,2,0}, {KK_6,1,4,0},   // 0x04/0x05/0x06
+    {KK_7,2,4,0}, {KK_8,3,3,0}, {KK_9,3,4,0},   // 0x07/0x08/0x09
+    {KK_STAR,0,4,0}, {KK_0,1,2,0}, {KK_HASH,1,3,0},   // 0x0C/0x0A/0x0B
+    {KK_SOFT1,0,2,0},   // left soft "Menu" — keycode 0x19
+    {KK_SOFT2,0,3,0},   // right soft "C"/Back — keycode 0x1A
+    {KK_SEND,0,1,0},          // keycode 0x0E (provisional: green/call)
+    {KK_END,1,1,0},           // keycode 0x0F (provisional: red/hang-up)
+    {KK_WHEEL_PRESS,2,2,0},   // keycode 0x12 (provisional: Navi roller select)
+    {KK_PWR,0,0,0x02},  // special-scan power (boot-hold)
+};
 
 const ModelProfile model_7110 = {
     .name = "7110",
@@ -35,9 +60,15 @@ const ModelProfile model_7110 = {
         .width = 96, .height = 65, .banks = 9,
         .io_data = 0x2E, .io_cmd = 0x6E,
         .x_mirror = 1,                     // panel segments wired reversed (XOR'd with the SED1565 ADC select)
+        .col_offset = 18,                  // 96-col glass centered in the SED1565's 132-col DDRAM (fw writes cols 18..113)
     },
     .keypad = {
-        .power_special_cols = 0x02,   // TODO: verify 7110 keypad scan
+        // MAD2 PLAIN 5x5 scan (row 0x28 / dir 0xA8 / col 0x2A defaults; verified via
+        // KEYPAD_RAW_SCAN 0x47397C). Matrix lines RE'd into keylines_7110 above.
+        .power_special_cols = 0x02,
+        .family  = KP_FAMILY_7110,   // dedicated: soft keys + send/end + Navi roller (no up/down or vol)
+        .lines   = keylines_7110,
+        .n_lines = (int)(sizeof(keylines_7110) / sizeof(keylines_7110[0])),
     },
     .battery = {
         // 7110 self-test ADC gate (fn 0x49F5C0, latch [0x16BC7C], firmware/My 7110 v5.00):
@@ -60,17 +91,17 @@ const ModelProfile model_7110 = {
         // detection window (bsi=0x150, the same in-window value the 5110/6110/8850 family
         // profiles use) AND the 7110 reads its BTEMP line low here (ch4 < 50), which posts
         // the battery-OK event (0x49D478 -> 0x7B06) with [0x16BC7C]=0 -> verdict bit0 set.
-        // ADC AUDIT: temp REVISED 0x028 -> 0x0140 (320). The bit0 gate's "ch4<50"
-        // is NON-PHYSICAL: ch4 (BTEMP) is an NTC, and the AUTHORITATIVE charge classifier
-        // 0x4C83F6 needs raw ch4 in [307,347] (0x133..0x15B) = a real room-temperature reading.
-        // A real 7110 at room temp reads BTEMP~320, FAILS the bit0 gate (>=50), takes the
-        // 0x49F60E path ([0x16BC7C]=2, bit0 not set) and STILL reaches standby — so bit0 is NOT
-        // the standby gate (the wall is verdict bit3/bit5, see dsp_7110.c). temp=0x028 forced a
-        // moot bit0 while making the charge controller read "battery too cold" (state 5).
-        // 0x0140 is faithful (mid charge-temp window) and benign (verdict still CONTACT SERVICE,
-        // verified). bsi=0x150 stays in [318,370] (valid BLB-2 type); vbatt=0x2C0 >=438 gate;
-        // charger=0 = clean "absent". Per-model BatterySpec → guard stays byte-identical.
-        .vbatt = 0x2C0, .bsi = 0x150, .temp = 0x0140, .charger = 0x000,
+        // ADC AUDIT REVISED temp 0x028 -> 0x0140; REVERTED 2026-07-13. The audit's
+        // "bit0 is not the standby gate" is REFUTED: the self-test subop DISPATCHER 0x3106E4
+        // gates EVERY subop except the 0x64 begin-handshake on verdict bit0 (0x31070E reads
+        // [0x17FDAC+0x69] bit0; bit0-clear fallback 0x310B88 accepts only 0x72/0x7C/0xC8) — so
+        // with bit0 clear the step engine (subop-0x80) and completion (subop-0xA4) can never
+        // run and verdict bit3 never clears = CONTACT SERVICE. The bit0 gate (0x49F5C0) needs
+        // raw ch4 < 50 at self-test time; the charge classifier 0x4C83F6 wants ch4 in [307,347]
+        // only when charging (no charger modeled -> moot). Boot-time BTEMP reading low is the
+        // plausible real behavior (NTC bias off until the charger path enables it); if a charger
+        // model lands, ch4 needs to become time/state-dependent rather than a constant.
+        .vbatt = 0x2C0, .bsi = 0x150, .temp = 0x0160, .charger = 0x000,
     },
     .asic = {
         .irq_sources = 8,   // TODO: verify (88xx are 16; 7110 unconfirmed)
@@ -88,23 +119,26 @@ const ModelProfile model_7110 = {
         // Per-build scratch + helpers UNKNOWN for 7110 — 0 = unresolved.
         .verdict = 0x0017FE15u,         // self-test/MMI screen gate, bit6 (traced: lifecycle + POKE-confirmed)
         // dsp_uploaded: the 7110's DSP self-test RESULT flag is [0x167030] (sibling pattern: 2100 used
-        // [0x10EC50], 3410 [0x12BA10]; builder leaf 0x49F548 returns it, bit6 kept iff ==1). Setting
-        // .dsp_uploaded=0x00167030u DOES work the sibling-standard way — the shared dsp_default IRQ4
-        // block-ack pump (gated on [dsp_uploaded]==0) invokes the MCU's process stage 0x432EE0 once
-        // (cb_reply==0) → [0x167030]=1 → builder keeps verdict bit6 (verified: [0x167030] 00→01 @2.2M).
-        // HELD AT 0 ON PURPOSE: unlike the 2100/3410, the 7110 verdict has an EXTRA gate — bit3
-        // (sequencer 0x310D5A "self-test not complete") — which the sibling mechanism does NOT clear
-        // (bit3's only setter-path is gated on verdict bit5, and bit5 has NO setter in this build;
-        // see src/models/7110/dsp_7110.c GATE B). With bit6 set but bit3 still set the verdict is
-        // INCONSISTENT and the web MMI parks recomputing the tally → BLANK screen, which is worse than
-        // the honest, stable CONTACT SERVICE. So we keep dsp_uploaded=0 (clean CONTACT SERVICE) until
-        // the bit3/bit5 self-test-completion gate is resolved. (DSP7110_GATEA=1 enables the same
-        // [0x167030] mechanism for native A/B.)
-        .sim_gate = 0, .dsp_uploaded = 0,
+        // [0x10EC50], 3410 [0x12BA10]; builder leaf 0x49F548 returns it, bit6 kept iff ==1). The shared
+        // dsp_default IRQ4 block-ack pump (gated on [dsp_uploaded]==0) invokes the MCU's process stage
+        // 0x432EE0 once (cb_reply==0) → [0x167030]=1 → builder keeps verdict bit6.
+        // HELD AT 0 (default = clean CONTACT SERVICE). Setting it to 0x00167030u DOES set verdict
+        // bit6 (web-verified: [0x167030] 00→01 @2.2M, verdict ends 0x49), but bit3 ("self-test not
+        // complete") stays set → the verdict is INCONSISTENT and the web MMI parks in the tally
+        // recompute loop 0x47304A → BLANK screen, worse than the honest CONTACT SERVICE
+        // (RE-CONFIRMED 2026-07-13: nav.mjs renders all-white with dsp_uploaded=0x167030).
+        // 2026-07-13 RESOLVED: dsp_uploaded=0x167030 keeps the DSP-ready flag up so the builder
+        // leaves the verdict at 0xCD (bit6 kept). The CONTACT-SERVICE gate is then verdict BIT2
+        // (the sequencer 0x310D5A does `lsr #3` -> carry = bit2, NOT bit3), which the 7110 DSP
+        // responder clears by posting the group-0x74 sub-13 self-test-complete ack (handler 0x30E0EA
+        // `and #0xFB`), exactly like the sibling models' cmd-13. See src/models/7110/dsp_7110.c.
+        .sim_gate = 0, .dsp_uploaded = 0x00167030u,
         .get_string = 0, .w_get_string = 0, .faid_cksum = 0, .faid_cksum_val = 0,
     },
-    .sigs = NULL,
-    .n_sigs = 0,
+    .sigs = MAD2_SIGS,      // shared MAD2 RTOS signatures — resolves the reboot/fatal
+    .n_sigs = MAD2_N_SIGS,  // chain so mad2 EARLY-intercepts firmware self-resets
+                            // (without this, a reset is only caught at the [0x20001]
+                            // reset-request write, after the fw runs its full reboot path)
     .boot = {
         .skip_seclock_default = 0,
         .pin_verdict_default  = 0,

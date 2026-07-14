@@ -30,8 +30,20 @@ const webDir = '/home/dan/projects/nokia-dct3-emu/web';
 // ---- args (resolve paths before chdir) ----
 const argv = process.argv.slice(2);
 let fw = null, eeprom = null, outDir = '/tmp/nav', watch = [], settle = 240, per = 45, replay = null, idle = 0;
+let ramout = null, ramoutStep = 0, ramoutDone = false;   // --ramout <file>[@step]: dump full 16MB RAM (disfw --ram compatible)
+function doRamDump(tag) {
+  if (!ramout || ramoutDone) return;
+  const base = C.ramPtr() >>> 0;
+  writeFileSync(ramout, Buffer.from(M.HEAPU8.subarray(base, base + 0x1000000)));
+  ramoutDone = true;
+  console.log(`RAM dumped (16MB) to ${ramout} at step ${(C.step() / 1e6).toFixed(1)}M (${tag}) — disfw --ram compatible`);
+}
+let sendlogMon = false;   // --sendlog: monitor MMI-poster (fw.mmi_send) messages + dump the ring
 let stubPcs = [];   // --stub: handler entry PCs to force-return (task isolation)
 let wrwatchAddr = 0;   // --wrwatch: RAM addr to aggregate writer PCs for
+let ramwatch = [], ramPrev = [], ramChanges = [];   // --ramwatch: sample RAM cells each frame, log changes
+let lcdlog = false, lcdlogMarks = [], lcdlogLastW = 0;   // --lcdlog: raw LCD port-write stream + step marks
+let capPc = 0, capHist = {}, capLastHits = 0;   // --cap 0xPC: histogram r0 at a PC (frame-sampled)
 let battAdc = null, chargerAdc = null;   // --batt / --charger: override vbatt adc[2] / charger adc[5]
 // Boot config toggles (null = leave web default). --sim/--bypass/--spike/--faid 0|1.
 // Defaults in main.c: sim=0 (absent), bypass=1, skip_seclock/FAID=1, spike=auto.
@@ -105,6 +117,9 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--watch') watch = argv[++i].split(',').map(s => parseInt(s, 16) >>> 0);
   else if (a === '--stub') stubPcs = argv[++i].split(',').map(s => parseInt(s, 16) >>> 0);  // task-stub HLE: force-return handler entry PCs
   else if (a === '--wrwatch') wrwatchAddr = parseInt(argv[++i], 16) >>> 0;  // aggregate writer PCs of a RAM addr
+  else if (a === '--ramwatch') ramwatch = argv[++i].split(',').map(s => parseInt(s, 16) >>> 0);  // sample RAM cells, log changes
+  else if (a === '--lcdlog') lcdlog = true;   // log + decode the raw LCD command/data port stream
+  else if (a === '--cap') capPc = parseInt(argv[++i], 16) >>> 0;   // histogram r0 at a PC (frame-sampled, aliases fast repeats)
   else if (a === '--batt') battAdc = parseInt(argv[++i], 16) >>> 0;         // override vbatt adc[2]
   else if (a === '--charger') chargerAdc = parseInt(argv[++i], 16) >>> 0;   // override charger adc[5]
   else if (a === '--settle') settle = +argv[++i];
@@ -115,6 +130,8 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--faid') cfgFaid = +argv[++i];      // 1=FAID/seclock bypass on
   else if (a === '--recover') cfgRecover = +argv[++i]; // 1=auto-recover firmware resets, 0=warm-reboot (headless default 0)
   else if (a === '--idle') idle = +argv[++i];   // post-replay idle-watch frames (delayed crash)
+  else if (a === '--ramout') { const t = argv[++i].split('@'); ramout = resolve(process.cwd(), t[0]); if (t[1]) ramoutStep = +t[1]; }   // FILE[@step]: dump 16MB RAM (disfw --ram)
+  else if (a === '--sendlog') sendlogMon = true;   // arm the MMI-poster (fw.mmi_send) monitor + dump the ring
   else if (a === '--clockevery') clockEvery = +argv[++i];  // render+log a clock snapshot every N idle frames (60≈1 emulated min)
   // ── Responsiveness probe flags (Phase 5) ──
   else if (a === '--check-wave0') checkWave0 = true;       // run Wave-0 self-checks + exit (Task 1)
@@ -184,20 +201,38 @@ if (replay && !Array.isArray(replay) && typeof replay === 'object' && Array.isAr
 }
 
 // 3310 keypad matrix (from web/index.html data-row/data-col). [row,col].
+// Legacy path — kept for the 3310-only --arm wave-0 probe. New key injection goes
+// through the model-agnostic KK logical ids below (dct3_web_key_logical), so a macro
+// with soft1/soft2/send/end replays correctly on ANY model (the wasm resolves the
+// (row,col) via the active profile). Hardcoding this matrix breaks non-3310 models.
 const KEYS = {
   '0':[0,2],'1':[1,2],'2':[1,3],'3':[4,1],'4':[2,4],'5':[2,3],'6':[2,2],'7':[3,4],'8':[3,3],'9':[3,2],
   '*':[4,4],'#':[4,2],'menu':[4,3],'up':[0,1],'down':[1,1],'c':[0,4],
 };
+
+// Logical KeyId numbering — MUST match model.h `KeyId` enum + web/main.js `KK`.
+// menu/c/names are the 3310 soft-key labels, aliased for replay-bundle compatibility.
+const KK = { none:0, '0':1,'1':2,'2':3,'3':4,'4':5,'5':6,'6':7,'7':8,'8':9,'9':10,
+  '*':11,'#':12, up:13, down:14, soft1:15, soft2:16, send:17, end:18, volup:19, voldown:20, pwr:21,
+  menu:15, c:16, names:16 };
 
 const M = await (require(webDir + '/dct3.js'))();
 const C = {
   boot:   M.cwrap('dct3_web_boot', 'number', []),
   runCyc: M.cwrap('dct3_web_run_cycles', null, ['number']),
   key:    M.cwrap('dct3_web_key', null, ['number','number','number']),
+  keyLogical: M.cwrap('dct3_web_key_logical', 'number', ['number','number']),  // KeyId -> active model's (row,col)
   power:  M.cwrap('dct3_web_power', null, ['number']),
+  roll:   M.cwrap('dct3_web_roll', null, ['number']),   // 7110 Navi roller/slide [0x200F1] bit7 (test)
   off:    M.cwrap('dct3_web_powered_off', 'number', []),
   fb:     M.cwrap('dct3_web_fb', 'number', []),
   lcdw:   M.cwrap('dct3_web_lcd_writes', 'number', []),
+  lcdlogOn: M.cwrap('dct3_web_lcdlog_on', null, ['number']),   // raw LCD port-write stream (--lcdlog)
+  lcdlogW:  M.cwrap('dct3_web_lcdlog_w', 'number', []),
+  lcdlogAt: M.cwrap('dct3_web_lcdlog_at', 'number', ['number']),
+  capSet:  M.cwrap('dct3_web_cap_set', null, ['number']),      // r0-capture at a PC (--cap)
+  capVal:  M.cwrap('dct3_web_cap_val', 'number', []),
+  capHits: M.cwrap('dct3_web_cap_hits', 'number', []),
   step:   M.cwrap('dct3_web_step', 'number', []),
   pc:     M.cwrap('dct3_web_pc', 'number', []),
   flashHi: M.cwrap('dct3_web_flash_hi', 'number', []),
@@ -264,6 +299,10 @@ const C = {
   fiqPending:    M.cwrap('dct3_web_fiq_pending', 'number', []),
   // send/enqueue logger ring (reused for the wedge snapshot's last-N task_send/recv).
   sendlogOn:     M.cwrap('dct3_web_sendlog_on', null, ['number']),
+  sendlogA1:     (() => { try { return M.cwrap('dct3_web_sendlog_a1', 'number', ['number']); } catch (e) { return null; } })(),
+  sendlogA0:     (() => { try { return M.cwrap('dct3_web_sendlog_a0', 'number', ['number']); } catch (e) { return null; } })(),
+  sendlogA3:     (() => { try { return M.cwrap('dct3_web_sendlog_a3', 'number', ['number']); } catch (e) { return null; } })(),
+  sendlogFilter: (() => { try { return M.cwrap('dct3_web_sendlog_filter', null, ['number']); } catch (e) { return null; } })(),
   sendlogW:      M.cwrap('dct3_web_sendlog_w', 'number', []),
   sendlogAt:     M.cwrap('dct3_web_sendlog_at', 'number', ['number']),
   sendlogLr:     M.cwrap('dct3_web_sendlog_lr', 'number', ['number']),
@@ -486,14 +525,19 @@ function reportReset(where, recovered) {
   // For recovered resets the firmware has already resumed — RAM may have moved on, so the
   // last_pc/last_cpsr the discriminator captured (above the recover_pending hook) is more
   // reliable than re-reading the save block. Fall back to RAM for non-recovered events.
-  const reason = recovered ? (C.resetLastReason() >>> 0) : (C.ram(RESET.reasonAddr) >>> 0);
+  // mad2's [0x20001]-bit2 catch records reason/PC/CPSR for BOTH branches using the
+  // MODEL-RESOLVED fw.reboot_reason (sig-resolved per build) — prefer that capture
+  // whenever a catch landed. The raw-RAM fallback below uses 3310-v5.79 default
+  // addresses and reads garbage on other models (seen on 7110: bogus reason 92 LR).
+  const caught = (C.resetTotal() >>> 0) > 0;
+  const reason = (recovered || caught) ? (C.resetLastReason() >>> 0) : (C.ram(RESET.reasonAddr) >>> 0);
   const name = RESET.names[reason] || `reason-${reason}`;
   let lr, spsr, cpsr, source;
-  if (recovered) {
+  if (recovered || caught) {
     lr   = C.resetLastPC()   >>> 0;
     cpsr = C.resetLastCpsr() >>> 0;
     spsr = cpsr;   // same on the recovery path (we don't snapshot the handler CPSR)
-    source = 'mad2 capture (recovered)';
+    source = recovered ? 'mad2 capture (recovered)' : 'mad2 capture (late-catch)';
   } else {
     lr   = rd32be(RESET.saveAddr);
     spsr = rd32be(RESET.saveAddr + 4);
@@ -551,9 +595,14 @@ const armInstruments = () => {
   if (heapCurve && C.heapcurveOn) { C.heapcurveOn(1); console.log('HEAPCURVE armed — sampling [0x104844+8] used-bytes'); }
   if (stubPcs.length && C.stubAdd) { stubPcs.forEach(p => C.stubAdd(p)); console.log('TASK-STUB armed — force-return at: ' + stubPcs.map(p => '0x' + p.toString(16)).join(',')); }
   if (wrwatchAddr && C.wrwatchOn) { C.wrwatchOn(wrwatchAddr); console.log('WRWATCH armed — writer-PC aggregation on 0x' + wrwatchAddr.toString(16)); }
+  if (lcdlog && C.lcdlogOn)       { C.lcdlogOn(1); console.log('LCDLOG armed — raw LCD command/data port stream (decoded at end of run)'); }
+  if (capPc && C.capSet)          { C.capSet(capPc); console.log('CAP armed — r0 histogram at 0x' + capPc.toString(16) + ' (frame-sampled)'); }
   if (branchRing && C.branchOn)   { if (C.branchArm) C.branchArm(branchArm); C.branchOn(1);
     if (C.sendlogOn) C.sendlogOn(1);   // feed the wedge snapshot's last-N task_send/recv
     console.log(`BRANCHRING armed — typed branch ring (heavy decode from step ${branchArm})`); }
+  if (sendlogMon && C.sendlogOn)  { C.sendlogOn(1);
+    if (C.sendlogFilter) C.sendlogFilter(0);   // log ALL send_message calls (the show-dialog call carries a PPM string id in argv0)
+    console.log('SENDLOG armed — logging ALL send_message (fw.mmi_send) calls'); }
 };
 armInstruments();
 console.log(`config: sim=${cfgSim??'def'} bypass=${cfgBypass??'def'} spike=${cfgSpike??'def'} faid=${cfgFaid??'def'}`);
@@ -632,6 +681,22 @@ function runWatched(frames) {
   for (let i = 0; i < frames; i++) {
     C.runCyc(216667);
     const p = (C.pc() >>> 0).toString(16); hist[p] = (hist[p] || 0) + 1;
+    if (lcdlog) {                                        // --lcdlog: step marks at frame boundaries
+      const lw = C.lcdlogW();
+      if (lw !== lcdlogLastW) { lcdlogMarks.push({ w: lcdlogLastW, step: C.step() }); lcdlogLastW = lw; }
+    }
+    if (capPc && C.capHits) {                            // --cap: sample last-captured r0 when new hits landed
+      const ch = C.capHits() >>> 0;
+      if (ch !== capLastHits) { const v = C.capVal() >>> 0; capHist[v] = (capHist[v] || 0) + (ch - capLastHits); capLastHits = ch; }
+    }
+    for (let k = 0; k < ramwatch.length; k++) {          // --ramwatch: byte-sample + log changes
+      const v = C.ram(ramwatch[k]) & 0xff;
+      if (ramPrev[k] === undefined) ramPrev[k] = v;
+      else if (v !== ramPrev[k]) {
+        if (ramChanges.length < 400) ramChanges.push(`[0x${ramwatch[k].toString(16)}] ${ramPrev[k].toString(16)}->${v.toString(16)} @step${(C.step()/1e6).toFixed(2)}M pc=0x${(C.pc()>>>0).toString(16)}`);
+        ramPrev[k] = v;
+      }
+    }
   }
   const top = Object.entries(hist).sort((a, b) => b[1] - a[1])[0] || ['0', 0];
   const wdelta = watch.map((_, i) => { const c = C.dbgCount(i), d = c - watchPrev[i]; watchPrev[i] = c; return d; });
@@ -649,11 +714,13 @@ function step(label, fn, frames) {
   const spin = SPIN_PCS.has(r.pc) || (frames >= 8 && r.share > 0.9);
   const top3 = Object.entries(r.hist).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([p,c])=>`0x${p}:${(c/frames*100|0)}%`).join(' ');
   const wstr = watch.length ? '  watch[' + watch.map((pc,i)=>`0x${pc.toString(16)}:+${r.wdelta[i]}`).join(' ') + ']' : '';
+  const rmstr = ramwatch.length ? '  ram[' + ramwatch.map(a=>`0x${a.toString(16)}=${(C.ram(a)&0xff).toString(16)}`).join(' ') + `] chg=${ramChanges.length}` : '';
+  if (ramwatch.length && ramChanges.length) console.log('  [ramwatch] ' + ramChanges.slice(-20).join(' | '));
   const rr = C.resetReq();
   // Always poll for catches first — a RECOVERED reset never raises reset_request so the
   // existing rr-gated path would miss it. pollResetEvents prints one report per new catch.
   pollResetEvents(`key '${label}'`);
-  console.log(`${label.padEnd(16)} lcd=${String(C.lcdw()).padStart(6)} eeProg=${String(C.eeProg()).padStart(5)} pc=0x${(C.pc()>>>0).toString(16)} off=${C.off()} ${rr?'⟳RESET':spin?'⚠SPIN':'      '} [${top3}]${wstr}`);
+  console.log(`${label.padEnd(16)} lcd=${String(C.lcdw()).padStart(6)} eeProg=${String(C.eeProg()).padStart(5)} pc=0x${(C.pc()>>>0).toString(16)} off=${C.off()} ${rr?'⟳RESET':spin?'⚠SPIN':'      '} [${top3}]${wstr}${rmstr}`);
   if (spin) console.log(backtrace());     // deep diag on a detected spin/crash
   // Honour a firmware reset request (e.g. end of a factory reset): warm-reboot (keep
   // flash+EEPROM, clear RAM, re-enter boot) and re-render the post-reboot screen.
@@ -912,7 +979,11 @@ if (replay) {
   // Cycle-paced replay matching the web build (REPLAY_CYC_PER_FRAME = 10M). Events prefer
   // cyc (deterministic, structured bundles) and fall back to step (legacy flat arrays).
   // Last-mile clamp lands exactly on the event's cycle target to avoid overshoot.
-  const REPLAY_CYC_BATCH = 10_000_000;
+  // Small batch (≈1 frame) so advanceTo lands NEAR each key's target step. A large batch
+  // overshoots by up to batch-cycles of instructions, which desyncs timing-sensitive menu
+  // nav — soft/menu keys get missed and the whole replay diverges (digits still register).
+  // 10M overshot ~3.5M insns/key and broke WAP navigation; this reproduces it faithfully.
+  const REPLAY_CYC_BATCH = 216667;
   const evDue = (ev) => Number.isFinite(ev.cyc) ? C.cycles() >= ev.cyc : C.step() >= ev.step;
   let replayHaltedByReset = false;   // set when the advance loop catches an unrecovered reset
   const advanceTo = (targetFn) => {
@@ -948,7 +1019,8 @@ if (replay) {
     if (spin) console.log(backtrace());
     if (ev.key === 'pwr') { C.power(1); C.power(0); }
     else if (ev.key === 'off') C.power(1);
-    else if (KEYS[ev.key]) C.key(KEYS[ev.key][0], KEYS[ev.key][1], 1);
+    else if (KK[ev.key] !== undefined && C.keyLogical) C.keyLogical(KK[ev.key], 1);
+    else if (KEYS[ev.key]) C.key(KEYS[ev.key][0], KEYS[ev.key][1], 1);   // legacy fallback
     n++;
   }
   // After the queued events, structured bundles can carry a context target (cyc + pc).
@@ -985,6 +1057,28 @@ if (replay) {
   // land billions of steps after the last key (an idle timer / periodic task). Stop when
   // the PC drops into the low exception-vector/null range (a crash) or pins (a spin).
   render(String(n).padStart(2, '0') + '_afterkeys');
+  // --sendlog: let the post-key screen (e.g. an error dialog) compose, then dump the MMI
+  // ring. Each entry: msgid = r0 high-16, argv1 = r2 (nokstr*), LR = caller. Flag posts whose
+  // argv1 points into a flash string blob (a visible note/dialog) — the "Check service
+  // settings" string lives at 0x4DDDFB (bank 23 = 0x4DD700..0x4DE000).
+  if (sendlogMon && C.sendlogW) {
+    const settleN = (idle && idle > 0) ? idle : 12;   // brief settle so a transient note is still in the ring
+    for (let c = 0; c < settleN; c++) C.runCyc(216667);
+    render(String(n).padStart(2, '0') + '_sendlog_settled');
+    const w = C.sendlogW() >>> 0, N = Math.min(w, 8192);
+    console.log(`\n═══ send_message ring (last ${N} of ${w} calls via fw.mmi_send) — msgid | argv0 argv1 argv2 | LR ═══`);
+    for (let k = N; k >= 1; k--) {
+      const i = (w - k) >>> 0;
+      const r0 = C.sendlogAt(i) >>> 0, a0 = (C.sendlogA0 ? C.sendlogA0(i) : 0) >>> 0,
+            a1 = (C.sendlogA1 ? C.sendlogA1(i) : 0) >>> 0, a3 = (C.sendlogA3 ? C.sendlogA3(i) : 0) >>> 0,
+            lr = C.sendlogLr(i) >>> 0;
+      const msgid = (r0 >>> 16) & 0xFFFF;
+      const lf = fnStart(lr);
+      const hx = v => '0x' + (v >>> 0).toString(16);
+      console.log(`  msg=${hx(msgid).padEnd(8)} argv0=${hx(a0).padEnd(10)} argv1=${hx(a1).padEnd(10)} argv2=${hx(a3).padEnd(10)} LR=${hx(lr)}${lf?` in fn ${hx(lf)}`:''}`);
+    }
+    console.log('═══ end ring ═══\n');
+  }
   const idleMax = idle || 60000;     // frames (~13B cyc) — plenty to reach a multi-minute crash
   console.log(`replay keys done at step ${(C.step() / 1e6).toFixed(1)}M — idle-watching for a delayed crash (up to ${idleMax} frames)…`);
   let hit = false, pinPc = 0, pinN = 0, snap = 0, lowFrames = 0, wildFrames = 0;
@@ -1005,6 +1099,7 @@ if (replay) {
   if (clockEvery) console.log(`clock-watch: a snapshot every ${clockEvery} frames (${(clockEvery/60).toFixed(1)} emulated min); mad2 RTC-MIN edges shown — if edges climb but the on-screen clock doesn't, the tick handler isn't running.`);
   for (let c = 0; c < idleMax && !hit; c++) {
     C.runCyc(216667);
+    if (ramout && !ramoutDone && ramoutStep && C.step() >= ramoutStep) doRamDump(`step>=${ramoutStep}`);
     const pc = C.pc() >>> 0;
     idleHist[pc] = (idleHist[pc] || 0) + 1;
     if (pc === pinPc) pinN++; else { pinPc = pc; pinN = 1; }
@@ -1072,6 +1167,7 @@ if (replay) {
     if (!clockEvery && c % 5000 === 4999) console.log(`  …idle step ${(C.step() / 1e6).toFixed(0)}M pc=0x${pc.toString(16)}`);
   }
   if (!hit) console.log(`no crash in ${idleMax} idle frames (reached step ${(C.step() / 1e6).toFixed(1)}M)`);
+  doRamDump('end-of-run');
   console.log(`replay done — screens in ${outDir}`);
 } else
 for (const tok of keys) {
@@ -1085,8 +1181,11 @@ for (const tok of keys) {
   if (k === 'wait') step(label, null, f);
   else if (k === 'reboot') { C.warmReset(); step(label, null, f); }   // force a warm reboot (keep flash+EEPROM)
   else if (k === 'pwr') { step(label, () => { C.power(1); }, f); C.power(0); }
+  else if (k === 'rollup')   { step(label, () => C.roll(1), f); }   // 7110 roller/slide test: bit7=1
+  else if (k === 'rolldn')   { step(label, () => C.roll(0), f); }   // bit7=0
   else if (k === 'off') step(label, () => { C.power(1); }, f * 3);   // hold for shutdown
-  else if (KEYS[k]) step(label, () => C.key(KEYS[k][0], KEYS[k][1], 1), f);
+  else if (KK[k] !== undefined && C.keyLogical) step(label, () => C.keyLogical(KK[k], 1), f);
+  else if (KEYS[k]) step(label, () => C.key(KEYS[k][0], KEYS[k][1], 1), f);   // legacy fallback
   else { console.log(`  (unknown key '${k}' — skipped)`); continue; }
   n++;
 }
@@ -1122,6 +1221,66 @@ if (wrwatchAddr && C.wrwatchNpc) {
     console.log(`  per-size net (leaking class = net>0; bytes = net*size):`);
     for (const s of srows) if (s.net !== 0 || s.a > 0) console.log(`    size=${s.sz}B  alloc=${s.a}  free=${s.f}  net=${s.net >= 0 ? '+' : ''}${s.net}  leakedBytes=${s.net * s.sz}`);
   }
+}
+// --cap: dump the r0 histogram (counts weighted by hit deltas; the sampled value is the
+// LAST capture in each frame, so fast same-frame repeats alias to that value).
+if (capPc && Object.keys(capHist).length) {
+  console.log(`\nCAP 0x${capPc.toString(16)} — r0 histogram (${C.capHits() >>> 0} total hits):`);
+  for (const [v, cnt] of Object.entries(capHist).sort((a, b) => b[1] - a[1]).slice(0, 20))
+    console.log(`  r0=0x${(+v).toString(16)} (${v})  ~${cnt} hits`);
+}
+// --lcdlog: decode the captured LCD port-write stream (SED1565/NAVI + PCD8544 commands
+// both use single bytes; decode is NAVI-oriented since that's the bring-up target).
+// Data runs are compressed to one line (page/col at run start, count, nonzero count);
+// step marks (recorded at frame boundaries) show WHEN each burst happened.
+if (lcdlog && C.lcdlogW) {
+  const w = C.lcdlogW(), N = 65536, start = w > N ? w - N : 0;
+  console.log(`\nLCDLOG — ${w} LCD port writes captured${w > N ? ` (ring: last ${N} shown)` : ''}:`);
+  let page = 0, col = 0, run = null, mi = 0;
+  const out = [];
+  const flushRun = () => {
+    if (!run) return;
+    out.push(`  [${run.i0}] page ${run.page} col ${run.c0}..${run.c0 + run.n - 1}: DATA x${run.n} (nonzero ${run.nz}${run.wide ? ' ⚠wide-writes' : ''})`);
+    run = null;
+  };
+  for (let i = start; i < w; i++) {
+    while (mi < lcdlogMarks.length && lcdlogMarks[mi].w <= i) {
+      flushRun(); out.push(`  ── step ${(lcdlogMarks[mi].step / 1e6).toFixed(2)}M ──`); mi++;
+    }
+    const e = C.lcdlogAt(i), b = e & 0xff, isData = e & 0x100, sz = (e >> 9) & 3;
+    if (isData) {
+      if (!run) run = { i0: i, page, c0: col, n: 0, nz: 0, wide: 0 };
+      run.n++; if (b) run.nz++; if (sz) run.wide = 1; col++;
+      continue;
+    }
+    flushRun();
+    let d;
+    const h = '0x' + b.toString(16).padStart(2, '0');
+    if (b >= 0xB0 && b <= 0xBF)      { page = b & 0x0F; d = `page=${page}`; }
+    else if (b <= 0x0F)              { col = (col & 0xF0) | b; d = `col.lo → col=${col}`; }
+    else if (b <= 0x1F)              { col = (col & 0x0F) | ((b & 0x0F) << 4); d = `col.hi → col=${col}`; }
+    else if (b >= 0x40 && b <= 0x7F) d = `START-LINE=${b & 0x3F}`;
+    else if (b === 0xAE || b === 0xAF) d = `display ${b & 1 ? 'ON' : 'OFF'}`;
+    else if (b === 0xA4 || b === 0xA5) d = `all-points ${b & 1 ? 'ON' : 'normal'}`;
+    else if (b === 0xA6 || b === 0xA7) d = `video ${b & 1 ? 'REVERSE' : 'normal'}`;
+    else if (b === 0xA0 || b === 0xA1) d = `ADC segment ${b & 1 ? 'REVERSE' : 'normal'}`;
+    else if (b === 0x81)             d = 'contrast (arg follows)';
+    else if (b === 0xAD)             d = 'static-indicator (arg follows)';
+    else if (b >= 0xC0 && b <= 0xCF) d = `COM dir ${b & 8 ? 'REVERSE' : 'normal'}`;
+    else if (b >= 0x28 && b <= 0x2F) d = 'power control';
+    else if (b >= 0x20 && b <= 0x27) d = 'V regulator';
+    else if (b === 0xE2)             d = 'RESET';
+    else if (b === 0xE3)             d = 'NOP';
+    else                             d = '?';
+    out.push(`  [${i}] cmd ${h} ${d}${sz ? ' ⚠wide-write' : ''}`);
+  }
+  flushRun();
+  const CAP = 4000;
+  if (out.length > CAP) {
+    for (const l of out.slice(0, CAP / 2)) console.log(l);
+    console.log(`  … ${out.length - CAP} lines elided …`);
+    for (const l of out.slice(-CAP / 2)) console.log(l);
+  } else for (const l of out) console.log(l);
 }
 // Phase 6 Instrument 2: end-of-run branch ring + wedge snapshot (in case the run ended
 // without an LCD-stall trigger firing — still surfaces the last-N taken branches).

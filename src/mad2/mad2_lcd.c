@@ -41,17 +41,25 @@ static void navi_command(Mad2* m, uint8_t b) {
     m->lcd_mode = !m->lcd_disp_on ? 0 : (m->lcd_allpix ? 1 : (m->lcd_reverse ? 3 : 2));
 }
 
+// The SED1565's DDRAM is 132 columns regardless of the glass width; lcd_x addresses
+// DDRAM, and the visible window sits at profile col_offset (7110: cols 18..113).
+#define NAVI_DDRAM_W 132
+
 static void navi_data(Mad2* m, uint8_t b) {
     int w = m->model->lcd.width, banks = m->model->lcd.banks;
-    if (m->lcd_x < w && m->lcd_y < banks) {
+    // Translate DDRAM column -> visible column: the glass is mounted centered in the
+    // 132-col DDRAM, so firmware frame writes land at col_offset..col_offset+w-1
+    // (7110 fill/clear streams: always 18..113). Outside the window = no glass.
+    int c = m->lcd_x - m->model->lcd.col_offset;
+    if (c >= 0 && c < w && m->lcd_y < banks) {
         // Effective X direction = panel segment wiring (profile x_mirror) XOR the
         // controller's runtime ADC select (A0/A1). The 7110 panel is wired reversed,
         // so x_mirror=1 in the profile; the firmware's ADC command toggles from there.
         int mirror = (m->model->lcd.x_mirror ? 1 : 0) ^ (m->lcd_seg_remap ? 1 : 0);
-        int col = mirror ? (w - 1 - m->lcd_x) : m->lcd_x;
+        int col = mirror ? (w - 1 - c) : c;
         m->fb[m->lcd_y * w + col] = b;
     }
-    if (m->lcd_x < w) m->lcd_x++;                   // SED1565: column auto-increments, clamps at end
+    if (m->lcd_x < NAVI_DDRAM_W) m->lcd_x++;        // SED1565: column auto-increments, clamps at DDRAM end
 }
 
 void lcd_command(Mad2* m, uint8_t b) {
