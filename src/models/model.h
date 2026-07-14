@@ -325,6 +325,14 @@ typedef struct {
                                       // (I/O 0x29 bit0, acked via IM_R 0x69).
     uint8_t        reg33_im_c;        // 1 = I/O 0x33 is the keypad interrupt-MASK register
                                       // (IM_C, RAM-backed); 0 = it is the keypad-LED line.
+    uint8_t        irq_src34;         // 1 = the keypad IRQ handler gates on a matrix interrupt-
+                                      // SOURCE register at I/O 0x34 (bits[4:0]) before it scans:
+                                      // the later serial-keypad ISR (8810/NSE-6, 0x2DE292) reads
+                                      // [0x34], and only masks IM_C + posts the scan when a
+                                      // column bit is set. Unlike the 5110/6110 (which scan
+                                      // straight off IRQ0), a bare IRQ0 is ignored — so the
+                                      // platform must set 0x34 on a matrix-key edge. Read-to-
+                                      // clear (the firmware never writes 0x34). 0 = no such gate.
     long           hold_insns;        // harness key-hold floor (0 -> KEY_HOLD_INSNS default);
                                       // the serial keypad's debounce FSM needs a longer hold.
     // Matrix scan I/O ports — per-model addressing as DATA. col_port is a READ,
@@ -452,6 +460,9 @@ extern const DspOps mad2_dsp_rom4;      // ROM-4 (5110/6110/3210) responder — 
 // conversation (cmd-0x70 sub-0x04/0x06/0x0E via the PORT1 API path) — kept distinct so the 7110
 // reply model never entangles the shared 5110/6110/3210 path. src/models/7110/dsp_7110.c.
 extern const DspOps mad2_dsp_7110;      // ROM-4 (7110) responder — 7110-specific self-test
+// ROM-6 base (mad2_dsp_default) + the 6210's self-test-complete ack (group-0x74 sub-13 clears
+// verdict bit2). Separate TU so the 3310 ROM-6 guard boot stays byte-identical. src/models/6210/dsp_6210.c.
+extern const DspOps mad2_dsp_6210;      // ROM-6 (6210) responder — 6210-specific self-test-complete
 // Real TMS320C54x co-sim backend (third_party/c54x/mad2_dsp_c54x.c). NATIVE-ONLY: the
 // 635 KB C54x interpreter is excluded from the wasm build, so the symbol exists only in
 // the native link. Reference it under #ifndef __EMSCRIPTEN__ (the wasm build keeps the
@@ -550,6 +561,28 @@ typedef struct ModelProfile {
     // the standard wiring (every other model). ccont_read consults it. (3210: route ch0
     // -> adc[2] so the VBATT divider on ch0 reads the modelled battery voltage.)
     uint8_t        adc_route[8];   // CCONT A/D channel -> m->adc[] index (0 = identity)
+    // In-flash RF-calibration checksum repair (the in-flash analog of the 5110's external tune-
+    // checksum fix in ext_eeprom.c). A library-extract flash image can ship an RF-calibration
+    // checksum record that is inconsistent with its own calibration data, so the firmware's boot
+    // self-test recomputes the sum, finds it != the stored checksum, and fails -> CONTACT SERVICE.
+    // A factory phone is self-consistent; model that by writing the correct checksum into the
+    // loaded flash before the self-test reads it. calib_cksum_off is the FLASH DEVICE ADDRESS of
+    // the 2-byte checksum value (the value half of the {offset:2,value:2} FFS entry) and
+    // calib_cksum_val is the correct BE halfword. 0 = no repair (every other model). Applied once,
+    // early, by the SHARED platform tick (mad2_timers.c) so it is reusable by ANY model regardless
+    // of its DSP responder (m->mem isn't set at mad2_init, but is by the first tick). See the 6250
+    // (NHM-3 v5.00): FFS entry {EEPROM off 0x254, 0x7095} @ flash 0x5FAAEE, correct sum = 0x6D57.
+    //
+    // calib_cksum_i2c selects the TARGET: 0 = the in-flash EEPROM (calib_cksum_off is a flash
+    // device address, e.g. the 6250). 1 = the EXTERNAL I2C EEPROM (calib_cksum_off is an OFFSET
+    // into m->i2c_eeprom) — for the serial-bus "reprint"/repair-blob variants (5110/6110/6150/8810
+    // …), whose calibration lives in the 24Cxx chip, not flash. (Those models' tune-checksum +
+    // DSP-fault latch are already provisioned by ext_eeprom.c; this is the escape hatch for a
+    // per-build calib checksum ext_eeprom.c's generic algorithm doesn't cover.) Same knob, two
+    // stores — the mechanism is universal across in-flash and I2C Contact-Service boots.
+    uint32_t       calib_cksum_off;  // checksum location: flash device addr (i2c=0) or i2c offset (i2c=1)
+    uint16_t       calib_cksum_val;  // correct checksum value (BE halfword)
+    uint8_t        calib_cksum_i2c;  // 0 = target in-flash EEPROM (m->mem); 1 = external I2C (m->i2c_eeprom)
 } ModelProfile;
 
 // Registry / selection.

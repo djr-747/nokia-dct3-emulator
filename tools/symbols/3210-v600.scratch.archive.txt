@@ -4,3 +4,8 @@
 0x002B63CC SOFTFLOAT_F2I  # soft-float float-to-int [10:42]
 0x0011FDE0 BATT_CHAR_STRUCT  # battery-characterisation struct base +52 BSI gain +56 BSI offset +100 recog +102 BTEMP-class +114 pack-type [10:42]
 0x002A689C BATT_TASKSEND_19  # no-fault ch4-lt-26 path TASK_SEND task19 msg 0x44 [10:42]
+
+# ---- archived on 2026-07-14 22:58 ----
+
+[addresses]
+0x002E2D58 KEYMAP_TABLE  # 25-byte scancode-to-keycode table, drive*5+bit, +5 special block pwr=0x0D [22:52]

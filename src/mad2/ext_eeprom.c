@@ -82,6 +82,21 @@ static void i2c_load(Mad2* m) {
             m->i2c_eeprom[0x29E] = 0x00;
             if (getenv("I2CLOG")) printf("[i2c] DSP-fault latch (rec 0x607) provisioned @0x29E = 0x00\n");
         }
+    } else if (!getenv("EE5110_RAW")) {
+        // Larger serial EEPROMs (24C64/128/256 — the 6110-family + 8810). The tune-checksum
+        // above is 24C16-specific and MUST NOT run here (different layout), and these blobs
+        // ship a valid checksum anyway. But the SAME DSP-fault latch (record 0x607) exists,
+        // at a DIFFERENT offset in this record layout: the firmware's descriptor table (8810
+        // v6.02 = flash 0x2FCB10, group 6 index 7) places rec 0x607 -> {off 0x3F2, len 1},
+        // vs the 24C16's 0x29E. The nse-3 (6110) / nsm-1 (6150) NokiX blobs already ship 0x00
+        // there (so they never trip the watchdog), but the nse-6 (8810) blob ships it VIRGIN
+        // (0xFF) -> the same reason-0x68 SWDSP idle reset the 5110 had (measured: staged
+        // @283.5M). Provision the virgin state only, exactly as the 24C16 path — a factory
+        // phone ships 0x00 (no fault); a real latched value in a supplied dump is preserved.
+        if (m->model->i2c_eeprom_size > 0x3F2 && m->i2c_eeprom[0x3F2] == 0xFF) {
+            m->i2c_eeprom[0x3F2] = 0x00;
+            if (getenv("I2CLOG")) printf("[i2c] DSP-fault latch (rec 0x607) provisioned @0x3F2 = 0x00\n");
+        }
     }
 }
 

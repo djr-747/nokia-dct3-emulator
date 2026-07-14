@@ -68,6 +68,8 @@ addresses:
   SOFTFLOAT_F2I:                    { addr: 0x002B63CC, source: overlay, role: "soft-float float-to-int [10:42]" }
   BATT_CHAR_STRUCT:                 { addr: 0x0011FDE0, source: overlay, role: "battery-characterisation struct base +52 BSI gain +56 BSI offset +100 recog +102 BTEMP-class +114 pack-type [10:42]" }
   BATT_TASKSEND_19:                 { addr: 0x002A689C, source: overlay, role: "no-fault ch4-lt-26 path TASK_SEND task19 msg 0x44 [10:42]" }
+  # ---- promoted from scratch on 2026-07-14 22:58 ----
+  KEYMAP_TABLE:                     { addr: 0x002E2D58, source: overlay, role: "25-byte scancode-to-keycode table, drive*5+bit, +5 special block pwr=0x0D [22:52]" }
 ram:
   STARTUP_VERDICT:        { addr: 0x0011FED1, source: overlay, role: "startup-screen display verdict (struct 0x11FE68+0x69): bit7=standby/CONTACT-SERVICE gate, bit3/bit2=proceed-to-running. = profile .verdict" }
   STARTUP_CFG_STRUCT:     { addr: 0x0011FE68, source: overlay, role: "startup-screen config struct base (EEPROM/NVRAM-backed; descriptor @flash ~0x2827E4)" }

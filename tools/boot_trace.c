@@ -18,6 +18,10 @@
 #include <sys/wait.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/socket.h>       // WAPUDP host-UDP WAP bearer bridge (WDP over UDP)
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
 
 #include "core/dct3_core.h"
 #include "mad2/mad2.h"
@@ -166,6 +170,33 @@ static int hexval(char ch) {   // single hex nibble -> 0..15, or -1
     if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
     if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
     return -1;
+}
+
+// WAPUDP: host-UDP WAP bearer bridge (WDP-datagram <-> host UDP, SDK model 127.0.0.1:9200).
+// Not the DSP bridge — unrelated; this is a plain UDP datagram bearer. Env-gated no-op.
+// WAPUDP=<localport>[:gwhost:gwport]  (default gw 127.0.0.1:9200). Bound non-blocking.
+static int g_wapudp_fd = -1;
+static struct sockaddr_in g_wapudp_gw;   // gateway (send target)
+static int wapudp_open(void) {
+    const char* spec = getenv("WAPUDP");
+    if (!spec) return -1;
+    int lport = atoi(spec);
+    const char* gwhost = "127.0.0.1"; int gwport = 9200;
+    char buf[128]; snprintf(buf, sizeof buf, "%s", spec);
+    char* c1 = strchr(buf, ':');
+    if (c1) { *c1 = 0; char* c2 = strchr(c1 + 1, ':');
+        if (c2) { *c2 = 0; gwhost = c1 + 1; gwport = atoi(c2 + 1); } }
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) return -1;
+    struct sockaddr_in a; memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET; a.sin_port = htons((uint16_t)lport); a.sin_addr.s_addr = INADDR_ANY;
+    if (bind(s, (struct sockaddr*)&a, sizeof a)) { close(s); return -1; }
+    fcntl(s, F_SETFL, O_NONBLOCK);
+    memset(&g_wapudp_gw, 0, sizeof g_wapudp_gw);
+    g_wapudp_gw.sin_family = AF_INET; g_wapudp_gw.sin_port = htons((uint16_t)gwport);
+    g_wapudp_gw.sin_addr.s_addr = inet_addr(gwhost);
+    fprintf(stderr, "[wapudp] bearer bridge: bound :%d, gateway %s:%d\n", lport, gwhost, gwport);
+    return s;
 }
 static void disasm(DCT3Core* c, uint32_t addr, int count, int thumb) {
     struct ARMInstructionInfo info;
@@ -1557,6 +1588,88 @@ gui_run_start:   // in-process warm-reboot target (PWR held 30s); GUI build only
                 wi_done = 1;
             }
             wapinj_done: ;
+        }
+        // WAPUDP bearer bridge (WDP datagrams <-> host UDP; plain UDP, not the DSP bridge).
+        // Boot: provision a minimal connectionless profile (UDPSocket Q linked at root+4) by
+        // firing the UDPSocket ctor via a local PC-hijack. Then RX: host datagram -> build an
+        // NBS datagram (TLV, 0x11 user-data) -> CALL 0x350AD0 (real NBS assembler, gate passes)
+        // -> WDP 0x3E8106. TX: hook 0x3507CC -> parse outbound TLV -> sendto gateway.
+        if (getenv("WAPUDP")) {
+            static int wu = -2, wu_ready = 0, wu_call = 0, wu_post = 0, wu_rxn = 0;
+            static uint32_t wu_ret = 0, wu_savc = 0; static int32_t wu_sav[15];
+            static uint8_t wu_rx[512]; static long wu_at = 0;
+            const uint32_t QO = 0x142000u, PO = 0x142100u, DG = 0x142200u;  // scratch: UDPSocket, P, datagram
+            const uint8_t PORT = 0x0B;
+            if (wu == -2) {
+                g_wapudp_fd = wapudp_open(); wu = (g_wapudp_fd >= 0) ? 1 : 0;
+                wu_at = getenv("WAPUDP_AT") ? atol(getenv("WAPUDP_AT")) : 230000000;
+            }
+            if (wu == 1) {
+                // return from a bridge-fired hijack call: restore context + run post-action
+                if (wu_call && pc == wu_ret) {
+                    for (int i = 0; i < 15; ++i) cpu->gprs[i] = wu_sav[i];
+                    cpu->cpsr.packed = wu_savc; wu_call = 0;
+                    if (wu_post == 1) {                       // finish provisioning after ctor
+                        c->ram[(0x13F48C+0)&DCT3_RAM_MASK]=(uint8_t)(PO>>24); c->ram[(0x13F48C+1)&DCT3_RAM_MASK]=(uint8_t)(PO>>16);
+                        c->ram[(0x13F48C+2)&DCT3_RAM_MASK]=(uint8_t)(PO>>8);  c->ram[(0x13F48C+3)&DCT3_RAM_MASK]=(uint8_t)PO;   // root[+4]=P
+                        c->ram[(QO+0xB9)&DCT3_RAM_MASK]=PORT; c->ram[(QO+0xBB)&DCT3_RAM_MASK]=1;                                // conn-type/index
+                        c->ram[(QO+4)&DCT3_RAM_MASK]=0; c->ram[(QO+5)&DCT3_RAM_MASK]=0; c->ram[(QO+6)&DCT3_RAM_MASK]=0; c->ram[(QO+7)&DCT3_RAM_MASK]=0;
+                        wu_ready = 1; wu_post = 0;
+                        printf("[wapudp] profile provisioned: UDPSocket @0x%X linked at root+4 (step %ld)\n", QO, steps);
+                    } else if (wu_post == 2) { printf("[wapudp] host datagram delivered -> WDP (step %ld)\n", steps); wu_post = 0; }
+                }
+                // TX: phone sends a WDP datagram (r3 = outbound datagram descriptor) -> host UDP
+                if (pc == 0x003507CCu && !wu_call) {
+                    uint32_t dg = (uint32_t)cpu->gprs[3];
+                    uint8_t cnt = c->ram[(dg+3)&DCT3_RAM_MASK]; uint32_t p = dg+4;
+                    for (int e = 0; e < cnt && e < 16; ++e) {
+                        uint8_t t = c->ram[p&DCT3_RAM_MASK], l = c->ram[(p+1)&DCT3_RAM_MASK];
+                        if (t == 0x11 || t == 0x20) {         // user-data TLV
+                            uint8_t out[512]; int n = l < 512 ? l : 511;
+                            for (int i = 0; i < n; ++i) out[i] = c->ram[(p+2+i)&DCT3_RAM_MASK];
+                            sendto(g_wapudp_fd, out, n, 0, (struct sockaddr*)&g_wapudp_gw, sizeof g_wapudp_gw);
+                            printf("[wapudp] TX -> gateway: %d bytes (step %ld)\n", n, steps);
+                            break;
+                        }
+                        p += 2 + l;
+                    }
+                }
+                // RX: poll host UDP; stage one datagram at a time for delivery
+                if (!wu_rxn && (steps & 0x3FFF) == 0) {
+                    ssize_t rn = recv(g_wapudp_fd, wu_rx, sizeof wu_rx, 0);
+                    if (rn > 0) { wu_rxn = (int)rn; printf("[wapudp] RX host datagram: %d bytes (step %ld)\n", wu_rxn, steps); }
+                }
+                // fire a pending hijack call at a safe SYSTEM-mode PC
+                if (!wu_call && cpu->privilegeMode == MODE_SYSTEM) {
+                    uint32_t fn = 0, r0 = 0, r3 = 0;
+                    if (!wu_ready && steps >= wu_at) {        // provision: place P+Q, fire UDPSocket ctor
+                        for (uint32_t i = 0; i < 0x100; ++i) c->ram[(QO+i)&DCT3_RAM_MASK] = 0;
+                        c->ram[(QO+0)&DCT3_RAM_MASK]=0x00; c->ram[(QO+1)&DCT3_RAM_MASK]=0x4C;         // Q[+0] = class ptr
+                        c->ram[(QO+2)&DCT3_RAM_MASK]=0x4A; c->ram[(QO+3)&DCT3_RAM_MASK]=0x5C;         // 0x004C4A5C UDPSocket
+                        c->ram[(PO+0)&DCT3_RAM_MASK]=0; c->ram[(PO+1)&DCT3_RAM_MASK]=0; c->ram[(PO+2)&DCT3_RAM_MASK]=0; c->ram[(PO+3)&DCT3_RAM_MASK]=0;
+                        c->ram[(PO+4)&DCT3_RAM_MASK]=(uint8_t)(QO>>24); c->ram[(PO+5)&DCT3_RAM_MASK]=(uint8_t)(QO>>16);
+                        c->ram[(PO+6)&DCT3_RAM_MASK]=(uint8_t)(QO>>8);  c->ram[(PO+7)&DCT3_RAM_MASK]=(uint8_t)QO;   // P[+4]=Q
+                        fn = 0x003E8C50u; r0 = QO; wu_post = 1;
+                    } else if (wu_ready && wu_rxn > 0) {      // deliver staged datagram via real NBS path
+                        int n = wu_rxn; if (n > 250) n = 250;
+                        c->ram[(DG+0)&DCT3_RAM_MASK]=0x01; c->ram[(DG+1)&DCT3_RAM_MASK]=0x00; c->ram[(DG+2)&DCT3_RAM_MASK]=PORT; c->ram[(DG+3)&DCT3_RAM_MASK]=0x01;
+                        c->ram[(DG+4)&DCT3_RAM_MASK]=0x20; c->ram[(DG+5)&DCT3_RAM_MASK]=(uint8_t)n;   // TLV type 0x20 = user-data {type,len,value}
+                        for (int i = 0; i < n; ++i) c->ram[(DG+6+i)&DCT3_RAM_MASK] = wu_rx[i];
+                        fn = 0x00350AD0u; r0 = 0x0013F588u; r3 = DG; wu_post = 2; wu_rxn = 0;
+                    }
+                    if (fn) {
+                        for (int i = 0; i < 15; ++i) wu_sav[i] = (int32_t)cpu->gprs[i];
+                        wu_savc = cpu->cpsr.packed; wu_ret = pc;
+                        cpu->gprs[0] = r0; cpu->gprs[1] = 0; cpu->gprs[2] = 0; cpu->gprs[3] = r3;
+                        cpu->gprs[ARM_LR] = pc | (cpu->cpsr.t ? 1u : 0u);
+                        cpu->gprs[ARM_PC] = fn & ~1u;
+                        _ARMSetMode(cpu, MODE_THUMB); cpu->cpsr.t = 1;
+                        cpu->cycles += ThumbWritePC(cpu);
+                        wu_call = 1;
+                        continue;
+                    }
+                }
+            }
         }
         // A hijacked call is "active" between fire and its return to the hijack PC; we
         // save the full register/flag context on fire and restore it on return, so the

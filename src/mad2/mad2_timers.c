@@ -284,6 +284,33 @@ void mad2_timers_tick(Mad2* m, uint32_t cycles) {
     }
     // Body-skip rejoin: a quiescent tick jumps here, bypassing the edge body above.
   edge_skip:
+    // RF-calibration checksum repair — shared, model-agnostic, SELF-HEALING. A library-extract image
+    // can ship an RF-calib checksum inconsistent with its own calibration data, so the boot self-
+    // test recomputes the sum, finds it != stored, and fails -> CONTACT SERVICE. Any model that hits
+    // this sets profile .calib_cksum_off/val; we write the correct checksum before the self-test
+    // reads it. calib_cksum_i2c picks the store: the IN-FLASH EEPROM (m->mem, off = flash device
+    // addr — e.g. the 6250) or the EXTERNAL I2C EEPROM (m->i2c_eeprom, off = chip offset — the
+    // serial-bus reprint/repair-blob variants). Both stores are ready by the first tick (m->mem is
+    // assigned post-init; m->i2c_eeprom is loaded in mad2_init). The in-flash analog of the 5110's
+    // external tune-checksum fix (ext_eeprom.c). 0 off = no repair (byte-identical for every other
+    // model). See models/model.h calib_cksum_* + src/models/6250 (NHM-3 v5.00).
+    // NOT a one-shot: a WARM REBOOT re-inits mad2 and RELOADS the i2c blob / may reload flash,
+    // restoring the inconsistent stored value — so re-write it whenever it drifts (a cheap 2-byte
+    // compare, gated on calib_cksum_off). This is why a rebooted 6250 no longer falls to CS.
+    if (m->model && m->model->calib_cksum_off) {
+        uint16_t v = m->model->calib_cksum_val;
+        uint8_t hi = (uint8_t)(v >> 8), lo = (uint8_t)(v & 0xFF);
+        if (m->model->calib_cksum_i2c) {
+            uint32_t off = m->model->calib_cksum_off;
+            if (m->i2c_loaded && off + 1 < sizeof m->i2c_eeprom && off + 1 < m->model->i2c_eeprom_size
+                && (m->i2c_eeprom[off] != hi || m->i2c_eeprom[off + 1] != lo)) {
+                m->i2c_eeprom[off] = hi; m->i2c_eeprom[off + 1] = lo;
+            }
+        } else if (m->mem) {
+            uint32_t off = m->model->calib_cksum_off & (m->mem_mask ? m->mem_mask : 0x00FFFFFFu);
+            if (m->mem[off] != hi || m->mem[off + 1] != lo) { m->mem[off] = hi; m->mem[off + 1] = lo; }
+        }
+    }
     // DSP pump (mailbox acks, IRQ4 generation, self-test + boot-msg injection) is
     // per-model behaviour (DspOps; see models/model.h, default in src/mad2/dsp_default.c).
     { const DspOps* d = m->dsp_override ? m->dsp_override : m->model->dsp;

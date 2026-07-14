@@ -27,8 +27,16 @@ extern const ModelProfile model_8855;   // NSM-4
 extern const ModelProfile model_8290;   // NSB-7 (US-band 8210)
 extern const ModelProfile model_8890;   // NSB-6 (US-band 8850)
 extern const ModelProfile model_5110;   // NSE-1 (serial-bus V1-DCT3 spike — external EEPROM)
+extern const ModelProfile model_5110i;  // NSE-2 (2 MB 5110 refresh)
+extern const ModelProfile model_5130;   // NSK-1 (serial-bus 5110 sibling)
+extern const ModelProfile model_5190;   // NSB-1 (US-band 5110 sibling)
 extern const ModelProfile model_6110;   // NSE-3 (serial-bus, external 24C64 EEPROM)
+extern const ModelProfile model_6130;   // NSK-3 (serial-bus 6110 sibling)
+extern const ModelProfile model_6150;   // NSM-1 (serial-bus 6110 sibling, 2 MB, 24C128)
+extern const ModelProfile model_6190;   // NSB-3 (US-band 6110 sibling)
+extern const ModelProfile model_8810;   // NSE-6 (serial-bus 6110 sibling, 2 MB slider, 24C256)
 extern const ModelProfile model_6210;   // NPE-3 (4 MB, in-flash EEPROM, 96x65)
+extern const ModelProfile model_6250;   // NHM-3 (4 MB, in-flash EEPROM, 96x65 — 6210 sibling)
 extern const ModelProfile model_2100;   // NAM-2 (2 MB, 5210 personality + 3410 LCD)
 extern const ModelProfile model_3210;   // NSE-8 (2 MB, serial-bus, external 24C128 EEPROM; ROM-4 DSP)
 #endif
@@ -51,9 +59,22 @@ static const ModelProfile* const REGISTRY[] = {
     &model_8855,   // 4 MB — NSM-4 (slide)
     &model_8290,   // 2 MB — NSB-7 (US-band 8210)
     &model_8890,   // 2 MB — NSB-6 (US-band 8850, slide)
+    // Serial-family band/market variants — these MUST precede the 6110: their images have
+    // no canonical 0x1FC header AND embed a stray "NSE-3" string (all but the 6150/6250),
+    // so whole-image detect would otherwise first-match the 6110. Each variant image
+    // carries its own unique product code and none of the older images carry these codes
+    // (swept 2026-07-14), so this order is the only constraint.
+    &model_5110i,  // 2 MB — NSE-2 (5110 refresh; image embeds a stray "NSE-1" -> before 5110)
+    &model_5130,   // 1 MB — NSK-1 (5110 sibling; ROM-4 HLE DSP)
+    &model_5190,   // 1 MB — NSB-1 (US-band 5110 sibling; ROM-4 HLE DSP)
+    &model_6130,   // 1 MB — NSK-3 (6110 sibling; ROM-4 HLE DSP)
+    &model_6150,   // 2 MB — NSM-1 (6110 sibling, external 24C128 EEPROM)
+    &model_6190,   // 1 MB — NSB-3 (US-band 6110 sibling)
+    &model_8810,   // 2 MB — NSE-6 (6110-family slider, external 24C256 EEPROM)
     &model_5110,   // 1 MB — NSE-1 (serial-bus V1-DCT3 spike; external EEPROM / serial bus)
     &model_6110,   // 1 MB — NSE-3 (serial-bus, external 24C64 EEPROM; ROM-4 HLE DSP)
     &model_6210,   // 4 MB — NPE-3 (in-flash EEPROM, 96x65; 5210/7110-class)
+    &model_6250,   // 4 MB — NHM-3 (6210 sibling, in-flash EEPROM, 96x65)
     &model_2100,   // 2 MB — NAM-2 (5210 personality + 3410 LCD; scaffold)
     &model_3210,   // 2 MB — NSE-8 (serial-bus, external 24C128 EEPROM; ROM-4 DSP)
 #endif

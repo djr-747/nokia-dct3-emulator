@@ -101,9 +101,19 @@ const ModelProfile model_6210 = {
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
         // verdict 0x17FD99 — gen_sig of the 5110 MMI-ready gate → 6210 0x30501A `ldr =0x17FD99`
-        // (90% fuzzy). dsp_uploaded UNKNOWN for v5.56 (5210 analog 0x13B528) — 0 until RE'd; the
-        // self-test is EEPROM-record-based (see header), so expect to RE the record gate.
-        .verdict = 0x0017FD99u, .sim_gate = 0, .dsp_uploaded = 0,
+        // (90% fuzzy). dsp_uploaded = 0x16FFE4 — RE'd 2026-07-14 via the 7110/sibling pattern
+        // (7110 [0x167030], 2100 [0x10EC50], 3410 [0x12BA10], 5210 [0x13B528]): the self-test
+        // result byte the first verdict gate reads. Gate-1 0x4AFFB4 returns [0x16FFE4]; verdict
+        // bit6 is KEPT iff it is 1 (0x3027F2). The shared dsp_default IRQ4 block-ack pump sets it,
+        // so wiring it here advances the verdict 40→C0→C4 (bit6 survives gate-1, was C0→80 before).
+        // REMAINING = gate-2 (self-test-complete): 0x3058DE does `lsr #3` -> carry = verdict BIT2,
+        // and a SET bit2 FAILs (clears bit6, C4→84 @9.26M) — the IDENTICAL bit2 sequencer the 7110
+        // has at 0x310D5A. On the 7110 the DSP clears bit2 by posting a group-0x74 sub-13
+        // self-test-complete ack (src/models/7110/dsp_7110.c handler 0x30E0EA `and #0xFB`). The
+        // 6210 (ROM-6, mad2_dsp_default) needs the shared responder to post the equivalent
+        // bit2-clearing ack — its cmd-13/self-test-complete handler is the open RE item. Until
+        // then the 6210 still rests at CONTACT SERVICE, one gate further along than before.
+        .verdict = 0x0017FD99u, .sim_gate = 0, .dsp_uploaded = 0x0016FFE4u,
         .get_string = 0, .w_get_string = 0, .faid_cksum = 0, .faid_cksum_val = 0,
         .dsp_boot_status = 0, .dsp_boot_ready = 0,
         // Reset/reboot path — all six resolve via the shared MAD2_SIGS for v5.56 (VERIFIED
@@ -128,5 +138,5 @@ const ModelProfile model_6210 = {
         .match = "NPE-3",
         .flash_size = 0x00400000u,
     },
-    .dsp = &mad2_dsp_default,         // ROM-6-class (in-flash gen) shared DSP responder
+    .dsp = &mad2_dsp_6210,            // ROM-6 base + 6210 self-test-complete ack (src/models/6210/dsp_6210.c)
 };

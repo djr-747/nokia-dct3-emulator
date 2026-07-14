@@ -171,6 +171,7 @@ void mad2_init(Mad2* m, const ModelProfile* prof) {
     // it after the boot debounce via keypad input.)
     m->kbd_special_cols = prof->keypad.power_special_cols;
     m->kpd_im_status = 0;   // 8850-class keypad interrupt-source status (I/O 0x2B); see mad2_keypad_irq
+    m->kpd_src34 = 0;       // later-serial (8810) keypad matrix interrupt-source (I/O 0x34); see mad2_keypad_irq
     m->slide_open = 0;        // slide phones boot with the cover closed (rest state)
     m->cover_int_pending = 0; // reed-switch interrupt latch (I/O 0x29 bit0)
     // OS scheduler heartbeat (FIQ4). ~5 ms at the ~13 MHz MAD ARM clock; fast

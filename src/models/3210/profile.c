@@ -32,21 +32,28 @@
 #include "models/mad2_sigs.h"      // shared DCT3 RTOS firmware-address signatures
 #include "mad2/ext_eeprom_blobs.h" // baked NokiX virgin external-I2C-EEPROM images
 
-// 3210 keypad — candybar Family B (Menu / Names-C / up / down / digits), like the 5110.
-// The serial-bus scan HW LINES are shared with the 5110 (KP_SCAN_SERIAL, ports 0x30/0x31/0x2F).
-// The matrix (row,col) below START as the 5110's Family-B layout — a placeholder to be RE'd
-// against the 3210's own keymap table once boot clears the FAID/self-test gate; the boot path
-// does not depend on the matrix mapping. (3210 has no soft keys / send / end / volume.)
+// 3210 keypad — candybar Family B (Menu / Names-C / up / down / digits): same PHYSICAL keys
+// as the 3310, but the matrix wiring is the 3210's own. RE'd 2026-07-14 from the firmware
+// keymap table @ flash 0x2E2D58 (25 bytes, keycode = table[drive*5 + readbit]; 0x3E = none;
+// right next to the ADC channel-map table 0x2E2D74) + the matrix scanner (bitplane
+// `keypad_matrix_scan` 0x2B2F90: drives lines 0..3 via I/O 0x28/0xA8, reads 5 bits on 0x2A
+// active-low; scancode = drive*5 + bit; specials = 0x80+bit on the all-driven pass, mapped
+// via the appended 5-byte block [20..24] = {0x0D PWR,-,-,-,-}). Live-verified: the old
+// 5110-placeholder presses 1,2,3,4,5,menu typed "0#6341" at the security prompt — exactly
+// what this table predicts for those (row,col) cells.
 static const KeyLine keylines_3210[] = {
-    {KK_1,1,2,0}, {KK_2,1,3,0}, {KK_3,1,4,0},
-    {KK_4,2,2,0}, {KK_5,2,3,0}, {KK_6,2,4,0},
-    {KK_7,3,2,0}, {KK_8,3,3,0}, {KK_9,3,4,0},
-    {KK_STAR,4,2,0}, {KK_0,4,3,0}, {KK_HASH,4,4,0},
-    {KK_SOFT2,1,1,0},   // right key "Names" / C (clear)  — 5110-layout placeholder
-    {KK_UP,4,1,0},      // scroll up                       — 5110-layout placeholder
-    {KK_SOFT1,2,1,0},   // left key "Menu"                 — 5110-layout placeholder
-    {KK_DOWN,3,0,0},    // scroll down                     — 5110-layout placeholder
-    {KK_PWR,0,0,0x02},  // special-scan power
+    {KK_1,2,1,0}, {KK_2,3,1,0}, {KK_3,2,2,0},   // keycodes 0x01/0x02/0x03
+    {KK_4,2,3,0}, {KK_5,3,2,0}, {KK_6,1,4,0},   // 0x04/0x05/0x06
+    {KK_7,2,4,0}, {KK_8,3,3,0}, {KK_9,3,4,0},   // 0x07/0x08/0x09
+    {KK_STAR,0,4,0}, {KK_0,1,2,0}, {KK_HASH,1,3,0},   // 0x0C/0x0A/0x0B
+    {KK_SOFT1,0,1,0},   // left key "Menu" — keycode 0x19
+    {KK_SOFT2,0,2,0},   // right key "Names" / C — keycode 0x1A
+    {KK_UP,0,3,0},      // scroll up   — 0x17
+    {KK_DOWN,1,1,0},    // scroll down — 0x18
+    // Power = special-scan bit0 (keymap special block [20]=0x0D). NOTE the 3210's power
+    // BUTTON is wired to the CCONT (PWRONX, .ccont_poweron_int) — this matrix line is the
+    // firmware's secondary/service view of it.
+    {KK_PWR,0,0,0x01},
 };
 
 const ModelProfile model_3210 = {
@@ -81,7 +88,7 @@ const ModelProfile model_3210 = {
         // CCONT/LCD. So 3310-class PLAIN scan (0xE0 = power special-scan): with the serial config
         // the power-key special pass was never delivered → the firmware saw no power key held and
         // cleanly powered off after the boot logo. Default MAD2 ports (col/row/dir = 0 → 0x2A/0x28/0xA8).
-        .power_special_cols = 0x02,
+        .power_special_cols = 0x01,   // special block [20]=0x0D → power on special bit0
         .family  = KP_FAMILY_3310,   // Family B (Menu/Names) — candybar, no soft/send/end/vol
         .lines   = keylines_3210,    // (row,col) still placeholder — RE the MAD2 matrix post-standby
         .n_lines = (int)(sizeof(keylines_3210) / sizeof(keylines_3210[0])),
@@ -223,10 +230,16 @@ const ModelProfile model_3210 = {
     // ch2 NEVER read) confirm VBATT lives on ch0 here. Route ch0 -> adc[2] so the modelled
     // battery voltage is returned on the channel the 3210 actually reads. (ch3/4/5 keep the
     // standard BSI/BTEMP/VCHAR identity mapping — those the 3210 reads on their usual lines.)
-    // ch0 -> vbatt (above). ch1 -> bsi (added 2026-06-20): the 3210 BSI reader uses CCONT *logical
-    // channel 1* (reader 0x2A68C6), but mad2 loads .bsi into adc[3] — so without this remap BSI read
-    // adc[1]=0 (unprovisioned → unrecognised pack). With [1]=3 the reader sees .bsi=0x150.
-    // (BTEMP ch4 is NOT remapped — it genuinely reads adc[4]=.battery.temp; the CONTACT SERVICE gate
-    // is a .temp VALUE fix, see the .battery block. ch3/4/5 keep identity BSI/BTEMP/VCHAR mapping.)
-    .adc_route = { [0] = 2, [1] = 3 },
+    // ch0 -> vbatt (above). ch1 -> vbatt TOO (corrected 2026-07-14; was [1]=3=bsi, WRONG): CCONT ch1
+    // on the 3210 is a SECOND battery-VOLTAGE input, not BSI. Proof: (a) the per-quantity channel-map
+    // (flash 0x2E2D74) puts measurement QUANTITY 7 on ch1 where the 3310's table (0x32E73C) puts the
+    // same quantity on ch2 = its VBATT channel; (b) the quantity-7 classifier input (0x27CC74) and the
+    // direct ch1 reader (0x2A68C6, previously mis-labelled BSI_READER) both apply the SAME
+    // BATT_CHAR_STRUCT [0x11FDE0]+52/+56 voltage calibration, and the classifier scales it *1500/313
+    // to MILLIVOLTS for the source-7 undervoltage guard (0x27D5FC: <2100 mV → power_off 0x2B4E16) —
+    // a 2.1V floor is exactly a 2.6V-NiMH-pack cutoff; (c) BSI is genuinely on ch3 (reader 0x2A90B4),
+    // which mad2 already identity-maps to adc[3]=.bsi. The old [1]=3 fed the voltage guard the BSI
+    // code 0x150 → ~1560 mV → deterministic clean power-off @~948K steps. With [1]=2 the guard reads
+    // .vbatt=0x2C0 → ~3280 mV → passes. (ch3/4/5 keep identity BSI/BTEMP/VCHAR mapping.)
+    .adc_route = { [0] = 2, [1] = 2 },
 };

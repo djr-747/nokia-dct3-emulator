@@ -97,6 +97,15 @@ uint32_t mad2_read(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t ram
                                 ? m->model->asic.dsp_release_mask : 0x01;  // 3310 = bit0
                     if (m->model->asic.dsp_reset_running && (ram_value & rel))
                         return m->model->asic.dsp_reset_running;
+                    // Release bit CLEAR = DSP held in reset: the ready/clock status bit
+                    // (bit4) reads LOW on real HW. Mask it out of the RAM-backed value,
+                    // because a firmware RMW while released can have latched the synthesised
+                    // status (0x53, bit4 set) back into RAM — the 6250 v5.00 re-reset path
+                    // clears the release bits then polls [0x20002] bit4-low, and the stale
+                    // latched bit4 spun it forever. Gated to dsp_reset_running models so the
+                    // legacy RAM fallthrough is untouched elsewhere.
+                    if (m->model->asic.dsp_reset_running)
+                        return (uint8_t)(ram_value & ~0x10u);
                 }
                 break;
             // Keypad COLUMN read (MAD2 0x2A / serial-bus 0x30) is handled above the switch
@@ -105,6 +114,15 @@ uint32_t mad2_read(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t ram
                 if (m->model && m->model->keypad.uif_irq)
                     return (uint8_t)((ram_value & ~0x10u) | (m->kpd_im_status & 0x10u));
                 break;  // 3310-class: RAM-backed (unchanged)
+            case 0x34:  // later-serial (8810) keypad matrix interrupt-SOURCE: bits[4:0] = pressed
+                        // columns. The ISR (0x2DE292) reads this to confirm a matrix-key IRQ
+                        // before it scans; read-to-clear (the firmware never writes 0x34).
+                if (m->model && m->model->keypad.irq_src34) {
+                    uint8_t v = (uint8_t)((ram_value & ~0x1Fu) | (m->kpd_src34 & 0x1Fu));
+                    m->kpd_src34 = 0;   // read clears the latched source
+                    return v;
+                }
+                break;  // other models: RAM-backed (unchanged)
             case 0x28:  // KPD_R; on a slide phone bit0 is the reed-switch cover line (0x30175E)
                 if (m->model && m->model->keypad.has_slide)
                     return (uint8_t)((ram_value & ~0x01u) | (m->slide_open & 0x01u));

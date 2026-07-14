@@ -1,7 +1,7 @@
 # Nokia DCT3 Emulator
 
 An open-source emulator and architectural-analysis toolkit for Nokia DCT3-era phones —
-the 3310, 3410, 5210, 8210, 8250, 8850 and their siblings. It boots **real firmware** in
+the 3310, 3210, 3410, 5210, 6210, 6250, 7110, 8210, 8250, 8810, 8850 and their siblings. It boots **real firmware** in
 the browser and in a native SDL GUI, faithfully modelling the MAD2 platform ASIC, the
 CCONT power controller, the TMS320C54x DSP, the PCD8544/SED-class LCD, the keypad matrix,
 the SIM, and the internal + external EEPROM.
@@ -40,26 +40,33 @@ early. Model detection and version are read from the flash header — nothing is
 | Model | Code / ver | Status | Notes |
 |---|---|---|---|
 | **2100** | NAM-2 v5.84 | 🟡 partial | boots to the Security-code (FAID) screen but rejects the EEPROM-baked code (12345) — see #3 |
-| **3210** | NSE-8 v6.00 | 🟡 partial | powers on to Contact Service |
+| **3210** | NSE-8 v6.00 | ✅ interactive | boots to the "Security code" prompt and **accepts the factory code 12345** ("Code accepted"); no-SIM boots to "Insert SIM card". Real keypad matrix RE'd from the firmware keymap table (wiring differs from the 3310 despite identical keys); CCONT ch1 modelled as the battery-voltage input the undervolt guard reads |
 | **3310** | NHM-5 v5.79 | ✅ standby | reference baseline (kept byte-identical by `make guard`) |
 | **3330** | NHM-6 v4.50 | 🟡 partial | Contact Service; verdict / DSP-upload RE outstanding |
 | **3350** | NHM-9 v5.22 | 🟡 partial | Contact Service; profile incomplete |
 | **3410** | NHM-2 v5.46 | ✅ standby | minor set-time clock-tick gap tracked separately |
 | **5110** | NSE-1 v5.30 | ✅ locked | boots into the MMI — **HLE DSP** (web) reaches PIN/standby; the **C54x DSP co-sim** (GUI) reaches the faithful "Security code" lock |
+| **5110i** | NSE-2 v5.53 | 🟡 partial | 2 MB 5110 refresh; Contact Service on the borrowed 5110 EEPROM (a 5110i-specific record self-test isn't provisioned) |
+| **5130** | NSK-1 v5.30 | ✅ locked | 5110 sibling (Xpress-on); boots to the "Security code" (FAID) lock |
+| **5190** | NSB-1 v6.71 | 🟡 partial | Contact Service; US NSB build fails an extra judged self-test element — RE pending |
 | **5210** | NSM-5 v5.40 | ✅ standby | |
 | **5510** | NPM-5 v3.50 | 🔴 scaffold | early power-off; map unresolved |
 | **6110** | NSE-3 v5.48 | ✅ locked | boots to the "Security code" (FAID) lock |
-| **6210** | NPE-3 v5.56 | 🟡 partial | boots to Contact Service (DSP-gated) |
+| **6130** | NSK-3 v5.61 | ✅ locked | 6110 sibling; boots to the "Security code" (FAID) lock |
+| **6150** | NSM-1 v5.23 | ✅ locked | 6110 sibling (2 MB, own external-EEPROM blob); boots to the "Security code" (FAID) lock |
+| **6190** | NSB-3 v6.13 | 🟡 partial | Contact Service; same US NSB judged self-test FAIL as the 5190 |
+| **6210** | NPE-3 v5.56 | ✅ standby | reaches the idle screen (signal/battery/operator); self-test resolved organically — the DSP block-ack pump sets the upload flag and a ROM-6 self-test-complete responder posts the firmware's own ack (no verdict pokes) |
+| **6250** | NHM-3 v5.00 | ✅ standby | 6210 sibling, resolved like-for-like, plus a self-healing repair of this library image's inconsistent RF-calibration checksum and the DSP-in-reset status-bit model |
 | **7110** | NSE-5 v5.00 | ✅ standby | SED1565 display, RE'd keypad + **Navi roller** (mouse-wheel / arrows scroll menus, press to select); SIM-present boots to a key-navigable standby |
 | **8210** | NSM-3 v5.31 | ✅ standby | |
 | **8250** | NSM-3D v6.02 | ✅ standby | |
 | **8290** | NSB-7 v5.22 | 🟡 partial | Contact Service; DSP-upload handshake RE pending |
+| **8810** | NSE-6 v6.02 | ✅ locked | 6110-family slider (2 MB, own external-EEPROM blob); boots to the "Security code" (FAID) lock, keypad interactive; slide cover not modelled |
 | **8850** | NSM-2 v5.31 | ✅ standby | NSM Family-A reference |
 | **8855** | NSM-4 v5.13 | ✅ standby | |
 | **8890** | NSB-6 v12.16 | 🟡 partial | Contact Service (US-band 8850) |
 
-Ten models boot to a usable state today (standby, or the normal Security-code lock). Seven more
-DCT3 models (5130, 5190, 6130, 6150, 6190, 6250, 8810) have firmware but no profile yet. Per-model detail lives in [`docs/MODELS.md`](docs/MODELS.md).
+Seventeen of the 26 registered models boot to a usable state today — standby (3310, 3410, 5210, 6210, 6250, 7110, 8210, 8250, 8850, 8855), interactive security-code entry (3210), or the normal Security-code lock (5110, 5130, 6110, 6130, 6150, 8810). Per-model detail lives in [`docs/MODELS.md`](docs/MODELS.md).
 
 ---
 
@@ -71,7 +78,7 @@ DCT3 models (5130, 5190, 6130, 6150, 6190, 6250, 8810) have firmware but no prof
 - **MAD2 platform model** (`src/mad2/`): the ASIC bus, interrupt/FIQ controller, timers, RTC,
   Intel/Sharp CFI flash FSM, internal + I²C external EEPROM, and the MBUS/FBUS USART.
 - **CCONT** power/RTC/ADC controller with the interrupt→event measurement protocol.
-- **20 model profiles** (`src/models/`) selecting memory map, LCD controller, battery/ADC
+- **26 model profiles** (`src/models/`) selecting memory map, LCD controller, battery/ADC
   windows, keypad matrix, and DSP variant at runtime from the flash header.
 
 **DSP**

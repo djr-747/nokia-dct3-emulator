@@ -452,6 +452,9 @@ typedef struct Mad2 {
     uint8_t  kpd_im_status;     // 8850-class UIF keypad interrupt-source status (I/O 0x2B);
                                 // bit4 = matrix-key edge pending. Only used when the model's
                                 // keypad.uif_irq is set (3310 routes IRQ0 straight to its ISR).
+    uint8_t  kpd_src34;         // later-serial keypad matrix interrupt-source (I/O 0x34 bits[4:0]),
+                                // set on a matrix-key edge when keypad.irq_src34 is set (8810).
+                                // Read-to-clear on the 0x34 read; 0 otherwise.
     uint8_t  slide_open;        // slide-phone cover state (keypad.has_slide): 1 = open (cover
                                 // line I/O 0x28 bit0 reads 1), 0 = closed (boot rest state).
     uint8_t  cover_int_pending; // reed-switch interrupt-source latch (I/O 0x29 bit0); set on a

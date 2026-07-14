@@ -57,6 +57,15 @@ void mad2_keypad_irq(Mad2* m) {
     }
     mad2_raise_irq(m, 0);
     if (m->model && m->model->keypad.uif_irq) m->kpd_im_status |= 0x10;  // matrix source bit4
+    // Later serial keypad (8810): the ISR (0x2DE292) won't scan on a bare IRQ0 — it first
+    // reads the matrix interrupt-SOURCE at I/O 0x34 and only proceeds if a column bit is set.
+    // Latch the pressed columns there so the edge actually reaches the scan. Any edge (press
+    // OR release) sets it, since the firmware confirms the matrix state by scanning 0x30.
+    if (m->model && m->model->keypad.irq_src34) {
+        uint8_t cols = 0;
+        for (int r = 0; r < 8; ++r) cols |= m->kbd_norm_cols[r];
+        m->kpd_src34 = (uint8_t)((cols & 0x1Fu) ? (cols & 0x1Fu) : 0x1Fu);  // nonzero on release too
+    }
 }
 
 // Slide-cover (reed switch) toggle on a slide phone. The cover line is I/O 0x28 bit0
