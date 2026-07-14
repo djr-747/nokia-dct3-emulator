@@ -669,6 +669,8 @@
     function pickShell(model) {
       if (!model || !shellHost) return null;
       if (SHELLS[model]) return SHELLS[model];
+      var alias = (window.DCT3_SHELL_ALIASES || {})[model];   // shared body (3330→3310)
+      if (alias && SHELLS[alias]) return SHELLS[alias];
       for (var k in SHELLS) if (model.indexOf(k) >= 0) return SHELLS[k];
       return null;
     }
