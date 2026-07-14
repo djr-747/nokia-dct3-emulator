@@ -53,9 +53,7 @@
         <h3>Boot</h3>
         <div class="controls">
           <button id="btn-reboot">Reboot</button>
-          <label><input type="checkbox" id="chk-bypass"> Bypass SIM</label>
           <label title="FAID Pass: recompute the FuBu v6.39 FAID integrity sum so the 'Enter security code' (anti-theft) lock never arms. Takes effect on the next Reboot."><input type="checkbox" id="chk-skip-seclock"> FAID Pass</label>
-          <label title="HLE self-test verdict pin. Now redundant — the faithful DSP responder passes the verdict organically — so default OFF. Tick only to force-pin. Takes effect on the next Reboot."><input type="checkbox" id="chk-spike"> Boot spike</label>
           <label title="When the firmware self-resets via the reboot fn (reasons 5/12/0x68/0x73, etc.), recover in place by returning from the panic chain instead of warm-rebooting. Watch the console for [reset] CATCH lines. Untick to fall back to warm-reboot on every reset."><input type="checkbox" id="chk-recover" checked> Auto-recover crash</label>
           <label title="Eager intercept: catch the panic at the reboot-fn / ARM fatal-handler ENTRY, before the noreturn chain notifies the kernel, writes CTSI int-ctrl, busy-delays, or persists the reason byte. Off = the existing late catch (at [0x20001]|=4) fires unchanged. Watch the console for [reset] CATCH … EARLY-INTERCEPT lines."><input type="checkbox" id="chk-reboot-early" checked> Early intercept</label>
         </div>

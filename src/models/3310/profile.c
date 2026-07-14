@@ -83,6 +83,8 @@ const ModelProfile model_3310 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (memlog-pinned 2026-07-15)
+        .mdisnd_tail  = 0x000100A4u,    // write ptr the MDISND enqueue (0x2BAC04) bumps
         // Shell-side helpers.
         .get_string    = 0x002BBFACu,   // v6.39
         .w_get_string  = 0x002BBCB8u,   // v6.39
@@ -107,7 +109,6 @@ const ModelProfile model_3310 = {
     .n_sigs2 = MAD2_N_SIGS_3310,
     .boot = {
         .skip_seclock_default = 1,   // web default ("FAID Pass" on)
-        .pin_verdict_default  = 0,   // organic verdict via the DSP responder
     },
     .ident = {
         .match = "NHM-5",            // 3310 product code (present in the dump)

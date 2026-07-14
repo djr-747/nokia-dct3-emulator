@@ -122,6 +122,16 @@ int dsp_default_read(Mad2* m, uint32_t addr, int size, uint32_t ram_value, uint3
 // DSP-region write. Returns 1 if handled (stop further mad2_write processing), else 0.
 int dsp_default_write(Mad2* m, uint32_t addr, int size, uint32_t value) {
     (void)size;
+    // DSPVIS: observe (never intercept — the register has real MMIO handling) the MCU
+    // asserting the DSP control register [0x20002] back to its boot value 0x01 — the
+    // DSP reset/hold state the boot sequence starts from (profile .dsp_reset_running:
+    // read-back 0x53 = released/running). A DSP put back into reset loses its run
+    // state, so this is the faithful warm-reboot re-arm for the dsp_running latch.
+    // (A read-level re-arm on the parked boot-status word is WRONG: the parked 0xFFFF
+    // lingers in RAM — on the 3310 inside the MDISND ring itself — so any later stray
+    // read/record would disarm the latch mid-run and stall the Cobba auto-consume.)
+    if (m->dsp_vis && addr == 0x00020002u && (value & 0xFFu) == 0x01u)
+        m->dsp_running = 0;
     // MAMEDSP=1: MAME's dsp_ram_w just COMBINE_DATA's (plain store), so let the core
     // RAM-back every DSP-region write — no upload-ack protocol.
     { static int mame = -1; if (mame < 0) mame = getenv("MAMEDSP") ? 1 : 0;
@@ -135,11 +145,39 @@ int dsp_default_write(Mad2* m, uint32_t addr, int size, uint32_t value) {
         if (head == 0) { m->dsp_ack[0] = (uint16_t)value ? (uint16_t)value : 1; m->dsp_acks++; return 1; }
         return 0;                                     // queue initialised: let the core's RAM-back stand
     }
+    // DSPVIS: observe (never intercept) the MCU bumping the MDISND write pointer — the
+    // moment a new MCU->DSP request record becomes visible to the DSP. The record was
+    // already written at the OLD tail (BE word0 = {len<<8 | group}, payload follows).
+    // The self-test protocol streams the calibration blocks (group 0x70 subs 0x13..0x16),
+    // marks its MCU-private "pending" bit, then enqueues {0x70, 0x0D} = "run self-test,
+    // report result" — THAT record is the faithful trigger for the group-0x74 {0x0D,0}
+    // completion reply (it arrives after the MCU is parked waiting, so no race).
+    if (m->dsp_vis && m->fw.mdisnd_tail && m->mem &&
+        addr == m->fw.mdisnd_tail && size >= 2) {
+        uint16_t prev = m->dsp_mdisnd_prev;                   // record just enqueued starts here
+        uint32_t ring = m->fw.mdisnd_tail - m->fw.mdisnd_q;   // ring byte size (3310 = 0xA4)
+        uint32_t off0 = (uint32_t)prev * 2;                   // word0 never wraps (enqueue
+        uint32_t offs = off0 + 2;                             // wraps only PAST each store)
+        if (offs >= ring) offs -= ring;                       // payload may wrap to base
+        if (off0 < ring && (value & 0xFFFFu) != prev &&       // a real enqueue, not a re-park
+            m->mem[(m->fw.mdisnd_q + off0 + 1) & m->mem_mask] == 0x70 &&
+            m->mem[(m->fw.mdisnd_q + offs)     & m->mem_mask] == 0x0D) m->dsp_st_req = 1;
+        if (getenv("DSPVIS_LOG"))
+            printf("[dspvis] MDISND tail %02X->%02X rec={%02X %02X %02X} st_req=%d @mono=%llu\n",
+                   prev, (unsigned)(value & 0xFFFF),
+                   m->mem[(m->fw.mdisnd_q + off0) & m->mem_mask],
+                   m->mem[(m->fw.mdisnd_q + off0 + 1) & m->mem_mask],
+                   m->mem[(m->fw.mdisnd_q + offs) & m->mem_mask],
+                   m->dsp_st_req, (unsigned long long)m->rtc_mono);
+        m->dsp_mdisnd_prev = (uint16_t)(value & 0xFFFFu);
+        return 0;                                 // observe only: the write still lands
+    }
     // DSP code-block reply (dsp_cb_reply): firmware acked an upload. 0x0002 = more to
     // go (model the DSP requesting the next block via IRQ4), 0x0004 = upload complete.
     if (addr == m->fw.dsp_cb_reply) {
         if ((value & 0xFFFFu) != 0x0004u) m->dsp_cb_delay = 256;  // pump the next request
         else                              m->dsp_cb_delay = 0;    // boot upload complete
+        m->dsp_cb_armed_nz = (value & 0xFFFFu) != 0;  // DSPVIS: real block vs [reply]=0 clear
         return 1;
     }
     return 0;
@@ -179,8 +217,22 @@ void dsp_default_tick(Mad2* m) {
         uint32_t req   = m->fw.dsp_cb_req   & m->mem_mask;
         m->mem[reply] = 0x00; m->mem[reply + 1] = 0x00;   // DSP cleared reply: ready for more
         m->mem[req]   = 0x00; m->mem[req + 1]   = 0x01;   // next code-block request (BE halfword)
-        if ((!m->mem[m->fw.dsp_uploaded & m->mem_mask] || getenv("DSPIRQ")) && !getenv("DSPNOIRQ4"))
-            mad2_raise_irq(m, 4);   // DSP "block done" IRQ4 -> pump -> [0x11038C], pre-Phase-2 only
+        // DSPVIS gate: a real DSP cannot read [dsp_uploaded]; it knows only its OWN
+        // state ("have I acked a real block yet"). The internal dsp_running latch is
+        // set only on a pump cycle armed by a REAL block delivery (nonzero cb_reply
+        // write; dsp_cb_armed_nz) — the firmware also clears [cb_reply]=0 during DSP
+        // init, and latching on THAT expiry suppresses the real block-ack IRQ4, so the
+        // firmware pump never uploads block 2 (self-test then fails C8->88; measured).
+        // Raise pattern reproduced exactly from DSP-visible events: clear-armed expiry
+        // raises (legacy: flag still 0), first real-block expiry raises + latches,
+        // later expiries silent (legacy: [dsp_uploaded] set by the pump ~100 steps
+        // after the real-block raise).
+        { int first = m->dsp_vis ? !m->dsp_running
+                                 : !m->mem[m->fw.dsp_uploaded & m->mem_mask];
+          if ((first || getenv("DSPIRQ")) && !getenv("DSPNOIRQ4"))
+              mad2_raise_irq(m, 4); // DSP "block done" IRQ4 -> pump -> [0x11038C], pre-Phase-2 only
+        }
+        if (m->dsp_cb_armed_nz) m->dsp_running = 1;  // DSPVIS: real block acked = DSP code live
         m->dsp_cb_acks++;
     }
     // DSP Cobba command field [0x100E0]: the MCU writes a command halfword, signals the
@@ -195,7 +247,11 @@ void dsp_default_tick(Mad2* m) {
     // during EARLY boot (before the upload) perturbs the boot path and stops the MMI message
     // router (0x2E84B6) from running later — so only consume Cobba commands once the DSP is up.
     // (Faithful to "DSP acks the command once it's running"; responses still come via MDI/queue.)
-    if (m->mem && m->mem[m->fw.dsp_uploaded & m->mem_mask]) {
+    // DSPVIS: gate on the internal dsp_running latch instead of the MCU-private flag —
+    // same edge (first block-ack pump cycle; the firmware's own [dsp_uploaded] write
+    // follows ~100 steps later, and the first Cobba command only ~27k steps after that).
+    if (m->mem && (m->dsp_vis ? m->dsp_running
+                              : m->mem[m->fw.dsp_uploaded & m->mem_mask])) {
         uint32_t cobba = m->fw.cobba & m->mem_mask;
         if (m->mem[cobba] || m->mem[cobba + 1]) {
             // COBBALOG=1: log each MCU->DSP->COBBA audio command value + mono cycle, to
@@ -219,7 +275,11 @@ void dsp_default_tick(Mad2* m) {
         uint32_t hp = m->fw.mdircv_head & m->mem_mask, tp = m->fw.mdircv_tail & m->mem_mask;
         uint16_t head = (uint16_t)((m->mem[hp] << 8) | m->mem[hp + 1]);
         uint16_t tail = (uint16_t)((m->mem[tp] << 8) | m->mem[tp + 1]);
-        if ((m->mem[verdict] & 0x04) && head == 0x80 && tail == 0x80) {  // pending + queue empty
+        // DSPVIS trigger: the observed MDISND {0x70,0x0D} "run self-test" request (set in
+        // dsp_default_write) — the record the MCU enqueues right AFTER parking on verdict
+        // bit2, so it strictly follows the legacy trigger with no MCU-private read.
+        int pending = m->dsp_vis ? m->dsp_st_req : (m->mem[verdict] & 0x04);
+        if (pending && head == 0x80 && tail == 0x80) {  // pending + queue empty
             uint32_t q = m->fw.mdircv_q & m->mem_mask;
             m->mem[q]     = 0x02;   // word0 high = payload len (copy 2 bytes)
             m->mem[q + 1] = 0x74;   // word0 low  = group 0x74 -> 0x2C2824 -> self-test cmd-13
@@ -230,6 +290,7 @@ void dsp_default_tick(Mad2* m) {
             m->mem[tp] = (uint8_t)(nt >> 8); m->mem[tp + 1] = (uint8_t)nt;
             mad2_raise_fiq(m, 0);                                 // FIQ0: DSP signalled MDIRCV
             m->dsp_selftest_replied = 1;
+            m->dsp_st_req = 0;                                    // DSPVIS: request consumed
         }
     }
     // DSP runtime boot-indication injector (brute-force; see mad2.h). Once the firmware

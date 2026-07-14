@@ -93,6 +93,8 @@ const ModelProfile model_2100 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (HPI layout-invariant; see 3310)
+        .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         // Per-build scratch + reset/heap/task-14 + verdict/dsp_uploaded/sim_gate addresses
         // are UNKNOWN for this NAM-2 v5.84 build. 0 = unresolved (mad2 degrades gracefully;
         // the shared MAD2 RTOS signatures below locate what they can). The 5210's resolved
@@ -146,7 +148,6 @@ const ModelProfile model_2100 = {
     .n_sigs = MAD2_N_SIGS,
     .boot = {
         .skip_seclock_default = 1,   // mirror 3310/3410/5210 web default
-        .pin_verdict_default  = 0,
     },
     .ident = {
         .match = "NAM-2",            // 2100 product code (0x1FC version header)

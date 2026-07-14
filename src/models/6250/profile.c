@@ -99,6 +99,8 @@ const ModelProfile model_6250 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (HPI layout-invariant; see 3310)
+        .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         // verdict 0x17FD15 — the 6210 v5.56 gate sig does NOT match v5.00, so the gate was
         // re-located by scanning for its exact SHAPE (`ldr rX,=LIT; ldrb r0,[rX]; lsr r0,#7;
         // bcs`, literal in RAM): unique MMI-ready-class hit at 0x306CF2 `ldr r4,=0x17FD15`,
@@ -124,7 +126,6 @@ const ModelProfile model_6250 = {
     .n_sigs = MAD2_N_SIGS,
     .boot = {
         .skip_seclock_default = 1,
-        .pin_verdict_default  = 0,
     },
     .ident = {
         .match = "NHM-3",

@@ -117,11 +117,8 @@
       lcdBanks: mod.cwrap("dct3_web_lcd_banks", "number", []),
       kpFamily: mod.cwrap("dct3_web_kp_family", "number", []),
       power: mod.cwrap("dct3_web_power", null, ["number"]),
-      setBypass: mod.cwrap("dct3_web_set_bypass", null, ["number"]),
       setSkipSeclock: mod.cwrap("dct3_web_set_skip_seclock", null, ["number"]),
       seccodeReset: mod.cwrap("dct3_web_seccode_reset", "number", []),
-      setSpike: mod.cwrap("dct3_web_set_spike", null, ["number"]),
-      getSpike: mod.cwrap("dct3_web_get_spike", "number", []),
       t0ticks: mod.cwrap("dct3_web_t0_ticks", "number", []),
       t1edges: mod.cwrap("dct3_web_t1_edges", "number", []),
       t0ctr: mod.cwrap("dct3_web_t0_counter", "number", []),
@@ -151,7 +148,6 @@
       traceCpsr:  mod.cwrap("dct3_web_trace_cpsr",  "number", ["number"]),
       traceFiq:   mod.cwrap("dct3_web_trace_fiq",   "number", ["number"]),
       traceIrq:   mod.cwrap("dct3_web_trace_irq",   "number", ["number"]),
-      spikeInfo: mod.cwrap("dct3_web_spike_info", "number", []),
       ram: mod.cwrap("dct3_web_ram", "number", ["number"]),
       kbd: mod.cwrap("dct3_web_kbd", "number", ["number"]),
       setKeyHold: mod.cwrap("dct3_web_set_key_hold", null, ["number"]),
@@ -498,8 +494,6 @@
       if (!skipOverlay) loadI2cEeprom();
       eeLastWrites = C.eepromWrites();
       i2cLastWrites = C.i2cEepromWrites();
-      // Sync the Boot-spike checkbox to the effective verdict-pin decision for this image.
-      if (chkSpike && C.getSpike) chkSpike.checked = !!C.getSpike();
       // mad2_init resets the SIM to its defaults (present, PIN 1234) on every boot, so
       // re-apply whatever the SIM panel shows — otherwise the "SIM inserted" checkbox
       // (and PIN settings) silently disagree with the model after a (re)boot.
@@ -514,12 +508,6 @@
       // toggle persists across reboots.
       const chkRebootEarly = document.getElementById("chk-reboot-early");
       if (chkRebootEarly && C.setRebootEarly) C.setRebootEarly(chkRebootEarly.checked ? 1 : 0);
-      if (C.spikeInfo) {            // report the version-independent boot-spike smart-match
-        const s = C.spikeInfo() >>> 0;
-        console.log("[spike] sig " + ((s & 2) ? "found" : "MISS (fallback addr)") +
-                    ", SIM-gate byte = 0x" + ((s >>> 8) & 0xffffff).toString(16) +
-                    (customFw ? " (custom fw)" : ""));
-      }
     }
 
     // Persist only when the firmware actually PROGRAMMED NVRAM this run (eepromWrites
@@ -675,7 +663,7 @@
                regs: r.map(v => hx(v)), text: `regs: ${regstr}\ncpsr=${hx(cpsr)} (${thumb ? "Thumb" : "ARM"})\nbacktrace:\n  ` + frames.join("\n  ") };
     }
     // Repro config snapshot — everything needed to reproduce a halt/crash deterministically
-    // (no entropy): firmware image + identity, SIM/bypass/FAID/spike flags, EEPROM overlay
+    // (no entropy): firmware image + identity, SIM/FAID flags, EEPROM overlay
     // source. Goes at the top of every crash report + the downloaded .txt.
     function cfgSummary() {
       const ck = (id) => { const e = document.getElementById(id); return e ? (e.checked ? "on" : "off") : "?"; };
@@ -689,8 +677,7 @@
         "  firmware:   " + fwn + "\n" +
         "  fw-id:      " + curFwId + (customFw ? "  [user-loaded]" : "  [baked]") + "\n" +
         "  SIM:        " + ((C.getSim && C.getSim()) ? "inserted" : "absent") + "   PIN: " + ck("chk-pin") + "\n" +
-        "  bypass SIM: " + ck("chk-bypass") + "    FAID Pass: " + ck("chk-skip-seclock") +
-        "    boot spike: " + (C.getSpike ? (C.getSpike() ? "on" : "off") : ck("chk-spike")) + "\n" +
+        "  FAID Pass:  " + ck("chk-skip-seclock") + "\n" +
         "  EEPROM:     " + ee + "\n";
     }
     window.dct3Config = cfgSummary;
@@ -743,9 +730,9 @@
         config: {
           sim:    (C.getSim ? !!C.getSim() : ck('chk-sim')),
           pin:    ck('chk-pin'),
-          bypass: ck('chk-bypass'),
           faid:   ck('chk-skip-seclock'),
-          spike:  (C.getSpike ? !!C.getSpike() : ck('chk-spike')),
+          // bypass/spike: REMOVED 2026-07-15 (organic boot needs neither; old
+          // bundles carrying them are accepted and the keys ignored).
           // Auto-recover is intentionally NOT bundled: it's a viewer-side policy choice
           // (how the recipient wants to handle crashes), not a firmware-state property.
           // Two recipients of the same bundle may pick different recover settings.
@@ -794,19 +781,15 @@
         console.warn(`[replay] fw-id mismatch: bundle=${bundle.fwId} current=${curFwId}`);
       }
       // Apply config (set the visible checkboxes + push to the core where the
-      // checkbox handlers do it). Core knobs that only take effect at next boot
-      // (bypass / faid / spike) are explicitly pushed; SIM/PIN are re-applied by
-      // boot() itself from the checkboxes.
+      // checkbox handlers do it). FAID takes effect at next boot; SIM/PIN are
+      // re-applied by boot() itself from the checkboxes. (bundle.bypass/.spike
+      // from pre-2026-07-15 bundles are ignored — the boot is organic now.)
       const cfg = bundle.config || {};
       const setChk = (id, v) => { const el = document.getElementById(id); if (el && typeof v === 'boolean') el.checked = v; };
       setChk('chk-sim', cfg.sim);
       setChk('chk-pin', cfg.pin);
-      setChk('chk-bypass', cfg.bypass);
       setChk('chk-skip-seclock', cfg.faid);
-      setChk('chk-spike', cfg.spike);
-      if (typeof cfg.bypass  === 'boolean' && C.setBypass)      C.setBypass(cfg.bypass ? 1 : 0);
       if (typeof cfg.faid    === 'boolean' && C.setSkipSeclock) C.setSkipSeclock(cfg.faid ? 1 : 0);
-      if (typeof cfg.spike   === 'boolean' && C.setSpike)       C.setSpike(cfg.spike ? 1 : 0);
       // Auto-recover (cfg.recover) intentionally NOT applied — viewer's checkbox wins.
       // Cold reboot for a clean step=0 start. boot() re-applies SIM/PIN from the
       // checkboxes we just updated and calls resetReplayLog (which cancels any
@@ -2462,17 +2445,10 @@
       const out = document.getElementById("type-out");
       if (out) out.textContent = `queued ${typeQ.length}`;
     });
-    document.getElementById("chk-bypass").addEventListener("change", (e) => {
-      C.setBypass(e.target.checked ? 1 : 0);
-    });
     // "Skip security code": neutralise the FuBu v6.39 disp77 FAID lock (checksum
     // completeness —). Takes effect on next reboot.
     const chkSeclock = document.getElementById("chk-skip-seclock");
     if (chkSeclock) chkSeclock.addEventListener("change", (e) => C.setSkipSeclock(e.target.checked ? 1 : 0));
-    // "Boot spike" (HLE self-test verdict pin): override the per-firmware auto
-    // decision. Unchecking lets v6.39 attempt an organic boot. Effective on Reboot.
-    const chkSpike = document.getElementById("chk-spike");
-    if (chkSpike) chkSpike.addEventListener("change", (e) => C.setSpike(e.target.checked ? 1 : 0));
     // Auto-recover crash master gate (mad2 reset-reason recovery; see mad2.c case 0x01).
     // Takes effect immediately — no reboot needed. The next firmware self-reset will
     // either recover-in-place (on) or warm-reboot (off).

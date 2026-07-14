@@ -97,6 +97,8 @@ const ModelProfile model_5210 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (HPI layout-invariant; see 3310)
+        .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         // Per-build scratch + reset/heap/task-14 addresses UNKNOWN for this v5.40 build.
         // 0 = unresolved (mad2 degrades gracefully). The shared MAD2 RTOS signatures
         // (.sigs below) locate what they can over the 5210's own flash region; the
@@ -150,7 +152,6 @@ const ModelProfile model_5210 = {
     .n_sigs2 = MAD2_N_SIGS_5210,
     .boot = {
         .skip_seclock_default = 1,   // mirror 3310/3410 web default
-        .pin_verdict_default  = 0,
     },
     .ident = {
         .match = "NSM-5",            // 5210 product code (0x1FC version header)

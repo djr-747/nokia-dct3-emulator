@@ -74,6 +74,13 @@ typedef struct {
     uint32_t mdircv_q;       // MDIRCV queue word0 base      (3310 = 0x10100)
     uint32_t mdircv_head;    // MDIRCV read pointer          (3310 = 0x101CA)
     uint32_t mdircv_tail;    // MDIRCV write pointer         (3310 = 0x101C8)
+    // MDISND (MCU->DSP) queue — the DSP-visible request stream. Records are BE words
+    // {len<<8|group, payload...}; the firmware bumps the write pointer after each
+    // enqueue. The DSPVIS self-test trigger watches this queue (the {0x70,0x0D}
+    // "run self-test" record) instead of peeking the MCU-private verdict byte.
+    // 0 = not RE'd for this model (DSPVIS trigger unavailable).
+    uint32_t mdisnd_q;       // MDISND queue word0 base      (3310 = 0x10000)
+    uint32_t mdisnd_tail;    // MDISND write pointer         (3310 = 0x100A4)
     // Shell-side helpers (string tracer + security lock).
     uint32_t get_string;     // get_string()                 (3310 v6.39 = 0x2BBFAC)
     uint32_t w_get_string;   // wide get_string()            (3310 v6.39 = 0x2BBCB8)
@@ -408,7 +415,8 @@ typedef struct {
 // --- Boot / HLE knobs ---------------------------------------------------------
 typedef struct {
     uint8_t skip_seclock_default;  // FAID "pass" default (3310 web = 1)
-    uint8_t pin_verdict_default;   // pin self-test verdict at 0xC8 (default 0)
+    // (pin_verdict_default REMOVED 2026-07-15 — no image needs the verdict pin;
+    // the DSP responder passes the self-test organically on every model.)
 } BootConfig;
 
 // --- Firmware identification (autodetect) -------------------------------------

@@ -78,6 +78,8 @@ const ModelProfile model_6190 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (HPI layout-invariant; see 3310)
+        .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         // get_string 0x29DBD8 / w_get_string 0x29D982 — EXACT gen_sig matches from the 5110.
         .get_string = 0x0029DBD8u, .w_get_string = 0x0029D982u,
         .faid_cksum = 0, .faid_cksum_val = 0,
@@ -91,7 +93,6 @@ const ModelProfile model_6190 = {
     .n_sigs = MAD2_N_SIGS,
     .boot = {
         .skip_seclock_default = 0,
-        .pin_verdict_default  = 0,
     },
     .ident = {
         .match = "NSB-3",

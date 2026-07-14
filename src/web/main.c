@@ -4,8 +4,8 @@
 // model, render the PCD8544 framebuffer to a canvas, and feed the keypad matrix
 // from the page. This mirrors the native boot_trace harness's setup + inner loop
 // (mad2 I/O hooks, per-step timer/FIQ/IRQ delivery) so the firmware reaches the
-// live OS, plus the two RAM HLE pokes that pass the self-test verdict (route C)
-// and bypass the SIM gate (anonymous-access equivalent) — see docs/boot-trace.
+// live OS fully organically (the historical verdict-pin / SIM-gate pokes are gone
+// — see the "Boot (organic)" note below).
 //
 // Flash is preloaded into MEMFS at /fw.fls (Makefile --preload-file).
 
@@ -34,20 +34,14 @@ void ARMRaiseFIQ(struct ARMCore* cpu);
 // selected ModelProfile (g_model->mem), so the web build boots any DCT3 image the
 // firmware picker loads, not just the 3310. See src/models/.
 
-// --- Boot spike (version-independent RAM HLE) ------------------------------
-//   POKE_VERDICT (0x11FF15) = 0xC8 : self-test verdict passes -> firmware resumes the
-//                      GSM group -> organic POWER_ON_NORMAL (route C).
-//   SIM-gate byte           = 0x06 : disp49 (= sim_func, the SIM/PIN gate) always takes
-//                      its proceed/quit branch -> SIM bypassed (anonymous access).
-// These used to be version-specific: held from a magic step count (1.5M for v6.39,
-// 3.4M for v5.79) with the SIM-gate address hardcoded. Now both are DERIVED so the
-// spike adapts to any 3310 firmware (resolved in dct3_web_boot / applied per step):
-//   - TIMING: arm the instant the firmware first writes the 0xC8 verdict (value-trigger
-//     -> no step count). After arming, pin 0xC8 so it can't degrade to 0xCC/0x8C.
-//   - SIM ADDRESS: a NokiX-style masked signature locates sim_func; the SIM-gate byte is
-//     the RAM base literal it loads (0x11FCFE on 3310) + 29. Falls back to the known addr.
-// The verdict + SIM-gate addresses now live in the model profile (g_mad2.fw.verdict /
-// .sim_gate), resolved per-image by model_resolve() (signature + 3310 fallback).
+// --- Boot (organic; the old "boot spike" is GONE) ---------------------------
+// HISTORY (removed 2026-07-15): the web driver used to carry two RAM HLE pokes —
+// the self-test verdict pinned at 0xC8 and the disp49 SIM-gate byte held at 0x06
+// ("Bypass SIM" / "Boot spike" toggles). Both are redundant now: the faithful DSP
+// responder passes the verdict organically on every image, and the SIM state
+// machine (synth SIM or absent-tray "Insert SIM card") advances disp49 by itself
+// (~24M steps to standby — the web boot just takes its realistic time). The
+// verdict/sim_gate profile addresses remain for telemetry only.
 
 // "Skip security code" (FuBu v6.39 disp77 anti-theft lock) — checksum-completeness.
 // disp77 arms because the FuBu FAID runtime integrity check (0x2E8C66) finds a
@@ -138,17 +132,8 @@ static int       g_gs_len = 0;
 static uint32_t  g_gs_ret = 0, g_gs_lr = 0, g_gs_in = 0; static int g_gs_wide = 0;
 static uint32_t  g_gs_stk[8];        // real BL-return-addrs from the stack (call chain)
 static uint32_t  g_gs_last = 0;      // dedup: last (id<<8 ^ caller)
-static int       g_bypass_sim = 1;   // toggle via dct3_web_set_bypass()
 static int       g_skip_seclock = 1;  // "FAID Pass": recompute FAID so disp77 never arms; default ON
 static const ModelProfile* g_model = NULL;   // selected phone profile (autodetected at boot)
-static uint32_t  g_sim_addr = 0;             // SIM-gate byte; resolved at boot (g_mad2.fw.sim_gate)
-static uint32_t  g_simfunc  = 0;             // located sim_func addr (0 = signature miss)
-static int       g_spike_armed = 0;          // boot spike active (firmware wrote 0xC8 verdict)
-static int       g_spike_force = -1;         // boot-spike (verdict pin) override: -1 auto
-                                             // (per-firmware), 0 = force off, 1 = force on
-static int       g_pin_verdict = 0;          // pin the self-test verdict at 0xC8 (only for
-                                             // firmware whose self-test can't pass organically
-                                             // in our model — see resolve_spike)
 static int       g_pwr_released = 0;  // one-shot auto-release guard
 static int       g_pwr_auto = 1;      // auto-release power key after boot
 
@@ -388,51 +373,10 @@ static uint32_t sig_find(const uint8_t* pat, const uint8_t* msk, int n, uint32_t
 }
 
 // Resolve the per-image firmware addresses for the selected model (signatures over the
-// loaded flash, profile fallbacks otherwise) into g_mad2.fw, then mirror the boot-spike
-// fields the run loop reads. Adapts to whatever DCT3 image the firmware picker loaded.
-static void resolve_spike(void) {
+// loaded flash, profile fallbacks otherwise) into g_mad2.fw. Adapts to whatever DCT3
+// image the firmware picker loaded.
+static void resolve_fw(void) {
     model_resolve(g_model, g_core->ram, DCT3_RAM_MASK, &g_mad2.fw);
-    g_sim_addr = g_mad2.fw.sim_gate;
-    g_spike_armed = 0;
-
-    // Diagnostic only (spike_info exposes it to the page): did the SIM signature locate
-    // sim_func, or did sim_gate fall back? Re-run the profile's "sim_gate" signature.
-    g_simfunc = 0;
-    for (int i = 0; i < g_model->n_sigs; i++) {
-        if (strcmp(g_model->sigs[i].name, "sim_gate") != 0) continue;
-        const Sig* s = &g_model->sigs[i].sig;
-        uint32_t lo = s->lo ? s->lo : g_model->mem.flash_base;
-        uint32_t hi = s->hi ? s->hi : g_model->mem.flash_base + g_model->mem.flash_size;
-        g_simfunc = sig_find(s->pat, s->mask, (int)s->len, lo, hi);
-        break;
-    }
-
-    // Decide whether to PIN the self-test verdict at 0xC8 (vs let the firmware drive it).
-    //
-    // The self-test verdict byte [0x11FF15] evolves the same way on every 3310 image:
-    // 00->08->48->C8->CC->8C->88->08 (it momentarily passes 0xC8, then settles to 0x08).
-    // Pinning it at 0xC8 forever is an HLE compensation: on the FuBu v6.39 image our
-    // incomplete DSP/GSM model fails the self-test downstream, so without the pin it never
-    // brings up the lock screen (it draws a blank/charge screen). The pin keeps the test
-    // "passing" so v6.39 reaches its UI.
-    //
-    // But on genuine retail firmware (v5.79) the self-test passes ORGANICALLY: pinning the
-    // verdict freezes its state machine mid-sequence, which slowly corrupts the OS state
-    // and — with the (faithful) Timer1/FIQ5 soft-timer walk also running — eventually
-    // overflows the firmware's tight interrupt-dispatcher stack (canary 0x1164D0), tripping
-    // its stack-overflow guard -> reboot reason 6 (0x2EEBAE) -> spin at 0x2EEBEC (~320M
-    // instructions). Native boot_trace reproduces this EXACTLY when given the same pin
-    // (LED still times out, then 0x2EEBEC); with the verdict left alone it runs clean to
-    // budget. So the pin must NOT be applied to firmware whose self-test we model well.
-    //
-    // UPDATE: the faithful DSP self-test responder (mad2)
-    // now passes the verdict ORGANICALLY for v6.39 (group-0x74 reply -> command-13 -> 0xC8),
-    // and retail v5.79 always self-tested organically. So NO firmware needs the HLE verdict
-    // pin any more -> default OFF. (Pinning v5.79 froze its state machine into the 0x2EEBEC
-    // spin per the note above; the responder avoids that and makes the pin redundant for
-    // v6.39 too.) The user can still force the pin on via the Boot-spike toggle.
-    g_pin_verdict = g_model->boot.pin_verdict_default;
-    if (g_spike_force >= 0) g_pin_verdict = g_spike_force;   // UI/CLI override (Boot-spike toggle)
 }
 
 static void roll_reset(void);  // rest the Navi-roller encoder at a valid detent (defined below)
@@ -492,7 +436,7 @@ int dct3_web_boot(void) {
     g_web_pcm_head = g_web_pcm_tail = 0;
     g_mad2.pcm_sink = web_pcm_sink;   // unified audio: buzzer + DSP codec -> one PCM stream
 
-    resolve_spike();   // resolve per-image firmware addresses (signatures + fallbacks) into g_mad2.fw
+    resolve_fw();      // resolve per-image firmware addresses (signatures + fallbacks) into g_mad2.fw
 
     // mad2_read/mad2_write match the dct3 io hook signatures (ctx = Mad2*).
     dct3_set_io_hooks(g_core, &g_mad2, g_model->mem.io_lo, g_model->mem.io_hi, mad2_read, mad2_write);
@@ -830,20 +774,6 @@ static void web_step_once(struct ARMCore* cpu) {
                 g_ccwr_w++;
             }
         }
-        // Boot spike: arm the instant the firmware first writes the 0xC8 self-test
-        // verdict (RAM was zeroed at boot, so the first 0xC8 IS the verdict). Once armed:
-        //   - hold the SIM-gate bypass at the signature-derived address (all firmware);
-        //   - pin the verdict at 0xC8 ONLY for firmware that needs the HLE compensation
-        //     (g_pin_verdict, set per-firmware in resolve_spike). Genuine retail firmware
-        //     (v5.79) runs its self-test organically and must NOT be pinned, or the frozen
-        //     verdict + the faithful FIQ5 soft-timer walk overflow the dispatcher stack and
-        //     reboot/spin at 0x2EEBEC. The FuBu v6.39 image needs the pin to reach its UI.
-        uint32_t verdict_addr = g_mad2.fw.verdict & DCT3_RAM_MASK;
-        if (!g_spike_armed && g_core->ram[verdict_addr] == 0xC8) g_spike_armed = 1;
-        if (g_spike_armed) {
-            if (g_pin_verdict) g_core->ram[verdict_addr] = 0xC8;
-            if (g_bypass_sim) g_core->ram[g_sim_addr & DCT3_RAM_MASK] = 0x06;
-        }
         // "Skip security code" (default OFF): make the FuBu v6.39 FAID integrity
         // check pass legitimately so the disp77 anti-theft lock never arms (see the
         // FAID note above). Hold the stored sum at the computed value while on.
@@ -1098,7 +1028,7 @@ int dct3_web_warm_reset(void) {
     g_mad2.verbose = 0;
     g_mad2.mem = g_core->ram;
     g_mad2.mem_mask = DCT3_RAM_MASK;
-    resolve_spike();                                  // flash code is intact, so sigs still resolve
+    resolve_fw();                                     // flash code is intact, so sigs still resolve
     dct3_set_io_hooks(g_core, &g_mad2, g_model->mem.io_lo, g_model->mem.io_hi, mad2_read, mad2_write);
     dct3_set_io_range2(g_core, g_model->mem.flash_base,
                        g_model->mem.flash_base + g_model->mem.flash_size);
@@ -1609,9 +1539,6 @@ void dct3_web_power(int held) {
     if (g_model && g_model->keypad.uif_irq) g_mad2.kpd_im_status |= 0x10;
 }
 
-EMSCRIPTEN_KEEPALIVE
-void dct3_web_set_bypass(int on) { g_bypass_sim = on ? 1 : 0; }
-
 // Master gate for the reset-recovery framework. Off = every firmware self-reset
 // falls through to warm-reboot regardless of reason (the pre-recovery behaviour).
 // On (default) = recover what we can in place (see mad2 case 0x01). The page
@@ -1793,15 +1720,6 @@ int dct3_web_trace_irq(int i)             { return (i < 0 || (uint32_t)i >= g_tr
 EMSCRIPTEN_KEEPALIVE
 void dct3_web_set_skip_seclock(int on) { g_skip_seclock = on ? 1 : 0; }
 
-// Boot spike (HLE self-test verdict pin). set_spike overrides the per-firmware
-// auto-decision (takes effect on the next boot); get_spike returns the EFFECTIVE
-// pin state after a boot (so the UI checkbox can sync to reality). Turning the
-// spike OFF lets v6.39 attempt an organic boot — the DSP-bring-up milestone.
-EMSCRIPTEN_KEEPALIVE
-void dct3_web_set_spike(int on) { g_spike_force = on ? 1 : 0; }
-EMSCRIPTEN_KEEPALIVE
-int  dct3_web_get_spike(void)   { return g_pin_verdict; }
-
 // Current ARM PC (gprs[15], = instruction+pipeline offset). For localizing a spin/hang
 // by sampling it repeatedly between run chunks.
 EMSCRIPTEN_KEEPALIVE
@@ -1834,13 +1752,6 @@ EMSCRIPTEN_KEEPALIVE
 double dct3_web_fiqs(void)      { return (double)g_mad2.fiqs_raised; }
 EMSCRIPTEN_KEEPALIVE
 double dct3_web_irqs(void)      { return (double)g_mad2.irqs_raised; }
-
-// Boot-spike diagnostics (packed): bit0 = armed (verdict pinned), bit1 = signature found,
-// bits8-31 = the resolved SIM-gate RAM address. Lets the page confirm the smart-match.
-EMSCRIPTEN_KEEPALIVE
-uint32_t dct3_web_spike_info(void) {
-    return (uint32_t)(g_spike_armed ? 1 : 0) | (g_simfunc ? 2u : 0u) | ((g_sim_addr & 0xFFFFFFu) << 8);
-}
 
 // --- diagnostics -----------------------------------------------------------
 // Read a RAM byte (any address; masked). For live memory inspection from the page.

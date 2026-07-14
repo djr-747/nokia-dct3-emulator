@@ -149,12 +149,25 @@ static void dsp_7110_tick(Mad2* m) {
     //            (loop 0x47304A) and renders blank rather than standby.
     // Both are the healthy DSP's "self-test done / all pass" report (cf. dsp_default cmd-13 for the
     // siblings). We never write the verdict — the MCU's own handlers clear bit2/bit3.
+    // DSPVIS: both MCU-private reads have DSP-visible equivalents — the "result pending"
+    // edge is the observed MDISND {0x70,0x0D} run-request (m->dsp_st_req; the 7110 streams
+    // the same group-0x70 record sequence as the ROM-6 line, sweep-verified 2026-07-15),
+    // and the [0x167030] DSP-ready flag tracks the block-ack pump = the internal
+    // dsp_running latch. st70_seen (PORT1 cmd-0x70) was always DSP-visible.
+    // Both RAM cells come from the profile ([0x167030] = the 7110's .dsp_uploaded — the
+    // per-build DSP-ready/result flag, same pattern as the 6210/2100/3410 siblings).
     {
         uint32_t vd = m->fw.verdict & m->mem_mask;
-        uint32_t rdy = 0x00167030u & m->mem_mask;
-        if (st70_seen && st_done < 1 && m->mem[rdy]) {
+        uint32_t rdy = m->fw.dsp_uploaded & m->mem_mask;
+        int ready   = m->dsp_vis ? m->dsp_running
+                                 : (m->fw.dsp_uploaded && m->mem[rdy] != 0);
+        int pending = m->dsp_vis ? m->dsp_st_req  : ((m->mem[vd] & 0x04) != 0);
+        if (st70_seen && st_done < 1 && ready) {
             const uint8_t bit2_ack[] = { 0x0D, 0x00 };   // clears verdict bit2
-            if ((m->mem[vd] & 0x04) && dsp_7110_ring_push(m, bit2_ack, 2)) st_done = 1;
+            if (pending && dsp_7110_ring_push(m, bit2_ack, 2)) {
+                st_done = 1;
+                m->dsp_st_req = 0;                       // DSPVIS: request consumed
+            }
         }
     }
 
@@ -175,8 +188,8 @@ static void dsp_7110_tick(Mad2* m) {
     // The step engine (0x30F180) issues DSP cmd-8/cmd-9 per step from descriptor table 0x26F684 and
     // reposts the same step until the DSP replies — proven kickable, but NOT needed for standby: the
     // sub-13 bit2-clear ack above is what a factory boot uses (the 9-step run is the service self-test).
-    if (getenv("DSP7110_FORCEUP")) {
-        uint32_t f = 0x00167030u & m->mem_mask;
+    if (getenv("DSP7110_FORCEUP") && m->fw.dsp_uploaded) {
+        uint32_t f = m->fw.dsp_uploaded & m->mem_mask;   // [0x167030] via the profile
         if (m->mem[f] == 0) m->mem[f] = 1;
     }
     if (st70_seen && !st70_irq_done && getenv("DSP7110_GATEA")) {

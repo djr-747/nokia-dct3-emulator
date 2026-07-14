@@ -100,6 +100,8 @@ const ModelProfile model_6210 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (HPI layout-invariant; see 3310)
+        .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         // verdict 0x17FD99 — gen_sig of the 5110 MMI-ready gate → 6210 0x30501A `ldr =0x17FD99`
         // (90% fuzzy). dsp_uploaded = 0x16FFE4 — RE'd 2026-07-14 via the 7110/sibling pattern
         // (7110 [0x167030], 2100 [0x10EC50], 3410 [0x12BA10], 5210 [0x13B528]): the self-test
@@ -132,7 +134,6 @@ const ModelProfile model_6210 = {
     .n_sigs = MAD2_N_SIGS,
     .boot = {
         .skip_seclock_default = 1,
-        .pin_verdict_default  = 0,
     },
     .ident = {
         .match = "NPE-3",

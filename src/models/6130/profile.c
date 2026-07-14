@@ -75,6 +75,8 @@ const ModelProfile model_6130 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (HPI layout-invariant; see 3310)
+        .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         // get_string 0x294ADA (96% fuzzy) / w_get_string 0x294872 (EXACT) — gen_sig-ported
         // from the 5110's 0x277B98/0x27790E.
         .get_string = 0x00294ADAu, .w_get_string = 0x00294872u,
@@ -89,7 +91,6 @@ const ModelProfile model_6130 = {
     .n_sigs = MAD2_N_SIGS,
     .boot = {
         .skip_seclock_default = 0,
-        .pin_verdict_default  = 0,
     },
     .ident = {
         .match = "NSK-3",

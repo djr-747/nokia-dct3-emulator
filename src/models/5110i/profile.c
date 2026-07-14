@@ -92,6 +92,8 @@ const ModelProfile model_5110i = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (HPI layout-invariant; see 3310)
+        .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         .get_string = 0x0027D996u, .w_get_string = 0x0027D70Cu,
         .faid_cksum = 0, .faid_cksum_val = 0,
         // 5110-family DSP boot handshake: ROM-4 version reply on both HPI status words.
@@ -105,7 +107,6 @@ const ModelProfile model_5110i = {
     .n_sigs = MAD2_N_SIGS,
     .boot = {
         .skip_seclock_default = 0,
-        .pin_verdict_default  = 0,
     },
     .ident = {
         .match = "NSE-2",

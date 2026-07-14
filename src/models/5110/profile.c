@@ -113,6 +113,8 @@ const ModelProfile model_5110 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (HPI layout-invariant; see 3310)
+        .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         // get_string (PPM nokstr resolver) — gen_sig-ported from 3310 0x2BBFAC (96%) /
         // 0x2BBCB8 (wide). Enables the GETSTR tracer (maps on-screen strings -> caller).
         .get_string = 0x00277B98u, .w_get_string = 0x0027790Eu,
@@ -138,7 +140,6 @@ const ModelProfile model_5110 = {
     .n_sigs = MAD2_N_SIGS,        // (enables the post-mortem labelling)
     .boot = {
         .skip_seclock_default = 0,
-        .pin_verdict_default  = 0,
     },
     .ident = {
         // String-only match: the harness calls model_detect with a fixed 0x400000 length

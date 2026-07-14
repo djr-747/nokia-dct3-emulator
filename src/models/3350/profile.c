@@ -87,6 +87,8 @@ const ModelProfile model_3350 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (HPI layout-invariant; see 3310)
+        .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         // Per-build scratch/reset addresses UNKNOWN for v5.22. 0 = unresolved; the shared
         // MAD2 sigs locate what they can. The boot-critical verdict/dsp_uploaded cells
         // are resolved by the NHM family-line signatures (.sigs2 = MAD2_SIGS_3310 below):
@@ -107,7 +109,6 @@ const ModelProfile model_3350 = {
     .n_sigs2 = MAD2_N_SIGS_3310,
     .boot = {
         .skip_seclock_default = 1,   // mirror 3410 web default
-        .pin_verdict_default  = 0,
     },
     .ident = {
         .match = "NHM-9",            // 3350 product code (0x1FC version header)

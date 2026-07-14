@@ -116,6 +116,8 @@ const ModelProfile model_7110 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (HPI layout-invariant; see 3310)
+        .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         // Per-build scratch + helpers UNKNOWN for 7110 — 0 = unresolved.
         .verdict = 0x0017FE15u,         // self-test/MMI screen gate, bit6 (traced: lifecycle + POKE-confirmed)
         // dsp_uploaded: the 7110's DSP self-test RESULT flag is [0x167030] (sibling pattern: 2100 used
@@ -141,7 +143,6 @@ const ModelProfile model_7110 = {
                             // reset-request write, after the fw runs its full reboot path)
     .boot = {
         .skip_seclock_default = 0,
-        .pin_verdict_default  = 0,
     },
     .ident = {
         .match = "NSE-5",

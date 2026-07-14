@@ -171,6 +171,8 @@ const ModelProfile model_3210 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (HPI layout-invariant; see 3310)
+        .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         .get_string = 0x00277B98u, .w_get_string = 0x0027790Eu,   // 5110 fallback; sig-resolve for 3210
         .faid_cksum = 0, .faid_cksum_val = 0,
         .dsp_boot_status = 0x00010004u, .dsp_boot_ready = 4,       // ROM-4 DSP reports version 4
@@ -183,7 +185,6 @@ const ModelProfile model_3210 = {
     .n_sigs = MAD2_N_SIGS,
     .boot = {
         .skip_seclock_default = 0,
-        .pin_verdict_default  = 0,
     },
     .ident = {
         // String-only match: header not at 0x1FC (it's code) -> whole-image search for "NSE-8".

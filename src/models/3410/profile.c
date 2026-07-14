@@ -108,6 +108,8 @@ const ModelProfile model_3410 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue — layout identical to the
+        .mdisnd_tail  = 0x000100A4u,    // 3310's (RAMWATCH-pinned 2026-07-15; enqueue 0x348200)
         // Per-build scratch + reset/heap/task-14 addresses UNKNOWN for the v5.46 build —
         // 3310 values would mis-fire. 0 = unresolved (mad2 degrades gracefully). Locate
         // by re-running the shared MAD2 RTOS signatures over 0x200000..0x4D0000.
@@ -149,7 +151,6 @@ const ModelProfile model_3410 = {
     .n_sigs = MAD2_N_SIGS,
     .boot = {
         .skip_seclock_default = 1,   // mirror 3310 web default
-        .pin_verdict_default  = 0,
     },
     .ident = {
         .match = "NHM-2",            // 3410 product code (in the PPM header of the dump)

@@ -57,6 +57,8 @@ const ModelProfile model_8250 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (HPI layout-invariant; see 3310)
+        .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         // Per-build DSP scratch — RE'd from 8250 v6.02 (ported from the 8850 v5.31 sigs;
         // v6.02 shifts addresses vs v5.31 so these are fuzzy-matched, not exact).
         // dsp_uploaded = 0x12F33C: the DSP-code-block-done flag the IRQ4 ISR 0x2CBD30 sets
@@ -80,7 +82,6 @@ const ModelProfile model_8250 = {
     .n_sigs = MAD2_N_SIGS,
     .boot = {
         .skip_seclock_default = 0,
-        .pin_verdict_default  = 0,
     },
     .ident = {
         .match = "NSM-3D",           // 8250 product code (0x1FC header) — more specific

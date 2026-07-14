@@ -88,6 +88,9 @@ const ModelProfile model_5510 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (HPI layout-invariant; see 3310)
+        .mdisnd_tail  = 0x000100A4u,    // base/tail verified (init + group-0x05 records decode); the
+        // 0x70 self-test stream is never reached — 5510 bring-up stalls earlier (verdict/dsp_uploaded also un-RE'd)
         // Per-build scratch/reset addresses UNKNOWN for v3.50/v3.53. 0 = unresolved; the
         // shared MAD2 sigs locate what they can over the 5510's own flash region. The
         // boot-critical ones (dsp_uploaded, verdict) must be RE'd per-build (3310 values
@@ -103,7 +106,6 @@ const ModelProfile model_5510 = {
     .n_sigs = MAD2_N_SIGS,
     .boot = {
         .skip_seclock_default = 1,   // mirror 3310 web default
-        .pin_verdict_default  = 0,
     },
     .ident = {
         .match = "NPM-5",            // 5510 product code (0x1FC version header)

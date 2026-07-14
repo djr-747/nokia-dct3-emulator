@@ -59,6 +59,8 @@ const ModelProfile model_8855 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (HPI layout-invariant; see 3310)
+        .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         // Per-build DSP scratch — RE'd from 8855 v5.13 (ported from 8850 v5.31 sigs).
         // verdict = 0x17FDE5 (MMI_READY base 0x17FD7C + 0x69 — the 4 MB builds use 0x17FD7C
         // like the 5210, vs the 2 MB 0x13FD78). Bit2-writer 0x25F420 (prologue r5=ldr=0x17FD7C,
@@ -76,7 +78,6 @@ const ModelProfile model_8855 = {
     .n_sigs = MAD2_N_SIGS,
     .boot = {
         .skip_seclock_default = 0,
-        .pin_verdict_default  = 0,
     },
     .ident = {
         .match = "NSM-4",            // 8855 product code (0x1FC header)

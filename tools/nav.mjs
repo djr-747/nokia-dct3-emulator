@@ -45,9 +45,10 @@ let ramwatch = [], ramPrev = [], ramChanges = [];   // --ramwatch: sample RAM ce
 let lcdlog = false, lcdlogMarks = [], lcdlogLastW = 0;   // --lcdlog: raw LCD port-write stream + step marks
 let capPc = 0, capHist = {}, capLastHits = 0;   // --cap 0xPC: histogram r0 at a PC (frame-sampled)
 let battAdc = null, chargerAdc = null;   // --batt / --charger: override vbatt adc[2] / charger adc[5]
-// Boot config toggles (null = leave web default). --sim/--bypass/--spike/--faid 0|1.
-// Defaults in main.c: sim=0 (absent), bypass=1, skip_seclock/FAID=1, spike=auto.
-let cfgSim = null, cfgBypass = null, cfgSpike = null, cfgFaid = null, clockEvery = 0;
+// Boot config toggles (null = leave web default). --sim/--faid 0|1. (--bypass and
+// --spike were REMOVED 2026-07-15 — boot is organic; both accepted and ignored.)
+// Defaults in main.c: sim=0 (absent), skip_seclock/FAID=1.
+let cfgSim = null, cfgFaid = null, clockEvery = 0;
 // Phase 6 Instrument 1 (alloc/free leak-tracker). LEAKTRACE=1 arms the leak-tracker
 // at boot (records every outstanding heap block by allocating caller_LR); HEAPCURVE=1
 // arms the [0x104844+8] used-bytes sampler and logs the curve every clockEvery frames.
@@ -125,8 +126,8 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--settle') settle = +argv[++i];
   else if (a === '--per') per = +argv[++i];
   else if (a === '--sim') cfgSim = +argv[++i];        // 1=SIM inserted, 0=absent
-  else if (a === '--bypass') cfgBypass = +argv[++i];  // 1=SIM-gate bypass on
-  else if (a === '--spike') cfgSpike = +argv[++i];    // 1=force boot spike, 0=no spike
+  else if (a === '--bypass') { ++i; console.log('nav: --bypass removed (organic boot) — ignored'); }
+  else if (a === '--spike')  { ++i; console.log('nav: --spike removed (organic boot) — ignored'); }
   else if (a === '--faid') cfgFaid = +argv[++i];      // 1=FAID/seclock bypass on
   else if (a === '--recover') cfgRecover = +argv[++i]; // 1=auto-recover firmware resets, 0=warm-reboot (headless default 0)
   else if (a === '--idle') idle = +argv[++i];   // post-replay idle-watch frames (delayed crash)
@@ -146,7 +147,7 @@ for (let i = 0; i < argv.length; i++) {
   //   - LEGACY flat array  [{key, step}, ...]            (dct3DumpReplay)
   //   - STRUCTURED bundle  {v,kind:"dct3-replay",fwId,fwName,config,events,context}
   //     (dct3CopyReplay)   — events have cyc + step, context has pc/step/cyc target.
-  // For the structured bundle: config knobs (sim/pin/bypass/faid/spike) override CLI
+  // For the structured bundle: config knobs (sim/pin/faid) override CLI
   // flags, events are dispatched on cyc (deterministic), and after the last event the
   // run continues to context.cyc + auto-verdicts a PC match against context.pc.
   else if (a === '--replay') { const v = argv[++i]; try { replay = JSON.parse(v); } catch (e) { replay = JSON.parse(readFileSync(resolve(process.cwd(), v), 'utf8')); } }
@@ -157,14 +158,12 @@ for (let i = 0; i < argv.length; i++) {
 if (!fw) { console.error('usage: nav.mjs <fw.fls> [--eeprom f] [--out d] [--watch 0xPC] -- <keys...>'); process.exit(2); }
 
 // Probe mode is active when --arm or --check-wave0 is set. Apply the canonical
-// repro-config defaults (SIM in / PIN off / bypass off / FAID pass on / spike off,
+// repro-config defaults (SIM in / PIN off / FAID pass on,
 // recover off) unless the caller explicitly overrode a flag. (Phase 5)
 const probeActive = checkWave0 || arm !== null;
 if (probeActive) {
   if (cfgSim    === null) cfgSim    = 1;
-  if (cfgBypass === null) cfgBypass = 0;
   if (cfgFaid   === null) cfgFaid   = 1;
-  if (cfgSpike  === null) cfgSpike  = 0;
 }
 // Input validation (V5) for the probe numeric flags — positive integers, and
 // --press-batch < --press-every so a coarse batch never skips a cadence boundary.
@@ -192,9 +191,7 @@ if (replay && !Array.isArray(replay) && typeof replay === 'object' && Array.isAr
   // Bundle config overrides CLI flags (unless caller explicitly passed --sim etc.)
   const cfg = replay.config || {};
   if (cfgSim    === null && typeof cfg.sim    === 'boolean') cfgSim    = cfg.sim    ? 1 : 0;
-  if (cfgBypass === null && typeof cfg.bypass === 'boolean') cfgBypass = cfg.bypass ? 1 : 0;
   if (cfgFaid   === null && typeof cfg.faid   === 'boolean') cfgFaid   = cfg.faid   ? 1 : 0;
-  if (cfgSpike  === null && typeof cfg.spike  === 'boolean') cfgSpike  = cfg.spike  ? 1 : 0;
   replay = replay.events;
   console.log(`[replay] structured bundle (fwId=${replayBundle.fwId}, ${replay.length} events` +
               (replayContext ? `, target cyc=${(replayContext.cyc/1e6).toFixed(2)}M pc=${replayContext.pc}` : '') + ')');
@@ -327,10 +324,8 @@ const C = {
   ccMask:    M.cwrap('dct3_web_ccont_mask', 'number', []),
   ccLines:   M.cwrap('dct3_web_ccont_lines', 'number', []),
   setSim:     M.cwrap('dct3_web_set_sim', null, ['number']),
-  setBypass:  M.cwrap('dct3_web_set_bypass', null, ['number']),
   setBattery: M.cwrap('dct3_web_set_battery', null, ['number']),   // --batt: vbatt adc[2]
   setCharger: M.cwrap('dct3_web_set_charger', null, ['number']),   // --charger: adc[5]
-  setSpike:   M.cwrap('dct3_web_set_spike', null, ['number']),
   setSeclock: M.cwrap('dct3_web_set_skip_seclock', null, ['number']),
   // frozen-on-crash PC trail.
   pcringCrashed: M.cwrap('dct3_web_pcring_crashed', 'number', []),
@@ -582,10 +577,8 @@ FLASH_HI = (C.flashHi && C.flashHi() >>> 0) || 0x400000;   // model-aware code c
 // Apply boot-config toggles (after boot, before the settle run — they're re-applied
 // each frame by the run loop, except set_sim which sets the model flag directly).
 if (cfgSim    !== null) C.setSim(cfgSim);
-if (cfgBypass !== null) C.setBypass(cfgBypass);
 if (battAdc    !== null && C.setBattery) C.setBattery(battAdc);
 if (chargerAdc !== null && C.setCharger) C.setCharger(chargerAdc);
-if (cfgSpike  !== null) C.setSpike(cfgSpike);
 if (cfgFaid   !== null) C.setSeclock(cfgFaid);
 // Auto-recover OFF by default for headless — see the cfgRecover declaration above.
 if (C.setRecover) C.setRecover(cfgRecover);
@@ -605,7 +598,7 @@ const armInstruments = () => {
     console.log('SENDLOG armed — logging ALL send_message (fw.mmi_send) calls'); }
 };
 armInstruments();
-console.log(`config: sim=${cfgSim??'def'} bypass=${cfgBypass??'def'} spike=${cfgSpike??'def'} faid=${cfgFaid??'def'}`);
+console.log(`config: sim=${cfgSim??'def'} faid=${cfgFaid??'def'}`);
 // Overlay an EEPROM file at the partition base. A full-partition raw blob lands verbatim;
 // a virgin partition image (native f0f0 framing, smaller than the window) is placed at its
 // NAMED base — the 8-hex token in the filename that falls within [eeOff, eeOff+eeSize).
@@ -820,8 +813,6 @@ if (arm !== null) {
     resetTotalSeen     = C.resetTotal();      // = 0 after C.boot()
     resetRecoveredSeen = C.resetRecovered();  // = 0
     if (cfgSim    !== null) C.setSim(cfgSim);
-    if (cfgBypass !== null) C.setBypass(cfgBypass);
-    if (cfgSpike  !== null) C.setSpike(cfgSpike);
     if (cfgFaid   !== null) C.setSeclock(cfgFaid);
     if (C.setRecover) C.setRecover(cfgRecover);
     if (eeprom) { overlayEeprom(eeprom); }
@@ -908,7 +899,7 @@ if (arm !== null) {
   //    "> end-probe-at" when it still responded. The fine pass (Task 3) narrows it.
   //    For arm B, the first UNRESPONSIVE after a run of RESPONSIVE (if any).
   const lines = [];
-  const cfgLine = `config: sim=${cfgSim} bypass=${cfgBypass} faid=${cfgFaid} spike=${cfgSpike} recover=${cfgRecover}  keep-alive=ON`;
+  const cfgLine = `config: sim=${cfgSim} faid=${cfgFaid} recover=${cfgRecover}  keep-alive=ON`;
   lines.push(`=== RESPONSIVENESS PROBE — fw ${fw.split('/').pop()} (keep-alive ON) ===`);
   lines.push(cfgLine);
   lines.push(`cadence-coordinate=C.step()  press-every=${pressEvery} press-from=${pressFrom} press-batch=${pressBatch}cyc end-probe-at=${endProbeAt} settle=${settleCyc}cyc`);
@@ -1005,6 +996,38 @@ if (replay) {
     return hist;
   };
   console.log(`replay: ${replay.length} ${replay[0] && Number.isFinite(replay[0].cyc) ? 'cyc' : 'step'}-keyed events`);
+  // Dispatch one key press (down-only; the wasm sequencer owns the up-edge).
+  const pressKey = (key) => {
+    if (key === 'pwr') { C.power(1); C.power(0); }
+    else if (key === 'off') C.power(1);
+    else if (KK[key] !== undefined && C.keyLogical) C.keyLogical(KK[key], 1);
+    else if (KEYS[key]) C.key(KEYS[key][0], KEYS[key][1], 1);   // legacy fallback
+  };
+  // Advance up to maxCyc cycles or until the framebuffer changes; returns true if it
+  // changed. Used to CONFIRM a key visibly registered instead of trusting recorded cyc.
+  const advanceUntilFbChange = (maxCyc) => {
+    const before = fbHash(); let run = 0;
+    while (run < maxCyc) {
+      if (C.resetReq && C.resetReq()) return fbHash() !== before;
+      C.runCyc(REPLAY_CYC_BATCH); run += REPLAY_CYC_BATCH;
+      if (fbHash() !== before) return true;
+    }
+    return false;
+  };
+  // keyconfirm (default ON; --no-keyconfirm to disable): tight digit sequences (e.g. the
+  // date-entry year field) are dropped by pure cyc-paced replay — nav's key cadence drifts
+  // vs the recording so the field abandons/ignores the later digits. After a digit press,
+  // wait for the fb to change (the digit appeared); if it never does within the settle
+  // window, RE-PRESS (up to 2×). Digits only: a re-press of a no-op digit is harmless,
+  // whereas re-pressing soft/menu keys could double-navigate. Floor timing (advanceTo to
+  // ev.cyc) is still honoured for automatic screen transitions (the clock-gate note→field).
+  const keyConfirm = !argv.includes('--no-keyconfirm');
+  // Confirm+retry is safe for digits and for up/down scrolling: a re-press only fires when
+  // the fb did NOT change (a genuine drop, or a no-op menu edge — both harmless to repeat).
+  // NOT soft1/soft2/menu: those transition screens, and a missed-but-actually-worked press
+  // would double-navigate. keyConfirmKey(k) decides eligibility.
+  const keyConfirmKey = (k) => /^[0-9]$/.test(String(k)) || k === 'up' || k === 'down';
+  const CONFIRM_CYC = 3000000;   // ~ hold+settle+scan margin; recorded key gaps exceed this
   for (const ev of replay) {
     const fn = () => evDue(ev);
     if (Number.isFinite(ev.cyc)) fn.cycTarget = ev.cyc;
@@ -1017,10 +1040,14 @@ if (replay) {
     const spin = SPIN_PCS.has(top[0]) || (tot >= 8 && top[1] / tot > 0.9);   // need real samples
     console.log(`${label.padEnd(16)} step=${(C.step() / 1e6).toFixed(1)}M cyc=${(C.cycles() / 1e6).toFixed(1)}M lcd=${C.lcdw()} pc=0x${(C.pc() >>> 0).toString(16)} ${spin ? '⚠SPIN' : '     '} → press ${ev.key}`);
     if (spin) console.log(backtrace());
-    if (ev.key === 'pwr') { C.power(1); C.power(0); }
-    else if (ev.key === 'off') C.power(1);
-    else if (KK[ev.key] !== undefined && C.keyLogical) C.keyLogical(KK[ev.key], 1);
-    else if (KEYS[ev.key]) C.key(KEYS[ev.key][0], KEYS[ev.key][1], 1);   // legacy fallback
+    pressKey(ev.key);
+    if (keyConfirm && keyConfirmKey(ev.key)) {
+      let tries = 0;
+      while (!advanceUntilFbChange(CONFIRM_CYC) && tries < 2) {
+        console.log(`   ↳ key '${ev.key}' didn't register (no fb change) — re-pressing (try ${tries + 1})`);
+        pressKey(ev.key); tries++;
+      }
+    }
     n++;
   }
   // After the queued events, structured bundles can carry a context target (cyc + pc).

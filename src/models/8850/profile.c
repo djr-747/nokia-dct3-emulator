@@ -68,6 +68,8 @@ const ModelProfile model_8850 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (HPI layout-invariant; see 3310)
+        .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         // Per-build scratch + helpers (RE'd from the 8850 v5.31 image).
         // dsp_uploaded = 0x135664 (8850-specific; analog of 3310 0x11038C / 3410
         // 0x12BA10): the DSP-code-block-done flag the IRQ4 ISR 0x2CB418 sets to 1
@@ -102,7 +104,6 @@ const ModelProfile model_8850 = {
     .n_sigs = MAD2_N_SIGS,        // reboot_reason etc. at runtime (enables RESET_EARLY/recovery)
     .boot = {
         .skip_seclock_default = 0,
-        .pin_verdict_default  = 0,
     },
     .ident = {
         .match = "NSM-2",

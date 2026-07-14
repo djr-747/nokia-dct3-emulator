@@ -87,6 +87,18 @@ static void dsp_6210_tick(Mad2* m) {
     // Both addresses are per-model profile data, so this is model-agnostic (6210 + 6250).
     // Edge-based: re-arm whenever bit2 is CLEAR (incl. after a warm reboot re-runs the self-test),
     // post once per bit2 rising edge. This is what makes a rebooted phone reach standby again.
+    //
+    // DSPVIS: the observed MDISND {0x70,0x0D} run-request (m->dsp_st_req, set per request —
+    // so a warm-reboot re-run re-arms naturally) replaces the verdict-bit2 edge, and the
+    // internal dsp_running latch replaces the [dsp_uploaded] read. Same reply, no MCU-private
+    // RAM. (The 6210/6250 stream the same group-0x70 record sequence; sweep-verified 2026-07-15.)
+    if (m->dsp_vis) {
+        if (m->dsp_st_req && m->dsp_running) {
+            const uint8_t bit2_ack[] = { 0x0D, 0x00 };   // -> handler 0x302A60 `and #0xFB` clears bit2
+            if (dsp_6210_ring_push(m, bit2_ack, 2)) m->dsp_st_req = 0;
+        }
+        return;
+    }
     uint32_t vd  = m->fw.verdict & m->mem_mask;
     uint32_t rdy = m->fw.dsp_uploaded & m->mem_mask;
     if (!(m->mem[vd] & 0x04)) {

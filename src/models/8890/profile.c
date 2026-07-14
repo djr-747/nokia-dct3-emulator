@@ -57,6 +57,8 @@ const ModelProfile model_8890 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (HPI layout-invariant; see 3310)
+        .mdisnd_tail  = 0x000100A4u,    // layout default — UNVERIFIED (boot does not reach DSP init, 2026-07-15 sweep)
         // Per-build DSP scratch — RE'd from 8890 v12.16 (ported from 8850 v5.31 sigs).
         // verdict = 0x13FDE1 (MMI_READY base 0x13FD78 + 0x69; the base is stable across the
         // family). Bit2-writer 0x23C7F6 (prologue r5=ldr=0x13FD78, r6=#0x69, write [r6,r5]).
@@ -73,7 +75,6 @@ const ModelProfile model_8890 = {
     .n_sigs = MAD2_N_SIGS,
     .boot = {
         .skip_seclock_default = 0,
-        .pin_verdict_default  = 0,
     },
     .ident = {
         .match = "NSB-6",            // 8890 product code (0x1FC header) — unique to the 8890.

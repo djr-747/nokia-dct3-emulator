@@ -63,6 +63,8 @@ const ModelProfile model_8210 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (HPI layout-invariant; see 3310)
+        .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         // Per-build DSP scratch — RE'd from 8210 v5.31 (same build version as the 8850,
         // so the 8850 sigs port exactly). dsp_uploaded = 0x135774: the DSP-code-block-done
         // flag the IRQ4 ISR 0x2CB338 sets to 1 (at 0x2CB370, when reply reg [0x100E4]==0)
@@ -92,7 +94,6 @@ const ModelProfile model_8210 = {
     .n_sigs = MAD2_N_SIGS,
     .boot = {
         .skip_seclock_default = 0,
-        .pin_verdict_default  = 0,
     },
     .ident = {
         .match = "NSM-3",            // 8210 product code (0x1FC header). NOTE: prefix of

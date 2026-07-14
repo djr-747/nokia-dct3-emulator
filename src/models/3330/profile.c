@@ -86,6 +86,8 @@ const ModelProfile model_3330 = {
         .mdircv_q     = 0x00010100u,
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
+        .mdisnd_q     = 0x00010000u,    // MCU->DSP request queue (HPI layout-invariant; see 3310)
+        .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         // Per-build scratch/reset addresses UNKNOWN for v4.16/v4.50 (the 3310 v5.79
         // constants would mis-fire). 0 = unresolved; the shared MAD2 sigs locate what
         // they can over the 3330's own flash region.
@@ -109,7 +111,6 @@ const ModelProfile model_3330 = {
     .n_sigs2 = MAD2_N_SIGS_3310,
     .boot = {
         .skip_seclock_default = 1,   // mirror 3310 web default
-        .pin_verdict_default  = 0,
     },
     .ident = {
         .match  = "NHM-6",           // 3330 product code (0x1FC version header)
