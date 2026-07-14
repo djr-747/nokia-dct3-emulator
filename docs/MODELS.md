@@ -13,8 +13,8 @@ Service, or a lock it can't clear faithfully) · 🔴 scaffold (stalls early).
 | **2100** | NAM-2 v5.84 | 🟡 partial | 5210-personality profile; boots to the Security-code (FAID) screen but rejects the EEPROM-baked code (12345) — see issue #3 |
 | **3210** | NSE-8 v6.00 | ✅ interactive | boots to the "Security codes" prompt (SIM-present; no-SIM → "Insert SIM card") and **accepts the factory code 12345 → "Code accepted"**. Two root fixes: CCONT ch1 is a battery-VOLTAGE input (`adc_route[1]=2`; the source-7 undervolt guard reads ch1 as mV, 2100mV floor), and the real keypad matrix RE'd from the firmware keymap table @0x2E2D58 (wiring differs from the 3310 despite identical physical keys). Open: a reason-0x68 SWDSP fault fires after ~60s idle at the prompt (5110-class DSP-fault latch) |
 | **3310** | NHM-5 v5.79 | ✅ standby | reference baseline; kept byte-identical by `make guard` |
-| **3330** | NHM-6 v4.50 | 🟡 partial | Contact Service; DSP upload works, MMI verdict RE outstanding |
-| **3350** | NHM-9 v5.22 | 🟡 partial | Contact Service; profile/RE incomplete |
+| **3330** | NHM-6 v4.50 | ✅ interactive | boots to the "Security codes" prompt and **accepts the factory code 12345 → "Code accepted" → the first-boot Time wizard** (web, SIM-present). Root fix: the old hardcoded verdict/dsp_uploaded pair was borrowed from the wrong build (3310 v5.57) and the HLE pump's write to that live RAM cell derailed the boot — now self-healed per-build by `.sigs2 = MAD2_SIGS_3310` (v4.16 + v4.50 both resolve uniquely). Known quirk: the 3410-family recoverable reason-0x73 reset (~283M cycles, auto-recovered) |
+| **3350** | NHM-9 v5.22 | ✅ interactive | same fix + flow as the 3330 (`.sigs2` family line; 12345 → "Code accepted" → Time wizard) — but this library image ships an **empty EEPROM partition**, and the factory config record (whose checksum the verdict-bit6 gate at 0x2540B8 compares) is never self-created. Graft a donor NHM FFS 'EEPROM' block first: `tools/graft_eeprom_block.py "<3350>.fls" "<3330>.fls"` (validated with the 3330 v4.50 donor) |
 | **3410** | NHM-2 v5.46 | ✅ standby | minor set-time clock-tick gap tracked separately, not a boot blocker |
 | **5110** | NSE-1 v5.30 | ✅ locked | external-EEPROM layout (no in-flash partition). Boots into the MMI: the **HLE DSP** (web build) reaches PIN/standby; the **C54x DSP co-sim** (`DSP54_COSIM=1`, native GUI) reaches the faithful "Security code" lock. |
 | **5110i** | NSE-2 v5.53 | 🟡 partial | 2 MB 5110 refresh; boots into the MMI to Contact Service on the borrowed 5110 EEPROM (tune-checksum passes; a 5110i-specific record self-test — EEPROM records 0x31E/0x290 — isn't provisioned in the nse-1 blob) |
@@ -37,7 +37,7 @@ Service, or a lock it can't clear faithfully) · 🔴 scaffold (stalls early).
 | **8855** | NSM-4 v5.13 | ✅ standby | |
 | **8890** | NSB-6 v12.16 | 🟡 partial | Contact Service; same as 8290 (US-band 8850) |
 
-**Boots to a usable state: 17 of 26 registered** — standby (3310, 3410, 5210, 6210, 6250, 7110, 8210, 8250, 8850, 8855), interactive security-code entry (3210 — factory 12345 accepted), or the Security-code lock (5110, 5130, 6110, 6130, 6150, 8810).
+**Boots to a usable state: 19 of 26 registered** — standby (3310, 3410, 5210, 6210, 6250, 7110, 8210, 8250, 8850, 8855), interactive security-code entry (3210, 3330, 3350 — factory 12345 accepted), or the Security-code lock (5110, 5130, 6110, 6130, 6150, 8810).
 
 ## How to check a model yourself
 

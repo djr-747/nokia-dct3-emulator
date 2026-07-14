@@ -88,14 +88,15 @@ const ModelProfile model_3330 = {
         .mdircv_tail  = 0x000101C8u,
         // Per-build scratch/reset addresses UNKNOWN for v4.16/v4.50 (the 3310 v5.79
         // constants would mis-fire). 0 = unresolved; the shared MAD2 sigs locate what
-        // they can over the 3330's own flash region. The boot-critical ones
-        // (dsp_uploaded, verdict) must be RE'd per-build (3310 values don't transfer).
-        // EXPERIMENT (v10.01, RE'd this session): the DSP self-test gates are the SAME
-        // RAM scratch the 3310 uses for verdict (0x11FF15) plus this build's upload latch
-        // (0x110360, the 3330 analog of the 3310's dsp_uploaded 0x11038C). Resolving both
-        // lets the HLE pump latch [0x110360] (gate 1) and the self-test responder clear
-        // verdict bit2 before the msg-0xDB report (gate 2).
-        .verdict = 0x0011FF15u, .sim_gate = 0, .dsp_uploaded = 0x00110360u,
+        // they can over the 3330's own flash region.
+        // The boot-critical verdict/dsp_uploaded cells are resolved per-build by the
+        // NHM family-line signatures (.sigs2 = MAD2_SIGS_3310 below): both anchors hit
+        // UNIQUELY on v4.16 AND v4.50 (verified 2026-07-14: verdict=0x13FE59 on both;
+        // dsp_uploaded v4.50=0x122F10, v4.16=0x12305C — genuinely per-build). The old
+        // hardcoded pair here (verdict=0x11FF15 / dsp_uploaded=0x110360) was borrowed
+        // from the 3310 v5.57 line and NEVER matched these builds — that mis-aim is why
+        // the upload latch/verdict chain "RE" stalled at Contact Service.
+        .verdict = 0, .sim_gate = 0, .dsp_uploaded = 0,
         .get_string = 0, .w_get_string = 0, .faid_cksum = 0, .faid_cksum_val = 0,
         .dsp_boot_status = 0, .dsp_boot_ready = 0,
         .reboot_fn = 0, .reboot_reason = 0, .reboot_save = 0,
@@ -104,6 +105,8 @@ const ModelProfile model_3330 = {
     },
     .sigs = MAD2_SIGS,
     .n_sigs = MAD2_N_SIGS,
+    .sigs2 = MAD2_SIGS_3310,      // NHM-line verdict + dsp_uploaded self-heal (per-build RAM cells)
+    .n_sigs2 = MAD2_N_SIGS_3310,
     .boot = {
         .skip_seclock_default = 1,   // mirror 3310 web default
         .pin_verdict_default  = 0,

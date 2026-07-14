@@ -88,9 +88,12 @@ const ModelProfile model_3350 = {
         .mdircv_head  = 0x000101CAu,
         .mdircv_tail  = 0x000101C8u,
         // Per-build scratch/reset addresses UNKNOWN for v5.22. 0 = unresolved; the shared
-        // MAD2 sigs locate what they can. The boot-critical ones (dsp_uploaded, verdict)
-        // must be RE'd per-build the same way as the 3410 (§7.13-7.15) — the 3410 values
-        // (dsp_uploaded=0x12BA10, verdict=0x17FE3D) will NOT transfer to v5.22.
+        // MAD2 sigs locate what they can. The boot-critical verdict/dsp_uploaded cells
+        // are resolved by the NHM family-line signatures (.sigs2 = MAD2_SIGS_3310 below):
+        // both anchors hit UNIQUELY on v5.22 (verified 2026-07-14: verdict=0x13FE61,
+        // dsp_uploaded=0x120DD4; the latter cross-checked against this build's DSP
+        // message pump at 0x31E248 — an exact gen_sig port of the 3310's 0x2BB430 —
+        // which does the same `strb 1,[0x120DD4]` gated on cb_reply [0x100E4]==0).
         .verdict = 0, .sim_gate = 0, .dsp_uploaded = 0,
         .get_string = 0, .w_get_string = 0, .faid_cksum = 0, .faid_cksum_val = 0,
         .dsp_boot_status = 0, .dsp_boot_ready = 0,
@@ -100,6 +103,8 @@ const ModelProfile model_3350 = {
     },
     .sigs = MAD2_SIGS,
     .n_sigs = MAD2_N_SIGS,
+    .sigs2 = MAD2_SIGS_3310,      // NHM-line verdict + dsp_uploaded self-heal (per-build RAM cells)
+    .n_sigs2 = MAD2_N_SIGS_3310,
     .boot = {
         .skip_seclock_default = 1,   // mirror 3410 web default
         .pin_verdict_default  = 0,
