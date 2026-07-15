@@ -277,14 +277,9 @@ void mad2_init(Mad2* m, const ModelProfile* prof) {
     // under cosim (mirrors dsp54_faithful() in the c54x glue — kept inline to avoid a core->c54x dep).
     { const char *e = getenv("DSPNOSELFTEST");
       m->dsp_selftest_off = (e && *e) ? (atoi(e) != 0) : (getenv("DSP54_COSIM") ? 1 : 0); }
-    // DSPVIS (DEFAULT ON, 2026-07-15): HLE DSP decisions from DSP-visible signals only
-    // (see mad2.h) — the DSP model no longer reads MCU-private RAM ([verdict],
-    // [dsp_uploaded]); those FwAddrs stay for harness telemetry / the web spike
-    // diagnostic only. Byte-identical to the legacy RAM-watch path on all 23 bootable
-    // models (250M guard pins incl.). DSPVIS=0 opts back into the legacy path for A/B.
-    // Requires the model's MDISND queue addresses (fw.mdisnd_q/_tail) to be RE'd.
-    { const char *e = getenv("DSPVIS");
-      m->dsp_vis = (e && *e) ? (atoi(e) != 0) : 1; }
+    // (The DSP model drives every decision from DSP-visible signals only — see the
+    // dsp_st_req / dsp_running fields in mad2.h. It never reads MCU-private RAM; the
+    // verdict / dsp_uploaded FwAddrs remain for harness telemetry + post-mortem labels.)
     // HLE master quiet-gate (DSP54_HLE=1 opts the legacy model back in for A/B): under the co-sim
     // the real DSP supplies EVERY DSP->MCU signal, so the whole HLE tick — block-ack pump + its
     // IRQ4 raise, Cobba command auto-consume, self-test responder, DSPMSG injector, keep-alive

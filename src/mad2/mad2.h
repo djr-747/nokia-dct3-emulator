@@ -424,24 +424,20 @@ typedef struct Mad2 {
     // verdict write itself; we only deliver the mailbox reply. Disable with DSPNOSELFTEST.
     uint8_t  dsp_selftest_off;       // env DSPNOSELFTEST: disable the responder (A/B)
     uint8_t  dsp_selftest_replied;   // one-shot guard
-    // DSPVIS=1 (A/B experiment): drive every HLE DSP decision from DSP-VISIBLE signals
-    // only — no reads of MCU-private RAM ([verdict], [dsp_uploaded]). The self-test
-    // reply triggers on the observed MDISND {group 0x70, sub 0x0D} "run self-test"
-    // request record (fw.mdisnd_q/mdisnd_tail); the [dsp_uploaded] gates (IRQ4 raise,
-    // Cobba auto-consume) use the internal dsp_running latch (set at the first
-    // block-ack pump cycle, cleared when the MCU re-parks the boot-status word —
-    // i.e. a warm reboot re-arms it). Default OFF: legacy RAM-watch path unchanged.
-    uint8_t  dsp_vis;                // env DSPVIS: DSP-visible triggers only
-    uint8_t  dsp_st_req;             // DSPVIS: MDISND {0x70,0x0D} request observed
-    uint8_t  dsp_running;            // DSPVIS: internal "DSP code running" latch
-    uint8_t  dsp_cb_armed_nz;        // DSPVIS: current pump cycle was armed by a REAL
-                                     // block delivery (nonzero cb_reply write), not the
-                                     // firmware's [cb_reply]=0 clear — only a real block
-                                     // latches dsp_running (see dsp_default_tick)
-    uint16_t dsp_mdisnd_prev;        // DSPVIS: last observed MDISND tail (word index).
-                                     // The write hook sees RAM post-store for plain RAM,
-                                     // so the record just enqueued starts HERE, not at
-                                     // the (already overwritten) in-RAM tail value.
+    // DSP-visible triggers — the HLE DSP drives EVERY decision from signals a real DSP can
+    // see (its HPI shared RAM), NEVER MCU-private RAM ([verdict], [dsp_uploaded]). The
+    // self-test reply triggers on the observed MDISND {group 0x70, sub 0x0D} "run self-test"
+    // request record (fw.mdisnd_q/mdisnd_tail); the DSP-ready gates (IRQ4 raise, Cobba
+    // auto-consume) use the internal dsp_running latch (set at the first REAL block-ack pump
+    // cycle, cleared when the MCU re-parks the boot-status word — a warm reboot re-arms it).
+    uint8_t  dsp_st_req;             // MDISND {0x70,0x0D} self-test request observed
+    uint8_t  dsp_running;            // internal "DSP code running" latch (first real block acked)
+    uint8_t  dsp_cb_armed_nz;        // current pump cycle was armed by a REAL block delivery
+                                     // (nonzero cb_reply write), not the firmware's [cb_reply]=0
+                                     // init clear — only a real block latches dsp_running
+    uint16_t dsp_mdisnd_prev;        // last observed MDISND tail (word index). The write hook
+                                     // sees RAM post-store for plain RAM, so the record just
+                                     // enqueued starts HERE, not at the overwritten tail value.
     uint8_t  dsp_hle_quiet;          // co-sim: silence the whole HLE tick (signals come
                                      // from the real C54x only); DSP54_HLE=1 re-enables
     uint8_t  dsp_no_keepalive;       // ROM-4 (5110/6110): suppress the 3310/ROM-6 perpetual

@@ -15,12 +15,22 @@
 // Per-build RAM/code addresses below were gen_sig-ported from 5110 v5.30 to NSB-1 v6.71
 // (firmware/Nokia 5190 NSB-1 v6.71 A.fls) and literal-confirmed in disfw — see .fw comments.
 //
-// STATE (2026-07-14 first boot): detects + boots clean into the MMI, rests at CONTACT
-// SERVICE. RAMWATCH on the verdict shows 40->C0->C4->84 — bit6 is cleared at ~1.58M by an
-// ADDITIONAL judged check (0x23A016: ldrh pair OR'd, FAIL when zero — an expected-nonzero
-// self-test result never arrives), BEFORE the shared group-0x74 reply is processed. The
-// sibling NSB-3 v6.13 (6190) fails the same way; the non-US builds (5130/6130/6150/8810)
-// pass organically to "Security code". The NSB-specific self-test element needs its own RE.
+// STATE: the DSP SELF-TEST is now SOLVED — all 24 self-test result items pass and
+// the verdict settles at 0x40 (bit6 kept), byte-identical to the working 5130. Root cause of the
+// former CONTACT SERVICE was a two-part external-EEPROM fault:
+//   (1) ADDRESSING: NSB-1 v6.71 drives a 2-byte word address (24C32+ protocol) even though we bake
+//       the 2K 5110 analogue blob. With 1-byte (24C16) addressing every calibration read misaligned
+//       → the self-test checksums read garbage → false CS. Fixed via .i2c_two_byte_addr (ext_eeprom.c).
+//   (2) CHECKSUMS: two self-test result items read an external-EEPROM calibration checksum the
+//       analogue blob isn't self-consistent for — item 12 (gate 0x239FF4: BE u16 @0x1FE over
+//       [0x120..0x1FE) − adj@0x154) and item 18 (validator 0x26CC4C: BE u32 @0x11C = 16-bit sum
+//       over [0..0x11C)). Both finalized on load (.nsb_cksum_* / .nsb_cksum2_*, ext_eeprom.c).
+// REMAINING (OPEN): the phone STILL rests at CONTACT SERVICE from a SEPARATE cause — NOT the verdict
+// (identical to the 5130 which reaches "Insert SIM card"), NOT a reset (clean boot), NOT SIM (CS with
+// SIM present too). Most likely a deeper band-specific calibration-VALUE check that the wrong-band
+// 5110 (900 MHz) analogue data can't satisfy — a faithful fix needs a real NSB-1 (1900 MHz) EEPROM
+// dump, which NokiX doesn't ship. The sibling NSB-3 v6.13 (6190) shares the self-test fault; the
+// non-US builds (5130/6130/6150/8810) pass organically to "Security code".
 
 #include "models/model.h"
 #include "models/mad2_sigs.h"      // shared DCT3 RTOS firmware-address signatures
@@ -108,7 +118,17 @@ const ModelProfile model_5190 = {
         .flash_size = 0,
     },
     .dsp = &mad2_dsp_rom4,            // ROM-4 HLE on native + web (no 5110-image C54x cosim)
-    // External 24C16 I2C EEPROM — the 5110's NokiX virgin nse-1 blob (no nsb-1 image exists).
+    // External I2C EEPROM — the 5110's NokiX virgin nse-1 blob (no nsb-1 image exists). The
+    // NSB-1 v6.71 firmware drives a 2-byte word address (24C32+ protocol) even though we bake
+    // the 2K analogue, so force 2-byte addressing — without it every calibration read misaligns
+    // and the self-test checksum reads garbage → false CONTACT SERVICE. See ext_eeprom.c.
     .i2c_eeprom_default = EE_NSE1,
     .i2c_eeprom_size    = EE_NSE1_LEN,
+    .i2c_two_byte_addr  = 1,
+    // NSB calibration-record checksums (RE'd 2026-07-15 against NSB-1 v6.71). Two self-test
+    // result items each read an external-EEPROM calibration checksum: item 12 (gate 0x239FF4)
+    // and item 18 (validator 0x26CC4C). Both are false-failed by the non-self-consistent
+    // analogue blob; finalize each so the self-test result array is all-pass.
+    .nsb_cksum_off = 0x1FE, .nsb_cksum_beg = 0x120, .nsb_cksum_len = 0xDE, .nsb_cksum_adj = 0x154,
+    .nsb_cksum2_off = 0x11C,
 };

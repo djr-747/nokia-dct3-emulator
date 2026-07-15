@@ -76,9 +76,9 @@ typedef struct {
     uint32_t mdircv_tail;    // MDIRCV write pointer         (3310 = 0x101C8)
     // MDISND (MCU->DSP) queue — the DSP-visible request stream. Records are BE words
     // {len<<8|group, payload...}; the firmware bumps the write pointer after each
-    // enqueue. The DSPVIS self-test trigger watches this queue (the {0x70,0x0D}
+    // enqueue. The DSP self-test responder watches this queue (the {0x70,0x0D}
     // "run self-test" record) instead of peeking the MCU-private verdict byte.
-    // 0 = not RE'd for this model (DSPVIS trigger unavailable).
+    // 0 = not RE'd for this model (self-test trigger unavailable).
     uint32_t mdisnd_q;       // MDISND queue word0 base      (3310 = 0x10000)
     uint32_t mdisnd_tail;    // MDISND write pointer         (3310 = 0x100A4)
     // Shell-side helpers (string tracer + security lock).
@@ -546,6 +546,23 @@ typedef struct ModelProfile {
     // the early-MAD2 default (sda_bit 0 = bit0; scl_bit 0 = bit2). ext_eeprom.c reads these.
     uint8_t        i2c_sda_bit;   // SDA bit in I/O 0x20 (0 = bit0)
     uint8_t        i2c_scl_bit;   // SCL bit in I/O 0x20 (0 = early-MAD2 default bit2)
+    uint8_t        i2c_two_byte_addr; // 1 = firmware drives a 2-byte word address even on a
+                                  // 2K device (NSB-1/NSB-3 v6.x); 0 = infer from size (>2K).
+    // NSB calibration-record checksum finalize (ext_eeprom.c). Distinct from the fixed-value
+    // calib_cksum_* repair below: this COMPUTES a checksum over EEPROM data. The NSB-1/NSB-3
+    // self-test BUILDER validates it before keeping verdict bit6:
+    //   stored[nsb_cksum_off] (BE u16) == ( Σ EEPROM[beg .. beg+len) − adj_hi − adj_lo ) & 0xFFFF
+    // where adj = EEPROM[nsb_cksum_adj] (BE u16), split into its two bytes. A factory phone
+    // ships a self-consistent EEPROM; the NokiX virgin blob does not, so we finalize the stored
+    // field on load — exactly like the 5110 tune checksum. 0 off = model has no such record.
+    uint16_t       nsb_cksum_off;  // BE stored checksum offset (5190/6190 = 0x1FE)
+    uint16_t       nsb_cksum_beg;  // sum range begin            (= 0x120)
+    uint16_t       nsb_cksum_len;  // sum range length in bytes  (= 0xDE)
+    uint16_t       nsb_cksum_adj;  // adjustment word offset     (= 0x154)
+    // Second NSB checksum — self-test result item 18 (5190 validator 0x26CC4C): a 16-bit
+    // byte-sum over EEPROM[0 .. off) stored as a BIG-endian u32 at [off] (DCT3 = big-endian
+    // ARM; upper 2 bytes 0). off is word-aligned and excluded from its own sum. 0 = none.
+    uint16_t       nsb_cksum2_off;  // BE u32 stored checksum offset (5190/6190 = 0x11C)
     // CCONT power-on cause (reg 0x0E) latched at cold power-on. The DCT3 power button is
     // wired to the CCONT (PWRONX), not (only) the keypad matrix: at startup the firmware
     // reads CCONT reg 0x0E and, if no power-on-cause bit is set, treats the boot as having

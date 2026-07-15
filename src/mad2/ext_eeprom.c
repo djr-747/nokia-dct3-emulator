@@ -98,6 +98,42 @@ static void i2c_load(Mad2* m) {
             if (getenv("I2CLOG")) printf("[i2c] DSP-fault latch (rec 0x607) provisioned @0x3F2 = 0x00\n");
         }
     }
+
+    // NSB calibration-record checksum finalize (5190/6190). The NSB self-test BUILDER validates
+    // stored[off] == ( Σ EEPROM[beg..beg+len) − adj_hi − adj_lo ) & 0xFFFF before keeping verdict
+    // bit6 (5190 gate 0x239FF4; compute 0x239DA4; adjustment 0x295BCC reads word@0x154). The
+    // baked analogue blob (5110 nse-1) is not self-consistent under this formula → false CONTACT
+    // SERVICE. Make it consistent, exactly like the 24C16 tune checksum above. Idempotent: the
+    // sum range [beg, beg+len) excludes the stored field, so re-finalizing reproduces the value.
+    // EE5110_RAW opts out (checksum-fault A/B). Requires 2-byte addressing (i2c_two_byte_addr).
+    if (m->model && m->model->nsb_cksum_off && !getenv("EE5110_RAW")) {
+        uint32_t off = m->model->nsb_cksum_off;
+        uint32_t beg = m->model->nsb_cksum_beg;
+        uint32_t len = m->model->nsb_cksum_len;
+        uint32_t adjo = m->model->nsb_cksum_adj;
+        unsigned s = 0;
+        for (uint32_t i = beg; i < beg + len; i++) s += m->i2c_eeprom[i & 0x7FFF];
+        unsigned adj = ((unsigned)m->i2c_eeprom[adjo & 0x7FFF] << 8) | m->i2c_eeprom[(adjo + 1) & 0x7FFF];
+        s = (s - (adj >> 8) - (adj & 0xFF)) & 0xFFFF;
+        m->i2c_eeprom[off & 0x7FFF]       = (uint8_t)(s >> 8);
+        m->i2c_eeprom[(off + 1) & 0x7FFF] = (uint8_t)(s & 0xFF);
+        if (getenv("I2CLOG")) printf("[i2c] NSB calib checksum finalized @0x%X = 0x%04X\n", off, s);
+    }
+    // Second NSB checksum — self-test result item 18 (validator 0x26CC4C): 16-bit byte-sum
+    // over EEPROM[0..off) stored as a LE u32 at [off] (off word-aligned, outside its own sum,
+    // upper 2 bytes zeroed). Runs after the 5110 tune finalize (which only touches 0x11E/0x11F,
+    // both >= off here — outside the sum range — and are overwritten by the u32 store below).
+    if (m->model && m->model->nsb_cksum2_off && !getenv("EE5110_RAW")) {
+        uint32_t off = m->model->nsb_cksum2_off;
+        unsigned s = 0;
+        for (uint32_t i = 0; i < off; i++) s += m->i2c_eeprom[i & 0x7FFF];
+        s &= 0xFFFF;
+        m->i2c_eeprom[off       & 0x7FFF] = 0;                          // BE u32 (DCT3 = big-endian ARM)
+        m->i2c_eeprom[(off + 1) & 0x7FFF] = 0;
+        m->i2c_eeprom[(off + 2) & 0x7FFF] = (uint8_t)(s >> 8);
+        m->i2c_eeprom[(off + 3) & 0x7FFF] = (uint8_t)(s & 0xFF);
+        if (getenv("I2CLOG")) printf("[i2c] NSB calib checksum#2 finalized @0x%X = 0x%04X\n", off, s);
+    }
 }
 
 // Eager init entry (called from mad2_init for external-EEPROM models): populate m->i2c_eeprom
@@ -131,7 +167,10 @@ void ext_eeprom_write(Mad2* m, uint8_t off, uint8_t v) {
     uint32_t dev_size = (m->model && m->model->i2c_eeprom_size) ? m->model->i2c_eeprom_size : 2048u;
     if (dev_size > sizeof m->i2c_eeprom) dev_size = sizeof m->i2c_eeprom;
     uint16_t addr_mask = (uint16_t)(dev_size - 1);
-    int two_byte = dev_size > 2048;                      // 24C32/64/128/256: 2-byte word address
+    int two_byte = dev_size > 2048 || (m->model && m->model->i2c_two_byte_addr);
+                                                         // 24C32/64/128/256 (>2K), OR a small device
+                                                         // the firmware nonetheless addresses with a
+                                                         // 2-byte word address (NSB-1/NSB-3 v6.x)
     if (off == 0x24) {                                   // SDA direction: bit0 1=drive,0=input
         m->i2c_drive = v & 1;
         return;

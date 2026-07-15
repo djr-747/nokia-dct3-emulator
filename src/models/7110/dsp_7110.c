@@ -149,25 +149,16 @@ static void dsp_7110_tick(Mad2* m) {
     //            (loop 0x47304A) and renders blank rather than standby.
     // Both are the healthy DSP's "self-test done / all pass" report (cf. dsp_default cmd-13 for the
     // siblings). We never write the verdict — the MCU's own handlers clear bit2/bit3.
-    // DSPVIS: both MCU-private reads have DSP-visible equivalents — the "result pending"
-    // edge is the observed MDISND {0x70,0x0D} run-request (m->dsp_st_req; the 7110 streams
-    // the same group-0x70 record sequence as the ROM-6 line, sweep-verified 2026-07-15),
-    // and the [0x167030] DSP-ready flag tracks the block-ack pump = the internal
-    // dsp_running latch. st70_seen (PORT1 cmd-0x70) was always DSP-visible.
-    // Both RAM cells come from the profile ([0x167030] = the 7110's .dsp_uploaded — the
-    // per-build DSP-ready/result flag, same pattern as the 6210/2100/3410 siblings).
-    {
-        uint32_t vd = m->fw.verdict & m->mem_mask;
-        uint32_t rdy = m->fw.dsp_uploaded & m->mem_mask;
-        int ready   = m->dsp_vis ? m->dsp_running
-                                 : (m->fw.dsp_uploaded && m->mem[rdy] != 0);
-        int pending = m->dsp_vis ? m->dsp_st_req  : ((m->mem[vd] & 0x04) != 0);
-        if (st70_seen && st_done < 1 && ready) {
-            const uint8_t bit2_ack[] = { 0x0D, 0x00 };   // clears verdict bit2
-            if (pending && dsp_7110_ring_push(m, bit2_ack, 2)) {
-                st_done = 1;
-                m->dsp_st_req = 0;                       // DSPVIS: request consumed
-            }
+    // All three triggers are DSP-visible: st70_seen (PORT1 cmd-0x70), the "result pending" edge
+    // is the observed MDISND {0x70,0x0D} run-request (m->dsp_st_req; the 7110 streams the same
+    // group-0x70 record sequence as the ROM-6 line, sweep-verified 2026-07-15), and DSP-ready is
+    // the internal dsp_running latch (tracking the block-ack pump, = the firmware's own
+    // [0x167030]/.dsp_uploaded flag). No MCU-private RAM read.
+    if (st70_seen && st_done < 1 && m->dsp_running) {
+        const uint8_t bit2_ack[] = { 0x0D, 0x00 };   // clears verdict bit2
+        if (m->dsp_st_req && dsp_7110_ring_push(m, bit2_ack, 2)) {
+            st_done = 1;
+            m->dsp_st_req = 0;                       // request consumed
         }
     }
 

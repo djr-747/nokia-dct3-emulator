@@ -37,13 +37,10 @@
 #include "mad2/mad2.h"
 #include "models/model.h"
 
-// Re-arm state. This is EDGE-BASED, not fire-once-ever: the ack is re-armed every time verdict
-// bit2 is CLEAR and posted on the next time it goes SET. A WARM REBOOT re-runs the firmware's
-// self-test (verdict re-initialised through a bit2-clear state), which re-arms us — so a rebooted
-// 6210/6250 posts the ack again and reaches standby, not CONTACT SERVICE. (A file-static "posted
-// once" flag would survive the reboot and never re-fire, since the responder TU isn't reset by
-// mad2_init.) File-static is fine: the arming is driven by observed state, not by process lifetime.
-static uint8_t st_armed = 1;        // 1 = ready to post the {sub 0x0D} bit2-clear ack this cycle
+// Arming is EDGE-BASED via the DSP-visible request: m->dsp_st_req is set each time the MCU
+// enqueues the {0x70,0x0D} "run self-test" record and cleared once we post the ack, so a WARM
+// REBOOT (which re-runs the self-test → re-enqueues the request) re-arms us naturally — a
+// rebooted 6210/6250 posts the ack again and reaches standby, not CONTACT SERVICE.
 
 // Deposit one DSP->MCU record {payload_len, group=0x74, payload...} at the CURRENT ring tail and
 // raise FIQ0 — the same delivery the shared dsp_default self-test responder uses, but written at
@@ -82,30 +79,14 @@ static void dsp_6210_tick(Mad2* m) {
     // (The in-flash RF-calib checksum repair — profile .calib_cksum_off/val — is applied by the
     // shared platform tick in mad2_timers.c, so it works for ANY model, not just this responder.)
 
-    // Self-test-complete ack: once the builder has set verdict bit2 (result pending) with the
-    // DSP-ready flag (m->fw.dsp_uploaded) up, post the group-0x74 sub-13 record that clears bit2.
-    // Both addresses are per-model profile data, so this is model-agnostic (6210 + 6250).
-    // Edge-based: re-arm whenever bit2 is CLEAR (incl. after a warm reboot re-runs the self-test),
-    // post once per bit2 rising edge. This is what makes a rebooted phone reach standby again.
-    //
-    // DSPVIS: the observed MDISND {0x70,0x0D} run-request (m->dsp_st_req, set per request —
-    // so a warm-reboot re-run re-arms naturally) replaces the verdict-bit2 edge, and the
-    // internal dsp_running latch replaces the [dsp_uploaded] read. Same reply, no MCU-private
-    // RAM. (The 6210/6250 stream the same group-0x70 record sequence; sweep-verified 2026-07-15.)
-    if (m->dsp_vis) {
-        if (m->dsp_st_req && m->dsp_running) {
-            const uint8_t bit2_ack[] = { 0x0D, 0x00 };   // -> handler 0x302A60 `and #0xFB` clears bit2
-            if (dsp_6210_ring_push(m, bit2_ack, 2)) m->dsp_st_req = 0;
-        }
-        return;
-    }
-    uint32_t vd  = m->fw.verdict & m->mem_mask;
-    uint32_t rdy = m->fw.dsp_uploaded & m->mem_mask;
-    if (!(m->mem[vd] & 0x04)) {
-        st_armed = 1;                                    // bit2 clear -> ready for the next cycle
-    } else if (st_armed && m->fw.dsp_uploaded && m->mem[rdy]) {
-        const uint8_t bit2_ack[] = { 0x0D, 0x00 };       // -> handler 0x302A60 `and #0xFB` clears bit2
-        if (dsp_6210_ring_push(m, bit2_ack, 2)) st_armed = 0;
+    // Self-test-complete ack: post the group-0x74 sub-13 record that clears the MCU's verdict
+    // bit2 (its handler 0x302A60 `and #0xFB`). Triggered on the observed MDISND {0x70,0x0D}
+    // run-request (m->dsp_st_req) with the DSP running (m->dsp_running) — both DSP-visible, no
+    // MCU-private RAM. dsp_st_req is set per request, so a warm-reboot re-run re-arms naturally.
+    // (The 6210/6250 stream the same group-0x70 record sequence; sweep-verified 2026-07-15.)
+    if (m->dsp_st_req && m->dsp_running) {
+        const uint8_t bit2_ack[] = { 0x0D, 0x00 };   // -> handler 0x302A60 `and #0xFB` clears bit2
+        if (dsp_6210_ring_push(m, bit2_ack, 2)) m->dsp_st_req = 0;
     }
 }
 
