@@ -76,6 +76,25 @@
       <p class="hint">Keyboard: 0&ndash;9 * # &nbsp;&middot;&nbsp; &uarr;&darr; &nbsp;&middot;&nbsp; Enter = Menu &nbsp;&middot;&nbsp; Backspace = Names &nbsp;&middot;&nbsp; &larr;&rarr; = Call / End</p>
     </div>
 
+    <!-- ============================ LOAD A GAME (headline feature) ============================ -->
+    <!-- 3410 only: replaces the built-in MIDlet slot with a user-supplied J2ME game
+         (both its .jar + .jad), re-serialising the phone's on-flash game store, then
+         reboots. The game appears under Games ▸ More games and runs on the phone's
+         own Java VM. Logic + window.dct3InjectGame API live in main.js. -->
+    <section class="game-loader" id="game-loader">
+      <div class="game-loader-inner">
+        <div class="game-loader-copy">
+          <h2>&#127918; Load a real game onto the 3410</h2>
+          <p>Drop in a J2ME MIDlet and it plays on the phone's own Java engine &mdash; find it under <strong>Games &#9656; More games</strong>. Select both the game's <code>.jar</code> and <code>.jad</code>.</p>
+        </div>
+        <label class="game-loader-btn" title="Pick the game's .jar and .jad together (Nokia 3410 only)">
+          <span>Choose .jar + .jad&hellip;</span>
+          <input type="file" id="game-file" accept=".jar,.jad" multiple>
+        </label>
+      </div>
+      <p id="game-name" class="game-loader-status" role="status" aria-live="polite"></p>
+    </section>
+
     <!-- ============================ QUICK CONTROLS ============================ -->
     <!-- Visitor-friendly. Power, sound, speed. Nothing scary. -->
     <div class="quick">
@@ -91,6 +110,8 @@
         <input type="range" id="sl-speed" min="25" max="400" step="25" value="100">
         <span id="out-speed" class="val">1.0&times;</span>
       </label>
+      <button id="btn-kbflip" class="quick-btn" type="button" aria-pressed="false"
+              title="Choose what your numpad's TOP row sends: 7-8-9 (as labelled) or 1-2-3 (matches the phone keypad, so number-grid games play the right way up). Your typing keys are unaffected.">⇳ Numpad top row: 7-8-9</button>
       <button id="btn-devtools" class="quick-btn linkish" type="button">Show developer tools</button>
     </div>
 

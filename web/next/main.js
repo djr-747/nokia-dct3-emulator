@@ -835,7 +835,15 @@
     // (the firmware — hence the model — may have changed via the picker).
     function applyModel() {
       syncLcdGeometry();
-      var def = tryDo("pickShell", function () { return pickShell((C.model && C.model()) || "3310"); });
+      var model = (C.model && C.model()) || "3310";
+      // The game loader is 3410-only (only the 3410 has a PMM J2ME game store) — hide
+      // it for every other model, and re-show it if the user switches back.
+      var gl = document.getElementById("game-loader");
+      if (gl) {
+        gl.style.display = (String(model).indexOf("3410") >= 0) ? "" : "none";
+        if (String(model).indexOf("3410") < 0) { gl.classList.remove("ok"); var gn = document.getElementById("game-name"); if (gn) gn.textContent = ""; }
+      }
+      var def = tryDo("pickShell", function () { return pickShell(model); });
       try {
         if (def) { buildShell(def); }
         else {
@@ -858,6 +866,15 @@
       "ArrowUp":"up","ArrowDown":"down","Enter":"soft1","Backspace":"soft2",
       "ArrowLeft":"send","ArrowRight":"end"
     };
+    // Keypad flip: a PC numpad has 7-8-9 on top; a phone has 1-2-3 on top, so games
+    // that use the number grid for direction feel upside-down. When flipped, the top
+    // and bottom digit rows swap (1↔7, 2↔8, 3↔9) so the numpad's layout matches the
+    // phone's. Toggled by #btn-kbflip; persisted. Affects physical keys only — the
+    // on-screen keypad still shows the true phone layout.
+    var FLIP = { "1":"7","2":"8","3":"9","7":"1","8":"2","9":"3" };
+    var kbFlip = false;
+    try { kbFlip = localStorage.getItem("dct3.kbflip") === "1"; } catch (_) {}
+    function mapKey(k) { return (kbFlip && FLIP[k]) ? FLIP[k] : k; }
     var held = {};
     var releaseTimer = {};
     var AUTOREPEAT_MS = 90;
@@ -865,26 +882,43 @@
       // Don't intercept while focus is in a text/number input (dev panel).
       var t = e.target;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
-      var label = KMAP[e.key];
+      var label = KMAP[mapKey(e.key)];
       if (!label) return;
       e.preventDefault();
       if (releaseTimer[e.key]) { clearTimeout(releaseTimer[e.key]); releaseTimer[e.key] = 0; }
       if (e.repeat || held[e.key]) return;
-      held[e.key] = true;
+      held[e.key] = label;                 // remember the label pressed so a mid-hold flip still releases it
       pressLogical(label, true);
     });
     window.addEventListener("keyup", function (e) {
       var t = e.target;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
-      var label = KMAP[e.key];
-      if (!label) return;
+      if (!held[e.key] && !KMAP[mapKey(e.key)]) return;
       e.preventDefault();
+      var label = held[e.key] || KMAP[mapKey(e.key)];
       releaseTimer[e.key] = setTimeout(function () {
         releaseTimer[e.key] = 0;
         held[e.key] = false;
         pressLogical(label, false);
       }, AUTOREPEAT_MS);
     });
+
+    // Keypad-flip toggle button.
+    var kbFlipBtn = document.getElementById("btn-kbflip");
+    function syncKbFlip() {
+      if (!kbFlipBtn) return;
+      kbFlipBtn.classList.toggle("on", kbFlip);
+      kbFlipBtn.setAttribute("aria-pressed", kbFlip ? "true" : "false");
+      kbFlipBtn.textContent = kbFlip ? "⇳ Numpad top row: 1-2-3" : "⇳ Numpad top row: 7-8-9";
+    }
+    if (kbFlipBtn) {
+      kbFlipBtn.addEventListener("click", function () {
+        kbFlip = !kbFlip;
+        try { localStorage.setItem("dct3.kbflip", kbFlip ? "1" : "0"); } catch (_) {}
+        syncKbFlip();
+      });
+      syncKbFlip();
+    }
 
     // -------------------------------------------------------------
     // Power button. Tap = momentary press; 3 s hold = power off.
@@ -1008,6 +1042,161 @@
       }).catch(function (err) {
         showError("fw-read", err); if (fwName) fwName.textContent = "Read failed";
       });
+    });
+
+    // --- Game injection (3410 J2ME): REPLACE the built-in MIDlet slot with a new game.
+    // A game = id 0x90 JAR (games block) + id 0x90 JAD (apps block) + id 0x91 registry
+    // nodes in the PMMCAT store. We swap the new JAR/JAD payloads into the built-in
+    // entries, rename the registry nodes, and re-serialize each 64 KB block
+    // (core = f4 90|idx|55 ff|kind=sum16(payload)|val=len|offset=next-entry-pos). Replacing
+    // reuses the factory game's ~41 KB slot + working menu registry, so real games fit and
+    // appear where the built-in one did. Tree edges are by id-index (position-independent),
+    // so re-serialize is safe.
+    var PMM_MAGIC = [0x50, 0x4d, 0x4d, 0x43, 0x41, 0x54], PMM_BLOCK = 0x10000, PMM_CAT = 0x20;
+    function pmmIsPK(p) { return p[0] === 0x50 && p[1] === 0x4b && p[2] === 0x03 && p[3] === 0x04; }
+    function pmmSum16(b, n) { var s = 0; for (var i = 0; i < n; i++) s = (s + b[i]) & 0xffff; return s; }
+    function pmmFindCats(img) {
+      var out = [];
+      for (var i = 0; i + 6 <= img.length; i++) {
+        var hit = true;
+        for (var j = 0; j < 6; j++) if (img[i + j] !== PMM_MAGIC[j]) { hit = false; break; }
+        if (!hit) continue;
+        var blk = i - 6;
+        if (blk < 0 || img[blk] !== 0xf0 || img[blk + 1] !== 0xf0) continue;
+        var p = blk + PMM_CAT;
+        if (img[p] === 0xf4 && img[p + 4] === 0x55 && img[p + 5] === 0xff) out.push(blk);
+      }
+      return out;
+    }
+    function pmmNonFF(img, blk) {
+      var e = Math.min(blk + PMM_BLOCK, img.length);
+      while (e > blk && img[e - 1] === 0xff) e--;
+      return e;
+    }
+    function pmmParse(img, blk) {
+      var end = pmmNonFF(img, blk), starts = [], p;
+      for (p = blk + PMM_CAT; p + 6 <= end; p++)
+        if (img[p] === 0xf4 && img[p + 4] === 0x55 && img[p + 5] === 0xff) starts.push(p);
+      var ents = [];
+      for (var k = 0; k < starts.length; k++) {
+        var s = starts[k], nx = (k + 1 < starts.length) ? starts[k + 1] : end;
+        ents.push({ id: img[s + 1], idx: (img[s + 2] << 8) | img[s + 3],
+          val: (img[s + 8] << 8) | img[s + 9], sOrig: s - blk, gap: nx - s,
+          payload: img.slice(s + 12, nx) });
+      }
+      return ents;
+    }
+    function pmmSerialize(img, blk, ents) {
+      var buf = new Uint8Array(PMM_BLOCK); buf.fill(0xff);
+      for (var i = 0; i < PMM_CAT; i++) buf[i] = img[blk + i];
+      var pos = PMM_CAT;
+      for (var e2 = 0; e2 < ents.length; e2++) {
+        var e = ents[e2], body;
+        if (e.rebuild) {
+          var val = e.payload.length, kind = pmmSum16(e.payload, val);
+          body = new Uint8Array(12 + val);
+          body[0] = 0xf4; body[1] = e.id; body[2] = (e.idx >> 8) & 0xff; body[3] = e.idx & 0xff;
+          body[4] = 0x55; body[5] = 0xff;
+          body[6] = (kind >> 8) & 0xff; body[7] = kind & 0xff;
+          body[8] = (val >> 8) & 0xff; body[9] = val & 0xff;
+          body.set(e.payload, 12);
+        } else {
+          body = img.slice(blk + e.sOrig, blk + e.sOrig + e.gap);
+        }
+        if (pos + body.length > PMM_BLOCK)
+          throw new Error("game too big for the game slot by " + (pos + body.length - PMM_BLOCK) + " B — pick a smaller MIDlet");
+        buf.set(body, pos);
+        var off = pos + body.length;
+        buf[pos + 10] = (off >> 8) & 0xff; buf[pos + 11] = off & 0xff;
+        pos += body.length;
+      }
+      img.set(buf, blk);
+    }
+    function pmmNodeName(p) {
+      var nc = (p[0] << 8) | p[1], n = "";
+      for (var q = 0; q < nc; q++) if (p[2 + q * 2] === 0) n += String.fromCharCode(p[3 + q * 2]);
+      return n;
+    }
+    function pmmRenameNode(p, name) {
+      var nc = (p[0] << 8) | p[1], meta = p.slice(2 + nc * 2);
+      var nb = new Uint8Array(2 + name.length * 2 + meta.length);
+      nb[0] = (name.length >> 8) & 0xff; nb[1] = name.length & 0xff;
+      for (var q = 0; q < name.length; q++) { nb[2 + q * 2] = 0; nb[3 + q * 2] = name.charCodeAt(q) & 0xff; }
+      nb.set(meta, 2 + name.length * 2);
+      return nb;
+    }
+    function pmmInjectGame(fw, jar, jad, name) {
+      var img = new Uint8Array(fw), cats = pmmFindCats(img);
+      if (!cats.length) throw new Error("no PMMCAT store — game injection is 3410-only");
+      var games = -1, apps = -1, b, e;
+      for (var ci = 0; ci < cats.length; ci++) {
+        b = cats[ci]; e = pmmParse(img, b);
+        var hasJar = e.some(function (x) { return x.id === 0x90 && pmmIsPK(x.payload); });
+        var hasPlain = e.some(function (x) { return x.id === 0x90 && !pmmIsPK(x.payload); });
+        if (games < 0 && hasJar) games = b;
+        else if (apps < 0 && hasPlain) apps = b;
+      }
+      if (games < 0) throw new Error("no games block (id 0x90 JAR) — is this a 3410?");
+      if (apps < 0) for (var cj = 0; cj < cats.length; cj++) if (cats[cj] !== games) { apps = cats[cj]; break; }
+      var oldBase = null;
+      var blocks = [games, apps];
+      for (var bi = 0; bi < blocks.length; bi++) {
+        var el = pmmParse(img, blocks[bi]);
+        for (var xi = 0; xi < el.length; xi++) if (el[xi].id === 0x91) {
+          var n = pmmNodeName(el[xi].payload);
+          if (/\.jar$/i.test(n)) oldBase = n.replace(/\.jar$/i, "");
+        }
+      }
+      function renameTrio(list) {
+        for (var i = 0; i < list.length; i++) if (list[i].id === 0x91) {
+          var nm = pmmNodeName(list[i].payload);
+          if (oldBase && (nm === oldBase || nm === oldBase + ".jar" || nm === oldBase + ".jad")) {
+            var suf = nm === oldBase ? "" : nm.slice(oldBase.length);
+            list[i].payload = pmmRenameNode(list[i].payload, name + suf); list[i].rebuild = true;
+          }
+        }
+      }
+      var gList = pmmParse(img, games);
+      for (var gi = 0; gi < gList.length; gi++) if (gList[gi].id === 0x90 && pmmIsPK(gList[gi].payload)) { gList[gi].payload = jar; gList[gi].rebuild = true; }
+      renameTrio(gList); pmmSerialize(img, games, gList);
+      var aList = pmmParse(img, apps);
+      for (var ai = 0; ai < aList.length; ai++) if (aList[ai].id === 0x90 && !pmmIsPK(aList[ai].payload) && aList[ai].val > 20) { aList[ai].payload = jad; aList[ai].rebuild = true; }
+      renameTrio(aList); pmmSerialize(img, apps, aList);
+      return img;
+    }
+
+    // Public API + devtools control: inject a MIDlet into the live /fw.fls and reboot.
+    window.dct3InjectGame = function (jar, jad, name) {
+      var fw = mod.FS.readFile("/fw.fls");
+      var modified = pmmInjectGame(fw, jar, jad, name);   // throws on bad image / too big
+      mod.FS.writeFile("/fw.fls", modified);
+      tryDo("game-inject", function () { C.boot(); reapplyPostBoot(); applyModel(); halted = false; lastT = null; });
+    };
+    var gameFile = document.getElementById("game-file");
+    var gameName = document.getElementById("game-name");
+    var gameLoader = document.getElementById("game-loader");
+    if (gameFile) gameFile.addEventListener("change", function (e) {
+      var files = e.target.files ? Array.prototype.slice.call(e.target.files) : [];
+      function say(m) { if (gameName) gameName.textContent = m; }
+      var jarF = null, jadF = null;
+      for (var i = 0; i < files.length; i++) {
+        if (/\.jar$/i.test(files[i].name)) jarF = files[i];
+        else if (/\.jad$/i.test(files[i].name)) jadF = files[i];
+      }
+      if (!jarF || !jadF) { say("Select BOTH the .jar and its .jad."); return; }
+      Promise.all([jarF.arrayBuffer(), jadF.arrayBuffer()]).then(function (bufs) {
+        var jar = new Uint8Array(bufs[0]), jad = new Uint8Array(bufs[1]);
+        if (jar[0] !== 0x50 || jar[1] !== 0x4b || jar[2] !== 0x03 || jar[3] !== 0x04) { say("That .jar isn't a ZIP/JAR (no PK magic)."); return; }
+        var curModel = (C.model && C.model()) || "";
+        if (curModel.indexOf("3410") < 0) { say("Games load on the Nokia 3410 — switch to it in the model menu first, then try again."); return; }
+        var base = jarF.name.replace(/\.[^.]+$/, "");
+        if (gameLoader) gameLoader.classList.remove("ok");
+        try { window.dct3InjectGame(jar, jad, base); }
+        catch (err) { say("Couldn't load that game: " + err.message); return; }
+        say("✔ " + base + " loaded (" + (jar.length / 1024).toFixed(1) + " KB) — open Games ▸ More games");
+        if (gameLoader) gameLoader.classList.add("ok");
+        setStatus("Running " + ((C.model && C.model()) || "3410") + " with " + base + ".");
+      }).catch(function (err) { showError("game-read", err); say("Read failed"); });
     });
 
     // -------------------------------------------------------------

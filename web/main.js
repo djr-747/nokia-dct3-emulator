@@ -2073,6 +2073,152 @@
       try { boot(); } catch (err) { if (fwName) fwName.textContent = "boot failed (rc) — see console"; }
     });
 
+    // --- Game injection (3410 J2ME): REPLACE the factory MIDlet slot with a new game.
+    // JS port of the offline PMMCAT re-serializer (cf. tools/nvram/nvram_pmm.c). A game =
+    // id 0x90 JAR (games block) + id 0x90 JAD (apps block) + id 0x91 registry nodes. We
+    // swap the new JAR/JAD payloads into the existing entries and rename the nodes, then
+    // re-serialize each 64 KB block (entry core = f4 90|idx|55 ff|kind=sum16(payload)|
+    // val=len|offset=next-entry-pos). Replacing (not appending) reuses the factory game's
+    // ~41 KB slot + its working menu registry, so real games fit and appear where the
+    // built-in one did. Tree edges are by id-index (position-independent), so re-serialize
+    // is safe.
+    const PMM_MAGIC = [0x50, 0x4d, 0x4d, 0x43, 0x41, 0x54];   // "PMMCAT"
+    const PMM_BLOCK = 0x10000, PMM_CAT = 0x20;
+    const isPK = (p) => p[0] === 0x50 && p[1] === 0x4b && p[2] === 0x03 && p[3] === 0x04;
+    const sum16 = (b, n) => { let s = 0; for (let i = 0; i < n; i++) s = (s + b[i]) & 0xffff; return s; };
+
+    function pmmFindRealCatalogs(img) {
+      const out = [];
+      for (let i = 0; i + 6 <= img.length; i++) {
+        let hit = true;
+        for (let j = 0; j < 6; j++) if (img[i + j] !== PMM_MAGIC[j]) { hit = false; break; }
+        if (!hit) continue;
+        const blk = i - 6;
+        if (blk < 0 || img[blk] !== 0xf0 || img[blk + 1] !== 0xf0) continue;
+        const p = blk + PMM_CAT;
+        if (img[p] === 0xf4 && img[p + 4] === 0x55 && img[p + 5] === 0xff) out.push(blk);
+      }
+      return out;
+    }
+    function pmmNonFF(img, blk) {
+      let e = Math.min(blk + PMM_BLOCK, img.length);
+      while (e > blk && img[e - 1] === 0xff) e--;
+      return e;
+    }
+    // Parse one block into entries {id, idx, val, payload (bytes to next signature), sOrig, gap}.
+    function pmmParse(img, blk) {
+      const end = pmmNonFF(img, blk), starts = [];
+      for (let p = blk + PMM_CAT; p + 6 <= end; p++)
+        if (img[p] === 0xf4 && img[p + 4] === 0x55 && img[p + 5] === 0xff) starts.push(p);
+      const ents = [];
+      for (let k = 0; k < starts.length; k++) {
+        const s = starts[k], nx = (k + 1 < starts.length) ? starts[k + 1] : end;
+        ents.push({ id: img[s + 1], idx: (img[s + 2] << 8) | img[s + 3],
+          val: (img[s + 8] << 8) | img[s + 9], sOrig: s - blk, gap: nx - s,
+          payload: img.slice(s + 12, nx) });
+      }
+      return ents;
+    }
+    // Re-lay a block from an entry list, patching each offset field to the next entry pos.
+    // Entries flagged {rebuild:true} get a fresh core (kind=sum16, val=len); others keep bytes.
+    function pmmSerialize(img, blk, ents) {
+      const buf = new Uint8Array(PMM_BLOCK); buf.fill(0xff);
+      for (let i = 0; i < PMM_CAT; i++) buf[i] = img[blk + i];   // header
+      let pos = PMM_CAT;
+      for (const e of ents) {
+        let body;
+        if (e.rebuild) {
+          const val = e.payload.length, kind = sum16(e.payload, val);
+          body = new Uint8Array(12 + val);
+          body[0] = 0xf4; body[1] = e.id; body[2] = (e.idx >> 8) & 0xff; body[3] = e.idx & 0xff;
+          body[4] = 0x55; body[5] = 0xff;
+          body[6] = (kind >> 8) & 0xff; body[7] = kind & 0xff;
+          body[8] = (val >> 8) & 0xff; body[9] = val & 0xff;
+          body.set(e.payload, 12);
+        } else {
+          body = img.slice(blk + e.sOrig, blk + e.sOrig + e.gap);   // keep verbatim (incl trailer)
+        }
+        if (pos + body.length > PMM_BLOCK)
+          throw new Error("game too big for the games block by " + (pos + body.length - PMM_BLOCK) + " B — pick a smaller MIDlet");
+        buf.set(body, pos);
+        const off = pos + body.length;                    // offset field = next entry position
+        buf[pos + 10] = (off >> 8) & 0xff; buf[pos + 11] = off & 0xff;
+        pos += body.length;
+      }
+      img.set(buf, blk);
+    }
+    const nodeName = (p) => { const nc = (p[0] << 8) | p[1]; let n = ""; for (let q = 0; q < nc; q++) if (p[2 + q * 2] === 0) n += String.fromCharCode(p[3 + q * 2]); return n; };
+    function renameNode(p, name) {
+      const nc = (p[0] << 8) | p[1], meta = p.slice(2 + nc * 2);
+      const nb = new Uint8Array(2 + name.length * 2 + meta.length);
+      nb[0] = (name.length >> 8) & 0xff; nb[1] = name.length & 0xff;
+      for (let q = 0; q < name.length; q++) { nb[2 + q * 2] = 0; nb[3 + q * 2] = name.charCodeAt(q) & 0xff; }
+      nb.set(meta, 2 + name.length * 2);
+      return nb;
+    }
+    // Replace the factory MIDlet with (jar, jad); rename its nodes to `name`. Returns new image.
+    function injectGame(fw, jar, jad, name) {
+      const img = new Uint8Array(fw);
+      const cats = pmmFindRealCatalogs(img);
+      if (!cats.length) throw new Error("no PMMCAT store — game injection is 3410-only");
+      let games = -1, apps = -1;
+      for (const b of cats) {
+        const e = pmmParse(img, b);
+        if (games < 0 && e.some((x) => x.id === 0x90 && isPK(x.payload))) games = b;
+        else if (apps < 0 && e.some((x) => x.id === 0x90 && !isPK(x.payload))) apps = b;
+      }
+      if (games < 0) throw new Error("no games block (id 0x90 JAR) — is this a 3410?");
+      if (apps < 0) apps = cats.find((b) => b !== games);
+      // Old base name = the ".jar" registry node's stem, so we rename the whole node trio.
+      let oldBase = null;
+      for (const b of [games, apps]) for (const e of pmmParse(img, b))
+        if (e.id === 0x91) { const n = nodeName(e.payload); if (/\.jar$/i.test(n)) oldBase = n.replace(/\.jar$/i, ""); }
+      const renameTrio = (list) => { for (const e of list) if (e.id === 0x91) {
+        const n = nodeName(e.payload);
+        if (oldBase && (n === oldBase || n === oldBase + ".jar" || n === oldBase + ".jad")) {
+          const suf = n === oldBase ? "" : n.slice(oldBase.length);
+          e.payload = renameNode(e.payload, name + suf); e.rebuild = true;
+        }
+      } };
+      const gList = pmmParse(img, games);
+      for (const e of gList) if (e.id === 0x90 && isPK(e.payload)) { e.payload = jar; e.rebuild = true; }
+      renameTrio(gList); pmmSerialize(img, games, gList);
+      const aList = pmmParse(img, apps);
+      for (const e of aList) if (e.id === 0x90 && !isPK(e.payload) && e.val > 20) { e.payload = jad; e.rebuild = true; }
+      renameTrio(aList); pmmSerialize(img, apps, aList);
+      return img;
+    }
+
+    const gameFile = document.getElementById("game-file");
+    const gameName = document.getElementById("game-name");
+    if (gameFile) gameFile.addEventListener("change", async (e) => {
+      const files = Array.from(e.target.files || []);
+      const say = (m) => { if (gameName) gameName.textContent = m; };
+      let jarF = files.find((f) => /\.jar$/i.test(f.name));
+      let jadF = files.find((f) => /\.jad$/i.test(f.name));
+      if (!jarF || !jadF) { say("select BOTH the .jar and its .jad"); return; }
+      let jar, jad;
+      try {
+        jar = new Uint8Array(await jarF.arrayBuffer());
+        jad = new Uint8Array(await jadF.arrayBuffer());
+      } catch (err) { console.error("[DCT3] game read failed:", err); say("read failed"); return; }
+      if (jar[0] !== 0x50 || jar[1] !== 0x4b || jar[2] !== 0x03 || jar[3] !== 0x04) { say("not a JAR (no PK magic)"); return; }
+      const base = jarF.name.replace(/\.[^.]+$/, "");
+      let modified;
+      try {
+        const fw = mod.FS.readFile("/fw.fls");     // current live image
+        modified = injectGame(fw, jar, jad, base); // replaces the built-in MIDlet slot
+      } catch (err) { console.error("[DCT3] inject failed:", err); say("inject failed: " + err.message); return; }
+      try { mod.FS.writeFile("/fw.fls", modified); } catch (err) { say("write failed"); return; }
+      customFw = true;
+      lastFwBase = (lastFwBase || "3410") + "+" + base;
+      idbPutFw({ name: lastFwBase + ".fls", bytes: modified });   // persist across the reload
+      say(base + " injected — rebooting…");
+      console.log("[DCT3] game injected:", base, "jar", jar.length, "jad", jad.length, "B — reloading");
+      // The wasm boots firmware once per process (2nd boot wedges), so reload for a clean boot.
+      setTimeout(() => location.reload(), 400);
+    });
+
     // --- Firmware inventory (far-left column) -----------------------------------
     // Render the local firmware library from web/firmware-manifest.json (built by
     // `make fw-manifest`), grouped by model with state badges. Clicking a row
