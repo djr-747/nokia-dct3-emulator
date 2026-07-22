@@ -41,6 +41,19 @@ extern const ModelProfile model_2100;   // NAM-2 (2 MB, 5210 personality + 3410 
 extern const ModelProfile model_3210;   // NSE-8 (2 MB, serial-bus, external 24C128 EEPROM; ROM-4 DSP)
 #endif
 
+// DCT3_MODEL_3410_ONLY (Android JNI front-end): mirrors DCT3_MODEL_3310_ONLY above —
+// compile the registry down to just the 3410, so the Android build (armeabi-v7a, see
+// app/src/main/cpp/) links neither the other 25 profiles nor (transitively) the 635 KB
+// C54x co-sim: the 3410 uses the HLE DSP (.dsp = &mad2_dsp_default), so this needs no
+// c54x at all, same reasoning as the 3310-only path. model_default() becomes the 3410.
+#if defined(DCT3_MODEL_3310_ONLY) && defined(DCT3_MODEL_3410_ONLY)
+#error "DCT3_MODEL_3310_ONLY and DCT3_MODEL_3410_ONLY are mutually exclusive"
+#endif
+#ifdef DCT3_MODEL_3410_ONLY
+static const ModelProfile* const REGISTRY[] = {
+    &model_3410,   // index 0 = default (single-model Android build)
+};
+#else
 static const ModelProfile* const REGISTRY[] = {
     &model_3310,   // index 0 = default
 #ifndef DCT3_MODEL_3310_ONLY
@@ -79,6 +92,7 @@ static const ModelProfile* const REGISTRY[] = {
     &model_3210,   // 2 MB — NSE-8 (serial-bus, external 24C128 EEPROM; ROM-4 DSP)
 #endif
 };
+#endif // DCT3_MODEL_3410_ONLY
 #define N_MODELS ((int)(sizeof(REGISTRY) / sizeof(REGISTRY[0])))
 
 const ModelProfile* model_default(void) { return REGISTRY[0]; }
