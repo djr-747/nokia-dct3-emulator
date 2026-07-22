@@ -103,6 +103,9 @@ Nineteen of the 26 registered models boot to a usable state today — standby (3
 **Front-ends**
 - **Web** (`web/`): cycle-paced WASM build, per-model phone-shell UI, runs in any browser.
 - **Native SDL GUI**: desktop shell with the phone photo, live keypad, and LCD.
+- **Android** (`android/`): native JNI build for real feature-phone-shaped Android
+  handsets (e.g. the HMD Terra M) — no phone-shell chrome, since the hardware already
+  looks like one. Nokia 3410 only for now; see `android/README.md`.
 - **Headless harnesses**: `dct3_boot_trace` (instrumented native run with an always-on
   post-mortem that labels every halt PC, message and reset reason) and `tools/nav.mjs`
   (deterministic browser-paced harness that plays a key script over emulated time and renders
