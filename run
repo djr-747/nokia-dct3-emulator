@@ -46,10 +46,13 @@ fw_curated() {
     3330)   echo "firmware/Nokia 3330 NHM-6 v4.16 A.fls" ;;
     3350)   echo "firmware/Nokia 3350 NHM-9 v5.22 A.fls" ;;
     3410)   echo "firmware/Nokia 3410 NHM-2 v5.46 (FAID off, cksum fixed).fls" ;;
-    5110)   echo "firmware/Nokia 5110 NSE-1 v5.30 A (FAID off, cksum fixed).fls" ;;
+    5110)   echo "firmware/Nokia 5110 NSE-1 v5.30 A.fls" ;;
     5210)   echo "firmware/Nokia 5210 NSM-5 v5.40 A (EEPROM).fls" ;;
     5510)   echo "firmware/Nokia 5510 NPM-5 v3.50 A.fls" ;;
-    7110)   echo "firmware/My 7110 v5.00.fls" ;;   # full dump (provisioned EEPROM/FFS), not the MCU+PPM-only image
+    # v5.01 A boots to REGISTERED standby. "My 7110 v5.00.fls" (the old curated pick) has an
+    # unset clock in its FFS, so it stops on the modal "Heure" set-time dialog and never reaches
+    # standby — the radio registers behind it either way, but the screen hides it.
+    7110)   echo "firmware/Nokia 7110 NSE-5 v5.01 A.fls" ;;
     8850)   echo "firmware/FuBu8850 v5.31 (PPM C).fls" ;;
     *)      return 1 ;;
   esac
@@ -101,7 +104,7 @@ scenario() {
       KNOBS="SIMABSENT=1"
       DESC="boot with an empty SIM tray" ;;
     faid-bake)
-      # 5110/MAD2: boot with the external 24C16, then persist it (EE5110SAVE) so a
+      # /MAD2: boot with the external 24C16, then persist it (EE5110SAVE) so a
       # one-time FAID/calibration provisioning is captured for re-load via EE5110=.
       STEPS=40000000; KNOBS="EE5110SAVE=firmware/nse-1-faid.bin"
       DESC="5110: boot + persist the external EEPROM (FAID/calibration bake)" ;;
@@ -204,11 +207,14 @@ case "$MODEL" in
     [ "$SCEN" = boot ] && STEPS=320000000 ;;
   7110)
     # 7110 (NSE-5) DSP is ROM-4 (tools/dsp/rom_fingerprint.py — F073 range 0x0926-0xF870,
-    #), same family as the 5110, so the real C54x co-sim runs
-    # it (proven 2026-06-17). Default cosim ON like the 5110: DSP54_COSIM is a presence-check,
-    # so DSP54_COSIM=0 turns it off (dropped entirely via the global arg scan below).
-    _ucos=""; for a in "$@"; do case "$a" in DSP54_COSIM=*) _ucos="${a#DSP54_COSIM=}";; esac; done
-    [ -z "$_ucos" ] && KNOBS="DSP54_COSIM=1 $KNOBS" ;;
+    #), same family as the 5110, so the real C54x co-sim CAN
+    # run it (proven 2026-06-17) — but, exactly as for the 5110, it is now OPT-IN: pass
+    # DSP54_COSIM=1 (forwarded by the global KEY=VAL arg loop below). The old force-on here
+    # made a bare `./run 7110 boot` measure the co-sim path, which lands on CONTACT SERVICE,
+    # and hid the fact that the DEFAULT ROM-4 network engine registers: it walks the full
+    # transaction set through location_update_accept into a steady serving_bcch camp
+    # (ROM4_LOG=1 to see the phases). Nothing else in the repo relied on the force-on.
+    : ;;
 esac
 
 # ── base config: reset-recovery + early intercept ON by default ──────────

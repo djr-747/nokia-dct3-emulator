@@ -511,9 +511,15 @@ extern const BusOps mad2_bus_serial;   // early-MAD2 serial-attached EEPROM + bu
 // Offsets are per firmware build; 0 fields are skipped. This is a per-model contract so every
 // external-EEPROM profile can opt in as its identity block is reverse-engineered.
 typedef struct EepromFaid {
-    uint16_t identity_off;      // 14 IMEI digits, high-nibble-first BCD  (3210 v6.00 = 0x000C)
+    uint16_t identity_off;      // 14 IMEI digits, high-nibble-first BCD  (3210 v6.00 = 0x000C;
+                                // the same slot on every external-EEPROM ROM-4 model)
     uint16_t seccode_off;       // 5-digit phone security code, BCD        (3210 = 0x0110)
-    uint16_t secstate_off;      // derived 8-byte identity/security state  (3210 = 0x06C8)
+    uint16_t secstate_off;      // derived 8-byte identity/security state — record 0x0701, whose
+                                // bytes 6-7 are the BE16 security-settings checksum the boot
+                                // validator compares (3210 = 0x06C8; per model, straight out of
+                                // the record directory). Declaring it WITHOUT imei_prefix means
+                                // "the blob already holds a real factory identity — only
+                                // re-derive that checksum from it" (see eeprom_provision.c).
     uint16_t tunesec_cksum_off; // BE32 tune/security checksum store        (3210 = 0x011C)
     uint16_t tunesec_sum_end;   // tune/security sum range end (exclusive)  (3210 = 0x011E)
     uint16_t config_start;      // contact/config sum range start           (3210 = 0x0120)
@@ -524,8 +530,24 @@ typedef struct EepromFaid {
     const char* security_code;  // 5-digit security code (NULL -> "12345")
     uint16_t seclevel_off;      // stored security-level user setting; provisioning erases it to
                                 // 0xFF = factory default (off). 0x00 = "ask for the security
-                                // code at power-up" (3210 = 0x06EE — a dumped blob may carry the
-                                // previous owner's setting; 0 = leave untouched)
+                                // code at power-up" — a dumped blob may carry the previous
+                                // owner's setting; 0 = leave untouched.
+                                // The byte lives inside the 44-byte MMI settings record 0x0702
+                                // (the record directory is a static flash table: 8-byte group
+                                // entries {u32 array ptr, u16 max index} -> 8-byte descriptors
+                                // {u32 id, u16 EEPROM offset, u16 len}; 5110 v5.30 @0x2A6438,
+                                // lookup 0x289138 / resolver 0x2893FE / read 0x2894C8). The
+                                // byte INDEX inside 0x0702 is not stable across builds, so each
+                                // model's offset is pinned by a single-byte EEPROM sweep against
+                                // the boot screen, not by arithmetic:
+                                //   3210 v6.00  = 0x06EE   (rec 0x0702 @0x06D0 +0x1E)
+                                //   5110 v5.30  = 0x02C7   (rec 0x0702 @0x02A8 +0x1F)
+                                //   5130 v5.30  = 0x02C7   (same NSE-1 layout)
+                                //   6110 v5.48  = 0x03A7   (rec 0x0702 @0x0388 +0x1F)
+                                //   6130 v5.61  = 0x03D7   (rec 0x0702 @0x03B8 +0x1F)
+                                //   6150 v5.23  = 0x03F3   (rec 0x0702 @0x03D4 +0x1F)
+                                //   5190 v6.71  = 0x04CF   (rec 0x0702 @0x04B0 +0x1F)
+                                //   8810 v6.02  = 0x181B   (rec 0x0702 @0x17FC +0x1F)
 } EepromFaid;
 
 // --- The profile --------------------------------------------------------------

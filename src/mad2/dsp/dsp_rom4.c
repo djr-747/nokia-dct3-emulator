@@ -294,8 +294,22 @@ static uint8_t rom4_next_report_type(const Rom4Dsp* r) {
     case ROM4_RP_CANDIDATE_RETRY:
         return r->reportsRemaining == 2 ? 0x8b : 0x87;
     case ROM4_RP_SELECTED_SEARCH:
+        // The second selected-search report is either the serving cell's SCH block (0x80,
+        // "still there") or the empty terminal (0x87, NO_BCCH_LEFT). bitplane's 3210 recovery
+        // keyed that purely on the SEARCH_LIST control byte, because on the 3210 the post-camp
+        // verification request always carries mode 0x40/0x50 (or mode 0x00 with ARFCN 1
+        // explicitly in the 512-bit set). Other ROM-4 handsets issue the SAME request at the
+        // SAME point in the transaction with control byte 0x00 and an ALL-ZERO ARFCN bitmap
+        // (measured: 7110 v5.00 `00 81 98 00` + 64 zero bytes, vs the 3210's `40 81 98 00` +
+        // 64 zero bytes) — byte-identical apart from that one flag. The physical invariant is
+        // not the flag but the position: a search issued while the receiver is CAMPED on a
+        // serving cell (selFromServing) is a re-verification of that cell, and a real receiver
+        // that still has the carrier reports its SCH block. Answering NO_BCCH_LEFT there tells
+        // the firmware the cell it just selected has vanished; it then DEACTIVATEs and the
+        // selection restarts from scratch.
         return r->reportsRemaining == 2 ? 0x8b :
-                (((r->searchMode == 0x00 && r->searchHasArfcn1) ||
+                ((r->selFromServing ||
+                  (r->searchMode == 0x00 && r->searchHasArfcn1) ||
                   r->searchMode == 0x40 || r->searchMode == 0x50) ? 0x80 : 0x87);
     case ROM4_RP_SELECTED_BCCH:
         return r->reportsRemaining == 1 ? 0x87 :
@@ -659,6 +673,7 @@ static void rom4_handle_mdi(struct Mad2* m, uint8_t op, const uint8_t* buf, unsi
         // DEACTIVATE retires the old receiver and cancels queued work (incl. a pending
         // selected-search terminal — delivering it after reset makes task 4 discard it in the
         // new controller state).
+        r->selFromServing = 0;          // the receiver being retired IS the serving cell
         if (r->searchRequested) {
             r->searchRequested = 0;
             r->radioPhase = ROM4_RP_SELECTED_SEARCH;
@@ -674,10 +689,12 @@ static void rom4_handle_mdi(struct Mad2* m, uint8_t op, const uint8_t* buf, unsi
         // An explicit measurement request preempts the periodic serving-cell stream (delaying
         // it leaves a stale terminal for the firmware's next search).
         r->searchRequested = 0;
+        r->selFromServing = 1;          // issued while camped: the serving cell is still there
         r->radioPhase = ROM4_RP_SELECTED_SEARCH;
         r->reportsRemaining = 2; rom4_rp_defer(m, 1);
     }
     else if (op == 0x1a && r->radioPhase == ROM4_RP_SELECTED_SEARCH && r->reportsRemaining == 0) {
+        r->selFromServing = 0;          // a re-search after the selected scan already ran
         r->reportsRemaining = 2; rom4_rp_defer(m, 1);
     }
     else if (op == 0x1a && r->radioPhase == ROM4_RP_CANDIDATE_RETRY && r->reportsRemaining == 0) {

@@ -161,4 +161,13 @@ const ModelProfile model_5110 = {
     // no MEMFS file, so the baked blob is what makes the web 5110 boot past CONTACT SERVICE.
     .i2c_eeprom_default = EE_NSE1,
     .i2c_eeprom_size    = EE_NSE1_LEN,
+    // The 5110's FAID identity is provisioned by the bespoke record-derive path in
+    // eeprom_provision.c (records 0x704-0x707), not by the 3210's IMEI-BCD descriptor —
+    // so only the shared security-level field is declared here. The NokiX nse-1 blob is a
+    // repair template dumped from a phone with "security code at power-up" ON (EEPROM
+    // 0x02C7 = 0x00), which is why a provisioned boot stopped on "Security code" even
+    // once the FAID records matched. Erasing it back to the factory default lands the
+    // boot on standby. Offset pinned by a single-byte EEPROM sweep vs the boot screen
+    // (rec 0x0702 @0x02A8 +0x1F); see EepromFaid.seclevel_off.
+    .eeprom_faid = &(const EepromFaid){ .seclevel_off = 0x02C7 },
 };

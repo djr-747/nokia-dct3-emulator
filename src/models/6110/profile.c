@@ -112,4 +112,14 @@ const ModelProfile model_6110 = {
     // External 24C64 (8 KB) I2C EEPROM — NokiX virgin nse-3, baked in (firmware/nse-3.bin).
     .i2c_eeprom_default = EE_NSE3,
     .i2c_eeprom_size    = EE_NSE3_LEN,
+    // Security-settings provisioning. The NokiX virgin blob carries a real factory identity
+    // (EEPROM 0x000C) but a stored security-settings checksum baked for a DIFFERENT handset,
+    // so the boot validator rejects it and the phone demands the security code at power-up.
+    // Re-deriving that checksum from the blob's own identity — and clearing the security-level
+    // setting to the erased factory default — lands the boot on standby. Offsets are record
+    // 0x0701 (secstate) and settings record 0x0702 +0x1F, from the NSE-3 v5.48 record directory;
+    // the level offset was pinned by an EEPROM sweep against the boot screen.
+    .eeprom_faid = &(const EepromFaid){
+        .identity_off = 0x000C, .secstate_off = 0x0380, .seclevel_off = 0x03A7,
+    },
 };

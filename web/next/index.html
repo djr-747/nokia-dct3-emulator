@@ -77,22 +77,25 @@
     </div>
 
     <!-- ============================ LOAD A GAME (headline feature) ============================ -->
-    <!-- 3410 only: replaces the built-in MIDlet slot with a user-supplied J2ME game
-         (both its .jar + .jad), re-serialising the phone's on-flash game store, then
-         reboots. The game appears under Games ▸ More games and runs on the phone's
-         own Java VM. Logic + window.dct3InjectGame API live in main.js. -->
+    <!-- 3410 only: replaces the built-in MIDlet slot with a user-supplied J2ME game,
+         re-serialising the phone's on-flash game store, then reboots. The game appears
+         under Games ▸ More games and runs on the phone's own Java VM. The .jad is
+         optional — main.js synthesizes one from the JAR's manifest (iOS's picker
+         can't select .jad files at all). Uploaded games persist in IndexedDB and are
+         re-playable from the list below. Logic + window.dct3InjectGame live in main.js. -->
     <section class="game-loader" id="game-loader">
       <div class="game-loader-inner">
         <div class="game-loader-copy">
           <h2>&#127918; Load a real game onto the 3410</h2>
-          <p>Drop in a J2ME MIDlet and it plays on the phone's own Java engine &mdash; find it under <strong>Games &#9656; More games</strong>. Select both the game's <code>.jar</code> and <code>.jad</code>.</p>
+          <p>Drop in a J2ME MIDlet and it plays on the phone's own Java engine &mdash; find it under <strong>Games &#9656; More games</strong>. Just the <code>.jar</code> is enough (add its <code>.jad</code> too if you have it). Games you upload stay in your browser for next time.</p>
         </div>
-        <label class="game-loader-btn" title="Pick the game's .jar and .jad together (Nokia 3410 only)">
-          <span>Choose .jar + .jad&hellip;</span>
-          <input type="file" id="game-file" accept=".jar,.jad" multiple>
+        <label class="game-loader-btn" title="Pick the game's .jar (its .jad is optional — one is generated from the JAR manifest)">
+          <span>Choose .jar&hellip;</span>
+          <input type="file" id="game-file" accept=".jar,.jad,application/java-archive,text/vnd.sun.j2me.app-descriptor" multiple>
         </label>
       </div>
       <p id="game-name" class="game-loader-status" role="status" aria-live="polite"></p>
+      <div id="game-list" class="game-list" hidden></div>
     </section>
 
     <!-- ============================ QUICK CONTROLS ============================ -->
@@ -152,6 +155,15 @@
           <input type="text" id="in-opname" maxlength="16" spellcheck="false">
         </label>
         <button id="btn-opname" class="quick-btn" type="button">Apply (reloads page)</button>
+      </div>
+
+      <div class="dev-group">
+        <h3>Persistence</h3>
+        <!-- NVRAM (EEPROM) persistence — ON by default so settings/contacts/clock
+             survive reloads. Untick for reproducible boots from the image's own
+             EEPROM; Wipe recovers from a bad persisted state (then reloads). -->
+        <label><input type="checkbox" id="chk-persist" checked> Save phone settings between visits</label>
+        <button id="btn-ee-reset" class="quick-btn" type="button" title="Delete the saved EEPROM for the current firmware and reload the page">Wipe saved settings</button>
       </div>
 
       <div class="dev-group">

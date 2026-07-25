@@ -124,6 +124,16 @@ const ModelProfile model_5190 = {
     // and the self-test checksum reads garbage → false CONTACT SERVICE. See ext_eeprom.c.
     .i2c_eeprom_default = EE_NSE1,
     .i2c_eeprom_size    = EE_NSE1_LEN,
+    // Security-settings provisioning. The NokiX virgin blob carries a real factory identity
+    // (EEPROM 0x000C) but a stored security-settings checksum baked for a DIFFERENT handset,
+    // so the boot validator rejects it and the phone demands the security code at power-up.
+    // Re-deriving that checksum from the blob's own identity — and clearing the security-level
+    // setting to the erased factory default — lands the boot on standby. Offsets are record
+    // 0x0701 (secstate) and settings record 0x0702 +0x1F, from the NSB-1 v6.71 record directory;
+    // the level offset was pinned by an EEPROM sweep against the boot screen.
+    .eeprom_faid = &(const EepromFaid){
+        .identity_off = 0x000C, .secstate_off = 0x04A8, .seclevel_off = 0x04CF,
+    },
     .i2c_two_byte_addr  = 1,
     // NSB calibration-record checksums (RE'd 2026-07-15 against NSB-1 v6.71). Two self-test
     // result items each read an external-EEPROM calibration checksum: item 12 (gate 0x239FF4)

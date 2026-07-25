@@ -30,12 +30,58 @@ static unsigned faid_imei_check_digit(const char* first14) {
     return (10u - (total % 10u)) % 10u;
 }
 
+// The security-level byte the firmware installs itself when the stored setting reads
+// "not configured" (5110 v5.30 0x270318: `mov r0,#17` -> level cell -> recompute the
+// stored checksum -> write it back as record 0x070A). The identity checksum has to be
+// summed against the SAME value or the validator rejects it on the next boot.
+#define FAID_SECLEVEL_DEFAULT 0x11u
+
+// Expand the 14 BCD identity digits at identity_off into the 15-character ASCII IMEI the
+// firmware hashes, and return its 16-bit byte sum. This mirrors firmware 0x258798 selector
+// 3 (BCD -> ASCII digits, then the Luhn check digit at index 14) feeding 0x28019C (byte 15
+// zeroed) and the plain 16-bit sum 0x283194 — the 5110 v5.30 chain; every ROM-4 build has
+// the same three functions. Returns 0 when no identity slot is declared.
+static unsigned faid_identity_sum(const struct Mad2* m, const EepromFaid* f) {
+    if (!f->identity_off) return 0;
+    const uint8_t* id = &m->i2c_eeprom[f->identity_off];
+    char imei[16];
+    for (int i = 0; i < 7; ++i) {
+        imei[i * 2]     = (char)('0' + (id[i] >> 4));
+        imei[i * 2 + 1] = (char)('0' + (id[i] & 0x0F));
+    }
+    imei[14] = (char)('0' + faid_imei_check_digit(imei));
+    imei[15] = '\0';
+    unsigned s = 0;
+    for (int i = 0; i < 15; ++i) s += (uint8_t)imei[i];
+    return s & 0xFFFFu;
+}
+
+// Re-derive the stored security-settings checksum (secstate bytes 6-7, record 0x070A) from
+// the identity ALREADY in the EEPROM, for models whose blob carries a real factory identity
+// and only needs the security block made self-consistent again.
+//
+// The gate this feeds is the security-settings validator (5110 v5.30 0x28CC8C, 6110 v5.48
+// 0x29FBAC — the same shape in every ROM-4 build):
+//     (sum16(identity ASCII) + [security-level byte]) & 0xFFFF  ==  stored BE16
+// On a mismatch the firmware treats the security block as foreign and demands the security
+// code at power-up. The NokiX virgin blobs are repair templates: their stored checksum was
+// baked for a DIFFERENT handset's identity (6110: stored 0x2449 vs derived 0x030D), so a
+// factory-fresh boot stops on "Security code" no matter what the rest of the EEPROM says.
+static void faid_refresh_security_cksum(struct Mad2* m, const EepromFaid* f) {
+    unsigned s = (faid_identity_sum(m, f) + FAID_SECLEVEL_DEFAULT) & 0xFFFFu;
+    m->i2c_eeprom[f->secstate_off + 6] = (uint8_t)(s >> 8);
+    m->i2c_eeprom[f->secstate_off + 7] = (uint8_t)(s & 0xFF);
+    if (getenv("I2CLOG"))
+        printf("[faid] security-settings checksum @0x%X = 0x%04X (identity sum + level 0x%02X)\n",
+               f->secstate_off + 6, s, FAID_SECLEVEL_DEFAULT);
+}
+
 // Provision the identity + derived security state (bitplane's provision_security_identity):
 //   EEPROM[identity_off] = 14 IMEI digits, high-nibble-first BCD (+ 1 zero byte)
 //   EEPROM[seccode_off]  = 5-digit security code, BCD
 //   EEPROM[secstate_off] = 4-byte "encrypted" code, 2 zero, BE16 identity checksum
-// The stored identity checksum (secstate bytes 6-7) is sum16(identity_ascii(15) + callback 0x11),
-// the exact word selector 0x2ae61a compares against.
+// The stored identity checksum (secstate bytes 6-7) is sum16(identity_ascii(15)) + the
+// security-level byte 0x11 — the value the validator above recomputes and compares.
 static void faid_provision_identity(struct Mad2* m, const EepromFaid* f) {
     uint8_t* ee = m->i2c_eeprom;
     const char* prefix = f->imei_prefix;
@@ -73,10 +119,10 @@ static void faid_provision_identity(struct Mad2* m, const EepromFaid* f) {
                 (uint8_t)(packed_code[i] ^ (uint8_t)imei[11 + i] ^ xor4[i]);
         ee[f->secstate_off + 4] = 0;
         ee[f->secstate_off + 5] = 0;
-        // identity checksum = sum16(imei_ascii[0..14] + callback state 0x11), stored BE16.
+        // identity checksum = sum16(imei_ascii[0..14]) + the security-level byte, stored BE16.
         unsigned s = 0;
         for (int i = 0; i < 15; ++i) s += (uint8_t)imei[i];
-        s += 0x11u;
+        s += FAID_SECLEVEL_DEFAULT;
         s &= 0xFFFFu;
         ee[f->secstate_off + 6] = (uint8_t)(s >> 8);
         ee[f->secstate_off + 7] = (uint8_t)(s & 0xFF);
@@ -152,21 +198,33 @@ static void faid_provision_5110(struct Mad2* m) {
 static void faid_provision(struct Mad2* m) {
     if (m->model && m->model->name &&
         (strcmp(m->model->name, "5110") == 0 || strcmp(m->model->name, "5110i") == 0)) {
+        // Bespoke identity path (record-derive, not the 3210 IMEI-BCD one); the descriptor
+        // below still applies for the parts that ARE shared (the security-level setting).
         faid_provision_5110(m);
-        return;
     }
     const EepromFaid* f = m->model ? m->model->eeprom_faid : NULL;
     if (!f) return;
-    if (f->imei_prefix && f->identity_off) faid_provision_identity(m, f);
+    if (f->imei_prefix && f->identity_off) {
+        // Blank identity slot (3210): write a whole coherent identity + security state.
+        faid_provision_identity(m, f);
+    } else if (f->identity_off && f->secstate_off) {
+        // Real factory identity already in the blob: only make the security block agree
+        // with it again (the template's stored checksum belongs to another handset).
+        faid_refresh_security_cksum(m, f);
+    }
     // Reset the stored security-level user setting to the erased factory default (0xFF =
     // off) — a real dump may carry the previous owner's "code at power-up" setting (0x00),
     // which prompts on every boot. Done before the checksum finalize so the config sum
     // covers the normalized byte.
-    if (f->seclevel_off) m->i2c_eeprom[f->seclevel_off] = 0xFF;
+    if (f->seclevel_off) {
+        m->i2c_eeprom[f->seclevel_off] = 0xFF;
+        if (getenv("I2CLOG"))
+            printf("[faid] security-level setting @0x%X reset to 0xFF (factory default: no "
+                   "code at power-up)\n", f->seclevel_off);
+    }
     faid_finalize_checksums(m, f);
     if (getenv("I2CLOG"))
-        printf("[faid] identity provisioned (%s) — Security-code prompt cleared, "
-               "service-present retained\n", m->model->name);
+        printf("[faid] EEPROM identity/security provisioned (%s)\n", m->model->name);
 }
 
 // ---- Per-revision checksum / latch fix-ups (moved verbatim from ext_eeprom.c) --------------

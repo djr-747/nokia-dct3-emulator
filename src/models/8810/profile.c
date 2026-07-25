@@ -109,4 +109,14 @@ const ModelProfile model_8810 = {
     // Mad2 i2c_eeprom buffer exactly; see mad2.h).
     .i2c_eeprom_default = EE_NSE6,
     .i2c_eeprom_size    = EE_NSE6_LEN,
+    // Security-settings provisioning. The NokiX virgin blob carries a real factory identity
+    // (EEPROM 0x000C) but a stored security-settings checksum baked for a DIFFERENT handset,
+    // so the boot validator rejects it and the phone demands the security code at power-up.
+    // Re-deriving that checksum from the blob's own identity — and clearing the security-level
+    // setting to the erased factory default — lands the boot on standby. Offsets are record
+    // 0x0701 (secstate) and settings record 0x0702 +0x1F, from the NSE-6 v6.02 record directory;
+    // the level offset was pinned by an EEPROM sweep against the boot screen.
+    .eeprom_faid = &(const EepromFaid){
+        .identity_off = 0x000C, .secstate_off = 0x17F4, .seclevel_off = 0x181B,
+    },
 };

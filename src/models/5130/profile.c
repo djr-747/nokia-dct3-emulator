@@ -107,4 +107,8 @@ const ModelProfile model_5130 = {
     // External 24C16 I2C EEPROM — the 5110's NokiX virgin nse-1 blob (no nsk-1 image exists).
     .i2c_eeprom_default = EE_NSE1,
     .i2c_eeprom_size    = EE_NSE1_LEN,
+    // Same NSE-1 EEPROM layout as the 5110: the blob ships "security code at power-up" ON
+    // (0x02C7 = 0x00). NSK-1 v5.30's own record directory puts settings record 0x0702 at the
+    // same 0x02A8, and the sweep confirms 0x02C7 — clearing it boots to standby.
+    .eeprom_faid = &(const EepromFaid){ .seclevel_off = 0x02C7 },
 };

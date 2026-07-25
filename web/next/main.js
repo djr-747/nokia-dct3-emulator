@@ -163,6 +163,17 @@
     window.__DCT3_LOCATE ? { locateFile: window.__DCT3_LOCATE } : {}
   );
 
+  // Prefetch the default firmware BEHIND the welcome wall. The welcome gates
+  // BOOTING, not downloading — on slow links the multi-MB image streams while
+  // the user reads the card instead of starting only when they dismiss it.
+  // Failures resolve to null (never an unhandled rejection); the boot path
+  // then falls back to a fresh fetch with real error surfacing.
+  var fwPrefetch = (typeof window.DCT3_DEFAULT_FW === "string" && window.fetch)
+    ? fetch(window.DCT3_DEFAULT_FW)
+        .then(function (r) { return r.ok ? r.arrayBuffer() : null; })
+        .catch(function () { return null; })
+    : Promise.resolve(null);
+
   modulePromise.then(start).catch(function (e) {
     setStatus("Failed to boot.");
     showError("module-load", e);
@@ -269,12 +280,25 @@
         // auto-release — the firmware decides tap vs hold, so press-and-hold works
         // (= native GUI). Interactive input routes here; keyLogical is the fallback.
         keyLogicalRaw: optWrap("dct3_web_key_logical_raw", null, ["number", "number"]),
+        // Vibra motor state (CCONT PUP bit4, latched by mad2) — mirrored as a CSS
+        // shake and, where the host device has a motor, real haptics.
+        vibraOn: optWrap("dct3_web_vibra_on", "number"),
         // Network-side events (ROM-6 engine models): queue an incoming call /
         // SMS that the emulated network pages to the camped phone. Sender is
         // digits-only; SMS text ≤120 chars. Host pages drive these (e.g. a
         // first-visit welcome SMS) via dct3.api.incomingSms(from, text).
         incomingCall: optWrap("dct3_web_incoming_call", "number", ["string"]),
         incomingSms:  optWrap("dct3_web_incoming_sms", "number", ["string", "string"]),
+        // NVRAM persistence surface. The flash NVRAM partition lives inside the
+        // flat memory at ramPtr()+eepromOff(); early-MAD2 serial-bus models
+        // (5110/…) keep theirs in a separate external I2C 24Cxx buffer instead.
+        ramPtr:          optWrap("dct3_web_ram_ptr", "number"),
+        eepromOff:       optWrap("dct3_web_eeprom_off", "number"),
+        eepromSize:      optWrap("dct3_web_eeprom_size", "number"),
+        eepromWrites:    optWrap("dct3_web_eeprom_writes", "number"),
+        i2cEepromPtr:    optWrap("dct3_web_i2c_eeprom_ptr", "number"),
+        i2cEepromSize:   optWrap("dct3_web_i2c_eeprom_size", "number"),
+        i2cEepromWrites: optWrap("dct3_web_i2c_eeprom_writes", "number"),
       };
     } catch (e) {
       setStatus("Emulator API mismatch.");
@@ -347,6 +371,241 @@
     }
 
     // -------------------------------------------------------------
+    // NVRAM (EEPROM) persistence. The firmware's settings, clock, contacts and
+    // security config live in the flash NVRAM partition (ramPtr()+eepromOff(),
+    // eepromSize() bytes); early-MAD2 models add an external I2C 24Cxx chip
+    // (i2cEeprom* trio, size 0 when the model has none). Both regions are
+    // snapshotted to localStorage when the firmware programs them and overlaid
+    // after every boot, so settings survive reloads and model switches.
+    //
+    // The key is namespaced per firmware: model name + FNV-1a over the first
+    // 256 KB of the image (boot/code — stable across a J2ME game injection,
+    // which rewrites the PMM store much higher in flash). Default ON here
+    // (visitor expectation: the phone remembers); the devtools checkbox opts
+    // out for reproducible boots, and "Wipe saved settings" recovers from a
+    // bad persisted state. All storage access is guarded — a blocked
+    // localStorage never breaks boot.
+    // -------------------------------------------------------------
+    var PERSIST_KEY = "dct3.next.persist";
+    var nvramPersist = true;
+    try { nvramPersist = localStorage.getItem(PERSIST_KEY) !== "0"; } catch (_) {}
+    var curFwId = "default";
+    var eeLastWrites = -1, i2cLastWrites = -1;
+    var nvramSuppress = false;      // set during a wipe so unload-save can't undo it
+
+    // Backing store is IndexedDB, NOT localStorage: the 3410's partition alone is
+    // 576 KB (base64 ≈ 1.5 MB of UTF-16), so a couple of models blow through the
+    // ~5 MB localStorage origin quota (seen in the wild as QuotaExceededError).
+    // IDB stores the bytes natively and has no such practical cap. Reads must be
+    // synchronous at boot-overlay time, so everything lives in an in-memory cache
+    // (nvramCache) that is loaded once before the first boot (nvramReady) and
+    // write-through persisted to IDB in the background.
+    var NVDB = "dct3-nvram", NVSTORE = "nvram";
+    var nvramCache = {};            // eeKey/i2cKey -> Uint8Array
+    function nvdb() {
+      return new Promise(function (res, rej) {
+        var r = indexedDB.open(NVDB, 1);
+        r.onupgradeneeded = function () { r.result.createObjectStore(NVSTORE); };
+        r.onsuccess = function () { res(r.result); };
+        r.onerror = function () { rej(r.error); };
+      });
+    }
+    function nvIdbPut(key, u8) {
+      return nvdb().then(function (db) { return new Promise(function (res, rej) {
+        var t = db.transaction(NVSTORE, "readwrite");
+        t.objectStore(NVSTORE).put(u8, key);
+        t.oncomplete = res; t.onerror = function () { rej(t.error); };
+      }); }).catch(function (e) {
+        if (typeof console !== "undefined") console.warn("[dct3] NVRAM persist failed:", e);
+      });
+    }
+    function nvIdbDel(key) {
+      return nvdb().then(function (db) { return new Promise(function (res) {
+        var t = db.transaction(NVSTORE, "readwrite");
+        t.objectStore(NVSTORE).delete(key);
+        t.oncomplete = res; t.onerror = res;
+      }); }).catch(function () {});
+    }
+    // Load every saved region into the cache; the first boot awaits this.
+    var nvramReady = nvdb().then(function (db) {
+      return new Promise(function (res) {
+        var st = db.transaction(NVSTORE, "readonly").objectStore(NVSTORE);
+        var kq = st.getAllKeys(), vq = st.getAll(), done = 0;
+        function fin() {
+          if (++done < 2) return;
+          for (var i = 0; i < kq.result.length; i++)
+            nvramCache[kq.result[i]] = new Uint8Array(vq.result[i]);
+          res();
+        }
+        kq.onsuccess = vq.onsuccess = fin;
+        kq.onerror = vq.onerror = function () { res(); };
+      });
+    }).catch(function () {}).then(function () {
+      // One-time migration from the earlier localStorage scheme — adopts the
+      // save AND frees the origin's quota. Only OUR key shape is touched
+      // (model-<8hex>); the legacy /web UI's plain-hash keys are left alone.
+      try {
+        var mine = [];
+        for (var i = 0; i < localStorage.length; i++) {
+          var k = localStorage.key(i);
+          if (/^dct3_(i2c)?eeprom_.+-[0-9a-f]{8}$/.test(k)) mine.push(k);
+        }
+        mine.forEach(function (k) {
+          if (!nvramCache[k]) {
+            try { nvramCache[k] = b64dec(localStorage.getItem(k)); nvIdbPut(k, nvramCache[k]); }
+            catch (_) {}
+          }
+          try { localStorage.removeItem(k); } catch (_) {}
+        });
+      } catch (_) {}
+    });
+
+    function fwIdentity() {
+      try {
+        var fw = mod.FS.readFile("/fw.fls");
+        var h = 0x811c9dc5 >>> 0, i;
+        var n = Math.min(fw.length, 0x40000);
+        for (i = 0; i < n; i++) { h ^= fw[i]; h = Math.imul(h, 0x01000193) >>> 0; }
+        // Fold in the image's LAST 64 KB too: two same-code images differing
+        // only in their shipped EEPROM (e.g. a bundled-image FAID fix) must NOT
+        // share a key, or the old image's saved NVRAM would overlay — and
+        // effectively resurrect — the state the new image was shipped to fix.
+        // The tail sits outside the 3410's PMM game-store blocks, so J2ME
+        // injection still keeps its key.
+        for (i = Math.max(0, fw.length - 0x10000); i < fw.length; i++) { h ^= fw[i]; h = Math.imul(h, 0x01000193) >>> 0; }
+        h = (h ^ fw.length) >>> 0;
+        return ((C.model && C.model()) || "fw") + "-" + ("0000000" + h.toString(16)).slice(-8);
+      } catch (e) { return "default"; }
+    }
+    function eeKey()  { return "dct3_eeprom_" + curFwId; }
+    function i2cKey() { return "dct3_i2ceeprom_" + curFwId; }
+
+    function b64dec(b64) {          // migration-only (old localStorage saves)
+      var s = atob(b64), u8 = new Uint8Array(s.length);
+      for (var i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i);
+      return u8;
+    }
+    function eepromSlice() {
+      if (!C.ramPtr || !C.eepromOff || !C.eepromSize) return null;
+      var base = C.ramPtr() + C.eepromOff(), size = C.eepromSize();
+      return size ? mod.HEAPU8.subarray(base, base + size) : null;
+    }
+    function i2cSlice() {
+      if (!C.i2cEepromPtr || !C.i2cEepromSize) return null;
+      var sz = C.i2cEepromSize(); if (!sz) return null;
+      var base = C.i2cEepromPtr();
+      return mod.HEAPU8.subarray(base, base + sz);
+    }
+    // "Blank" = every byte erased (0xFF) or zero. Not real NVRAM — never persist
+    // or overlay it (injecting a blank partition breaks firmware consistency checks).
+    function eepromBlank(u8) {
+      for (var i = 0; i < u8.length; i++) { var x = u8[i]; if (x !== 0 && x !== 0xff) return false; }
+      return true;
+    }
+    // Auto-saves only fire when the firmware actually PROGRAMMED the region this
+    // run (writes counter moved), so a broken boot never overwrites a good save.
+    // The cache write is synchronous truth; the IDB put trails in the background
+    // (failures console.warn — never the error banner, and never a retry storm).
+    function saveEeprom(force) {
+      if (nvramSuppress) return "off";
+      if (!force && !nvramPersist) return "off";
+      if (!C.eepromWrites || (!force && C.eepromWrites() === 0)) return "nochange";
+      var slice = eepromSlice(); if (!slice) return "off";
+      if (eepromBlank(slice)) return "blank";
+      var copy = new Uint8Array(slice);       // detach from the wasm heap before async persist
+      nvramCache[eeKey()] = copy;
+      nvIdbPut(eeKey(), copy);
+      eeLastWrites = C.eepromWrites();
+      return "saved";
+    }
+    function loadEeprom() {
+      if (!nvramPersist) return false;
+      if (!C.ramPtr || !C.eepromOff || !C.eepromSize) return false;
+      var u8 = nvramCache[eeKey()];
+      if (!u8 || u8.length !== C.eepromSize()) return false;
+      if (eepromBlank(u8)) { delete nvramCache[eeKey()]; nvIdbDel(eeKey()); return false; }
+      mod.HEAPU8.set(u8, C.ramPtr() + C.eepromOff());
+      if (typeof console !== "undefined") console.log("[dct3] restored", u8.length, "B EEPROM (" + eeKey() + ")");
+      return true;
+    }
+    function saveI2cEeprom(force) {
+      if (nvramSuppress) return "off";
+      if (!force && !nvramPersist) return "off";
+      var slice = i2cSlice(); if (!slice) return "off";
+      if (!C.i2cEepromWrites || (!force && C.i2cEepromWrites() === 0)) return "nochange";
+      if (eepromBlank(slice)) return "blank";
+      var copy = new Uint8Array(slice);
+      nvramCache[i2cKey()] = copy;
+      nvIdbPut(i2cKey(), copy);
+      i2cLastWrites = C.i2cEepromWrites();
+      return "saved";
+    }
+    function loadI2cEeprom() {
+      if (!nvramPersist) return false;
+      var sz = (C.i2cEepromSize && C.i2cEepromSize()) || 0; if (!sz) return false;
+      var u8 = nvramCache[i2cKey()];
+      if (!u8 || u8.length !== sz) return false;
+      if (eepromBlank(u8)) { delete nvramCache[i2cKey()]; nvIdbDel(i2cKey()); return false; }
+      mod.HEAPU8.set(u8, C.i2cEepromPtr());
+      if (typeof console !== "undefined") console.log("[dct3] restored", u8.length, "B I2C EEPROM (" + i2cKey() + ")");
+      return true;
+    }
+    // Persist BOTH regions; each self-gates on presence + write activity.
+    function saveNvram(force) { var r = saveEeprom(force); saveI2cEeprom(force); return r; }
+
+    setInterval(function () {
+      if (C.eepromWrites && C.eepromWrites() !== eeLastWrites) saveEeprom();
+      if (C.i2cEepromWrites && C.i2cEepromWrites() !== i2cLastWrites) saveI2cEeprom();
+    }, 3000);
+    document.addEventListener("visibilitychange", function () { if (document.hidden) saveNvram(); });
+    window.addEventListener("beforeunload", function () { saveNvram(); });
+
+    window.dct3SaveEeprom  = function () { return saveNvram(true); };
+    window.dct3ResetEeprom = function () {
+      nvramSuppress = true;         // the reload's unload-save must not re-persist the wipe
+      delete nvramCache[eeKey()]; delete nvramCache[i2cKey()];
+      var reload = function () { location.reload(); };
+      Promise.all([nvIdbDel(eeKey()), nvIdbDel(i2cKey())]).then(reload, reload);
+    };
+
+    // Devtools: persistence opt-out + wipe.
+    var chkPersist = document.getElementById("chk-persist");
+    if (chkPersist) {
+      chkPersist.checked = nvramPersist;
+      chkPersist.addEventListener("change", function () {
+        nvramPersist = chkPersist.checked;
+        try { localStorage.setItem(PERSIST_KEY, nvramPersist ? "1" : "0"); } catch (_) {}
+        if (nvramPersist) saveNvram(true);      // snapshot right away on opt-in
+      });
+    }
+    var btnEeReset = document.getElementById("btn-ee-reset");
+    if (btnEeReset) btnEeReset.addEventListener("click", function () { window.dct3ResetEeprom(); });
+
+    // -------------------------------------------------------------
+    // Central (re)boot path. Every boot — first boot, reboot, firmware swap,
+    // game injection, force reset — funnels through here so the sequencing is
+    // identical everywhere: persist the outgoing image's NVRAM, boot, re-key,
+    // overlay the new image's saved NVRAM, then re-apply the UI toggles that
+    // mad2_init clobbers and re-mount the shell for the detected model.
+    // -------------------------------------------------------------
+    // `afterSave` (optional) runs between the outgoing save and the boot+overlay —
+    // the game injector uses it to patch the saved snapshot (see dct3InjectGame).
+    function doBoot(afterSave) {
+      saveNvram();                  // keep the outgoing session's settings
+      if (typeof afterSave === "function") afterSave();
+      C.boot();
+      curFwId = fwIdentity();
+      loadEeprom();
+      loadI2cEeprom();
+      eeLastWrites  = (C.eepromWrites    && C.eepromWrites())    || 0;
+      i2cLastWrites = (C.i2cEepromWrites && C.i2cEepromWrites()) || 0;
+      reapplyPostBoot();
+      applyModel();
+      halted = false;
+      lastT = null;
+    }
+
+    // -------------------------------------------------------------
     // Operator name (SPN). The emulated network is always PLMN 208-01, which
     // the firmware's built-in table names "Orange F". The SIM's Service
     // Provider Name (EF_SPN, 6F46) takes precedence on the home network, and
@@ -393,6 +652,9 @@
       } catch (e) { return false; }                 // no swSIM fs on this core → no-op
     }
     patchSpn(opName);                               // ahead of the first boot
+    // swSIM parses its filesystem ONCE per process (g_ready latch), so a
+    // mid-session change can only land via a full page reload — the pre-boot
+    // patchSpn above then applies the new name.
     window.dct3SetOperatorName = function (name) {
       name = String(name == null ? "" : name).slice(0, 16);
       try { localStorage.setItem(OPNAME_KEY, name); } catch (_) {}
@@ -418,27 +680,31 @@
     // reboot, and re-mount the shell for the newly-detected model.
     window.dct3SwapFirmware = function (url) {
       return loadFwToMemfs(url).then(function () {
-        tryDo("fw-swap", function () { C.boot(); reapplyPostBoot(); applyModel(); });
+        tryDo("fw-swap", doBoot);
       }, function (e) { showError("fw-swap", e); });
     };
 
     welcomeReady.then(function () {
-      // Firmware-free hosting: fetch the configured default image into MEMFS
-      // before the first boot. No-op when a fw was preloaded via dct3.data.
-      return (window.DCT3_DEFAULT_FW && mod.FS && mod.FS.writeFile)
-        ? loadFwToMemfs(window.DCT3_DEFAULT_FW) : null;
+      // Firmware-free hosting: land the configured default image in MEMFS
+      // before the first boot. Normally the prefetch (started at script load,
+      // behind the welcome wall) already has the bytes; fall back to fetching
+      // now if it failed. No-op when a fw was preloaded via dct3.data.
+      if (!(window.DCT3_DEFAULT_FW && mod.FS && mod.FS.writeFile)) return null;
+      return fwPrefetch.then(function (ab) {
+        if (ab) { mod.FS.writeFile("/fw.fls", new Uint8Array(ab)); return null; }
+        return loadFwToMemfs(window.DCT3_DEFAULT_FW);
+      });
+    }).then(function () {
+      return nvramReady;            // saved-NVRAM cache must be loaded before boot 1
     }).then(function () {
       setStatus("Booting…");
-      try { C.boot(); }
+      try { doBoot(); }                  // boot + NVRAM overlay + shell mount
       catch (e) {
         setStatus("Firmware boot failed.");
         showError("boot", e);
         return;
       }
-      reapplyPostBoot();
-      applyModel();                      // mount the device shell for the booted model
       setStatus("Running.");
-      lastT = null;                      // reset frame-loop pacing
       requestAnimationFrame(frame);
     });
 
@@ -550,6 +816,39 @@
     // advance, long-press from idle = firmware-driven shutdown.
     var halted = false;
 
+    // -------------------------------------------------------------
+    // Vibra. mad2 latches the CCONT vibra enable; we mirror it two ways:
+    //   1. a CSS shake on the phone body (works everywhere), and
+    //   2. the device's real vibration motor via navigator.vibrate — Android
+    //      browsers have it; iOS Safari has no vibration API, so it silently
+    //      degrades to the visual shake there.
+    // While the motor is on we re-issue a pulse before the previous one runs
+    // out (each vibrate() call replaces the pattern); on release vibrate(0)
+    // cancels immediately so the haptics track the firmware's edge.
+    // -------------------------------------------------------------
+    var vibStyle = document.createElement("style");
+    vibStyle.textContent =
+      "@keyframes dct3shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-2px)}75%{transform:translateX(2px)}}" +
+      // shake the grid chassis (.phone) AND the device shell (.shell-host wrapper —
+      // NOT .shell-root, whose transform:scale would be clobbered by the animation)
+      ".vibrating .phone,.vibrating .shell-host{animation:dct3shake .08s linear infinite}";
+    document.head.appendChild(vibStyle);
+    var vibLast = false, vibPulseAt = 0;
+    function syncVibra() {
+      if (!C.vibraOn) return;
+      var on = false;
+      try { on = !!C.vibraOn(); } catch (_) {}
+      if (on !== vibLast) document.body.classList.toggle("vibrating", on);
+      try {
+        if (navigator.vibrate) {
+          var now = performance.now();
+          if (on && now - vibPulseAt > 400) { navigator.vibrate(600); vibPulseAt = now; }
+          else if (!on && vibLast) { navigator.vibrate(0); vibPulseAt = 0; }
+        }
+      } catch (_) {}
+      vibLast = on;
+    }
+
     var slSpeed  = document.getElementById("sl-speed");
     var outSpeed = document.getElementById("out-speed");
     function syncSpeed() {
@@ -574,8 +873,10 @@
         if (halted) {
           // Stop pumping CPU. Keep rendering so the cleared LCD stays
           // visible; the firmware already blanked the framebuffer
-          // during the shutdown animation.
+          // during the shutdown animation. syncVibra still runs so a
+          // shake/haptic active at shutdown is released, not stuck.
           render();
+          syncVibra();
           requestAnimationFrame(frame);
           return;
         }
@@ -601,6 +902,7 @@
           }
         }
         render();
+        syncVibra();
         consecutiveFails = 0;
       } catch (e) {
         consecutiveFails++;
@@ -750,11 +1052,7 @@
         // ⏻ button takes on mousedown when halted.
         if (down && halted) {
           tryDo("shell-power-on", function () {
-            C.boot();
-            reapplyPostBoot();
-            applyModel();
-            halted = false;
-            lastT = null;
+            doBoot();
             setStatus("Booting…");
           });
           return;
@@ -901,6 +1199,20 @@
     function applyModel() {
       syncLcdGeometry();
       var model = (C.model && C.model()) || "3310";
+      // Keep the page heading honest: the static HTML says 3310, but the booted
+      // image decides the model (retro-phone opens on a 3410 and can switch at
+      // runtime). Host pages (model menus) listen for dct3modelchange to sync
+      // their own chrome.
+      var h1 = document.querySelector(".topbar h1");
+      if (h1) {
+        h1.textContent = "Nokia " + model + " ";
+        var sm = document.createElement("small");
+        sm.textContent = "in your browser";
+        h1.appendChild(sm);
+      }
+      try {
+        window.dispatchEvent(new CustomEvent("dct3modelchange", { detail: { model: String(model) } }));
+      } catch (_) {}
       // The game loader is 3410-only (only the 3410 has a PMM J2ME game store) — hide
       // it for every other model, and re-show it if the user switches back.
       var gl = document.getElementById("game-loader");
@@ -1014,11 +1326,7 @@
       // eslint-disable-next-line no-console
       if (typeof console !== "undefined") console.log("[dct3] 15 s power-hold → force reset (CCONT-faithful)");
       tryDo("power-force-reset", function () {
-        C.boot();
-        reapplyPostBoot();
-        applyModel();
-        halted = false;
-        lastT = null;
+        doBoot();
         setStatus("Force reset (15 s hold) — booting…");
       });
     }
@@ -1036,11 +1344,7 @@
         if (halted) {
           // Off → on. Cold reboot for a fresh power-up state.
           tryDo("power-on-reboot", function () {
-            C.boot();
-            reapplyPostBoot();
-            applyModel();
-            halted = false;
-            lastT = null;
+            doBoot();
             setStatus("Booting…");
           });
           return;
@@ -1061,15 +1365,7 @@
 
     var btnReboot = document.getElementById("btn-reboot");
     if (btnReboot) btnReboot.addEventListener("click", function () {
-      tryDo("reboot", function () {
-        // Cheapest reliable reboot: re-call dct3_web_boot. Resets the
-        // emulator to a fresh power-on state with the same firmware,
-        // then re-applies the UI toggles that mad2_init clobbers.
-        C.boot();
-        reapplyPostBoot();
-        applyModel();
-        lastT = null;                  // re-pace the frame loop
-      });
+      tryDo("reboot", doBoot);
     });
 
     // -------------------------------------------------------------
@@ -1092,13 +1388,7 @@
         if (!mod.FS || !mod.FS.writeFile) { showError("fw-write", new Error("MEMFS not available")); return; }
         try { mod.FS.writeFile("/fw.fls", buf); }
         catch (err) { showError("fw-write", err); if (fwName) fwName.textContent = "Load failed — see console"; return; }
-        tryDo("fw-boot", function () {
-          C.boot();
-          reapplyPostBoot();
-          applyModel();                 // re-detect model → swap shell + canvas geometry
-          halted = false;
-          lastT = null;
-        });
+        tryDo("fw-boot", doBoot);       // re-detect model → swap shell + canvas geometry
         var model = (C.model && C.model()) || "?";
         if (fwName) fwName.textContent = f.name + " · " + (buf.length / 1048576).toFixed(1) + " MB · " + model;
         setStatus("Running " + model + ".");
@@ -1235,33 +1525,226 @@
       var fw = mod.FS.readFile("/fw.fls");
       var modified = pmmInjectGame(fw, jar, jad, name);   // throws on bad image / too big
       mod.FS.writeFile("/fw.fls", modified);
-      tryDo("game-inject", function () { C.boot(); reapplyPostBoot(); applyModel(); halted = false; lastT = null; });
+      tryDo("game-inject", function () {
+        doBoot(function () {
+          // The 3410's PMM game store lives INSIDE the persisted NVRAM region
+          // (games/apps catalog blocks at the top of flash). A saved snapshot
+          // would overlay the OLD store over the fresh injection on this boot —
+          // so apply the SAME swap to the snapshot (the PMM blocks are
+          // self-contained, so the injector works on the snapshot buffer
+          // directly). Runs after doBoot's save (which captured the latest
+          // settings) and before the overlay. If the snapshot can't take the
+          // game, drop it: the injected flash must win over stale settings.
+          // Side effect, by design: once re-saved, the injected game survives
+          // page reloads via the NVRAM snapshot.
+          var snap = nvramCache[eeKey()];
+          if (!snap) return;
+          try {
+            var patched = pmmInjectGame(snap, jar, jad, name);
+            nvramCache[eeKey()] = patched;
+            nvIdbPut(eeKey(), patched);
+          } catch (e) {
+            if (typeof console !== "undefined") console.warn("[dct3] saved NVRAM can't take the game (" + e.message + ") — dropping the save so the injection wins");
+            delete nvramCache[eeKey()];
+            nvIdbDel(eeKey());
+          }
+        });
+      });
     };
+    // --- .jad generation --------------------------------------------------------
+    // iOS's file picker refuses .jad files, so the descriptor is OPTIONAL: when the
+    // user supplies only the .jar we synthesize the .jad from the JAR's own
+    // META-INF/MANIFEST.MF (which carries MIDlet-Name/-Version/-Vendor/-1 etc.),
+    // adding the two attributes only the descriptor has: MIDlet-Jar-URL + -Size.
+    // Tiny ZIP reader: end-of-central-directory → central header → local data.
+    function zipU16(b, o) { return b[o] | (b[o + 1] << 8); }
+    function zipU32(b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
+    function zipFindEntry(u8, want) {
+      var lo = Math.max(0, u8.length - 0x10000 - 22), e = -1;   // EOCD ≤ 64 KB comment
+      for (var i = u8.length - 22; i >= lo; i--)
+        if (u8[i] === 0x50 && u8[i + 1] === 0x4b && u8[i + 2] === 0x05 && u8[i + 3] === 0x06) { e = i; break; }
+      if (e < 0) return null;
+      var count = zipU16(u8, e + 10), p = zipU32(u8, e + 16);
+      want = want.toLowerCase();
+      for (var k = 0; k < count && p + 46 <= u8.length; k++) {
+        if (zipU32(u8, p) !== 0x02014b50) break;
+        var nlen = zipU16(u8, p + 28), xlen = zipU16(u8, p + 30), clen = zipU16(u8, p + 32);
+        var name = "";
+        for (var q = 0; q < nlen; q++) name += String.fromCharCode(u8[p + 46 + q]);
+        if (name.toLowerCase() === want) {
+          var lh = zipU32(u8, p + 42);
+          if (zipU32(u8, lh) !== 0x04034b50) return null;
+          var dOff = lh + 30 + zipU16(u8, lh + 26) + zipU16(u8, lh + 28);
+          return { method: zipU16(u8, p + 10), data: u8.subarray(dOff, dOff + zipU32(u8, p + 20)) };
+        }
+        p += 46 + nlen + xlen + clen;
+      }
+      return null;
+    }
+    function zipReadText(u8, name) {          // -> Promise<string|null>
+      var ent = zipFindEntry(u8, name);
+      if (!ent) return Promise.resolve(null);
+      if (ent.method === 0) return Promise.resolve(new TextDecoder().decode(ent.data));
+      if (ent.method !== 8 || typeof DecompressionStream === "undefined") return Promise.resolve(null);
+      try {
+        var ds = new DecompressionStream("deflate-raw");
+        return new Response(new Blob([ent.data]).stream().pipeThrough(ds)).text()
+          .catch(function () { return null; });
+      } catch (_) { return Promise.resolve(null); }
+    }
+    function makeJad(jar, jarName) {          // -> Promise<Uint8Array>
+      var base = jarName.replace(/\.[^.]+$/, "");
+      return zipReadText(jar, "META-INF/MANIFEST.MF").then(function (mf) {
+        var attrs = {}, order = [];
+        if (mf) {
+          // Unfold manifest continuation lines (a leading space/tab continues the
+          // previous attribute), then keep everything except jar-packaging noise.
+          mf.replace(/\r\n?/g, "\n").replace(/\n[ \t]/g, "").split("\n").forEach(function (line) {
+            var c = line.indexOf(":");
+            if (c <= 0) return;
+            var k = line.slice(0, c).trim(), v = line.slice(c + 1).trim();
+            if (!k || /^(Manifest-Version|Created-By|Ant-Version)$/i.test(k)) return;
+            if (!(k in attrs)) order.push(k);
+            attrs[k] = v;
+          });
+        }
+        function ensure(k, v) { if (!attrs[k]) { attrs[k] = v; if (order.indexOf(k) < 0) order.push(k); } }
+        ensure("MIDlet-Name", base);
+        ensure("MIDlet-Version", "1.0");
+        ensure("MIDlet-Vendor", "unknown");
+        ensure("MicroEdition-Profile", "MIDP-1.0");
+        ensure("MicroEdition-Configuration", "CLDC-1.0");
+        if (order.indexOf("MIDlet-Jar-URL") < 0) order.push("MIDlet-Jar-URL");
+        attrs["MIDlet-Jar-URL"] = base + ".jar";
+        if (order.indexOf("MIDlet-Jar-Size") < 0) order.push("MIDlet-Jar-Size");
+        attrs["MIDlet-Jar-Size"] = String(jar.length);
+        if (!attrs["MIDlet-1"] && typeof console !== "undefined")
+          console.warn("[dct3] JAR manifest has no MIDlet-1 — generated .jad may be incomplete");
+        var text = order.map(function (k) { return k + ": " + attrs[k]; }).join("\r\n") + "\r\n";
+        return new TextEncoder().encode(text);
+      });
+    }
+
+    // --- Uploaded-game library (IndexedDB) --------------------------------------
+    // Every uploaded game is stashed in IndexedDB ({name, jar, jad ArrayBuffers}),
+    // listed under the loader, and re-injectable with one click on a later visit —
+    // no re-upload. All storage failures degrade to the old one-shot upload flow.
+    var GDB_NAME = "dct3-games", GDB_STORE = "games";
+    function gdb() {
+      return new Promise(function (res, rej) {
+        var r = indexedDB.open(GDB_NAME, 1);
+        r.onupgradeneeded = function () { r.result.createObjectStore(GDB_STORE, { keyPath: "name" }); };
+        r.onsuccess = function () { res(r.result); };
+        r.onerror = function () { rej(r.error); };
+      });
+    }
+    function gamesPut(rec) {
+      return gdb().then(function (db) { return new Promise(function (res, rej) {
+        var t = db.transaction(GDB_STORE, "readwrite");
+        t.objectStore(GDB_STORE).put(rec);
+        t.oncomplete = res; t.onerror = function () { rej(t.error); };
+      }); });
+    }
+    function gamesAll() {
+      return gdb().then(function (db) { return new Promise(function (res, rej) {
+        var g = db.transaction(GDB_STORE, "readonly").objectStore(GDB_STORE).getAll();
+        g.onsuccess = function () { res(g.result || []); };
+        g.onerror = function () { rej(g.error); };
+      }); }).catch(function () { return []; });
+    }
+    function gamesDelete(name) {
+      return gdb().then(function (db) { return new Promise(function (res) {
+        var t = db.transaction(GDB_STORE, "readwrite");
+        t.objectStore(GDB_STORE).delete(name);
+        t.oncomplete = res; t.onerror = res;
+      }); }).catch(function () {});
+    }
+
     var gameFile = document.getElementById("game-file");
     var gameName = document.getElementById("game-name");
     var gameLoader = document.getElementById("game-loader");
+    var gameListEl = document.getElementById("game-list");
+    function gameSay(m) { if (gameName) gameName.textContent = m; }
+
+    // Inject a game record into the phone. If another model is active and the host
+    // page published a model→firmware map (window.DCT3_MODEL_FW, e.g. retro-phone's
+    // menu), auto-switch to the 3410 first; otherwise ask the user to switch.
+    function injectGameRec(rec) {
+      if (gameLoader) gameLoader.classList.remove("ok");
+      function go() {
+        try { window.dct3InjectGame(new Uint8Array(rec.jar), new Uint8Array(rec.jad), rec.name); }
+        catch (err) { gameSay("Couldn't load that game: " + err.message); return; }
+        gameSay("✔ " + rec.name + " loaded (" + (rec.jar.byteLength / 1024).toFixed(1) + " KB) — open Games ▸ More games");
+        if (gameLoader) gameLoader.classList.add("ok");
+        setStatus("Running " + ((C.model && C.model()) || "3410") + " with " + rec.name + ".");
+      }
+      var curModel = (C.model && C.model()) || "";
+      if (curModel.indexOf("3410") >= 0) { go(); return; }
+      var fwMap = window.DCT3_MODEL_FW || {};
+      if (fwMap["3410"] && typeof window.dct3SwapFirmware === "function") {
+        gameSay("Switching to the Nokia 3410…");
+        window.dct3SwapFirmware(fwMap["3410"]).then(go);
+      } else {
+        gameSay("Games load on the Nokia 3410 — switch to it in the model menu first, then try again.");
+      }
+    }
+    function renderGameList() {
+      if (!gameListEl) return;
+      gamesAll().then(function (list) {
+        gameListEl.innerHTML = "";
+        gameListEl.hidden = !list.length;
+        if (!list.length) return;
+        var h = document.createElement("p");
+        h.className = "game-list-title";
+        h.textContent = "Your games";
+        gameListEl.appendChild(h);
+        list.sort(function (a, b) { return (b.added || 0) - (a.added || 0); });
+        list.forEach(function (rec) {
+          var row = document.createElement("div"); row.className = "game-row";
+          var play = document.createElement("button");
+          play.type = "button"; play.className = "game-play";
+          play.textContent = "▶ " + rec.name + " · " + Math.max(1, Math.round(rec.jar.byteLength / 1024)) + " KB";
+          play.addEventListener("click", function () { injectGameRec(rec); });
+          var del = document.createElement("button");
+          del.type = "button"; del.className = "game-del";
+          del.textContent = "✕"; del.title = "Remove " + rec.name + " from your games";
+          del.addEventListener("click", function () { gamesDelete(rec.name).then(renderGameList); });
+          row.appendChild(play); row.appendChild(del);
+          gameListEl.appendChild(row);
+        });
+      });
+    }
+    renderGameList();
+
     if (gameFile) gameFile.addEventListener("change", function (e) {
       var files = e.target.files ? Array.prototype.slice.call(e.target.files) : [];
-      function say(m) { if (gameName) gameName.textContent = m; }
       var jarF = null, jadF = null;
       for (var i = 0; i < files.length; i++) {
         if (/\.jar$/i.test(files[i].name)) jarF = files[i];
         else if (/\.jad$/i.test(files[i].name)) jadF = files[i];
       }
-      if (!jarF || !jadF) { say("Select BOTH the .jar and its .jad."); return; }
-      Promise.all([jarF.arrayBuffer(), jadF.arrayBuffer()]).then(function (bufs) {
-        var jar = new Uint8Array(bufs[0]), jad = new Uint8Array(bufs[1]);
-        if (jar[0] !== 0x50 || jar[1] !== 0x4b || jar[2] !== 0x03 || jar[3] !== 0x04) { say("That .jar isn't a ZIP/JAR (no PK magic)."); return; }
-        var curModel = (C.model && C.model()) || "";
-        if (curModel.indexOf("3410") < 0) { say("Games load on the Nokia 3410 — switch to it in the model menu first, then try again."); return; }
-        var base = jarF.name.replace(/\.[^.]+$/, "");
-        if (gameLoader) gameLoader.classList.remove("ok");
-        try { window.dct3InjectGame(jar, jad, base); }
-        catch (err) { say("Couldn't load that game: " + err.message); return; }
-        say("✔ " + base + " loaded (" + (jar.length / 1024).toFixed(1) + " KB) — open Games ▸ More games");
-        if (gameLoader) gameLoader.classList.add("ok");
-        setStatus("Running " + ((C.model && C.model()) || "3410") + " with " + base + ".");
-      }).catch(function (err) { showError("game-read", err); say("Read failed"); });
+      if (!jarF) { gameSay("Select the game's .jar file (the .jad is optional)."); return; }
+      jarF.arrayBuffer().then(function (jarBuf) {
+        var jar = new Uint8Array(jarBuf);
+        if (jar[0] !== 0x50 || jar[1] !== 0x4b || jar[2] !== 0x03 || jar[3] !== 0x04) {
+          gameSay("That .jar isn't a ZIP/JAR (no PK magic).");
+          return;
+        }
+        var jadP = jadF
+          ? jadF.arrayBuffer().then(function (b) { return new Uint8Array(b); })
+          : makeJad(jar, jarF.name);
+        return jadP.then(function (jad) {
+          var base = jarF.name.replace(/\.[^.]+$/, "");
+          var rec = { name: base, jar: jarBuf, jad: jad.buffer.slice(jad.byteOffset, jad.byteOffset + jad.byteLength), added: Date.now() };
+          // Persist first so the game is in the library even if injection fails
+          // (e.g. too big for the slot) or another model is active.
+          gamesPut(rec).then(renderGameList, function (err) {
+            if (typeof console !== "undefined") console.warn("[dct3] game persist failed:", err);
+          });
+          injectGameRec(rec);
+        });
+      }).catch(function (err) { showError("game-read", err); gameSay("Read failed"); });
+      e.target.value = "";              // allow re-picking the same file later
     });
 
     // -------------------------------------------------------------

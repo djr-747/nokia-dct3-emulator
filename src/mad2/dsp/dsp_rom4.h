@@ -77,6 +77,7 @@ typedef struct Rom4Dsp {
     uint8_t  searchRound;        // ALL_RSSI emission counter (drives the RSSI history)
     uint8_t  searchHasArfcn1;    // SEARCH_LIST 512-bit ARFCN set includes ARFCN 1
     uint8_t  searchRequested;    // a newer SEARCH_LIST is queued behind a DEACTIVATE
+    uint8_t  selFromServing;     // the selected search was issued from a CAMPED serving cell
     uint8_t  selectedReportsRemaining; // suspended selected-search report count
     uint8_t  accessRa;           // CHANNEL REQUEST random-access octet from IDLE_RA form 0
     uint32_t accessFrame;        // frame number reported by 0x84 RA_INFO / echoed by the IA
