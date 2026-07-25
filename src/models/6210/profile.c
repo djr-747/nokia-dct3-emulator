@@ -1,6 +1,6 @@
 // Nokia 6210 model profile — NPE-3, a 4 MB MAD2 DCT3 (2000). NOT an NSM/Family-A phone: the 6210
 // is its own design that STRADDLES the 5110 and the 3310. From the 3310 side it
-// is ROM-6 DSP (in-flash generation, mad2_dsp_default — confirmed by DSP-block F073-target finger-
+// is ROM-6 DSP (in-flash generation — confirmed by DSP-block F073-target finger-
 // print) with an in-flash EEPROM partition (NOT the 5110/6110 external serial EEPROM). From the
 // 5110 side it shares the SAME battery A/D window {0x2C0,0x150,0x140,0x000}. The 96x65 graphic
 // display is the larger screen (3410/7110 class). MAD2_SIGS resolves the per-build v5.56 addresses
@@ -112,7 +112,7 @@ const ModelProfile model_6210 = {
         // and a SET bit2 FAILs (clears bit6, C4→84 @9.26M) — the IDENTICAL bit2 sequencer the 7110
         // has at 0x310D5A. On the 7110 the DSP clears bit2 by posting a group-0x74 sub-13
         // self-test-complete ack (src/models/7110/dsp_7110.c handler 0x30E0EA `and #0xFB`). The
-        // 6210 (ROM-6, mad2_dsp_default) needs the shared responder to post the equivalent
+        // 6210 (ROM-6) needs the DSP engine to post the equivalent
         // bit2-clearing ack — its cmd-13/self-test-complete handler is the open RE item. Until
         // then the 6210 still rests at CONTACT SERVICE, one gate further along than before.
         .verdict = 0x0017FD99u, .sim_gate = 0, .dsp_uploaded = 0x0016FFE4u,
@@ -139,5 +139,5 @@ const ModelProfile model_6210 = {
         .match = "NPE-3",
         .flash_size = 0x00400000u,
     },
-    .dsp = &mad2_dsp_6210,            // ROM-6 base + 6210 self-test-complete ack (src/models/6210/dsp_6210.c)
+    .dsp = &mad2_dsp_rom6,           // ROM-6 faithful engine (src/mad2/dsp/dsp_rom6.c)
 };

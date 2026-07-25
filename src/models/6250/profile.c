@@ -7,7 +7,7 @@
 //      found by a raw scan for the gate SHAPE — see .fw comment).
 //
 // DSP self-test = LIKE-FOR-LIKE with the 6210: dsp_uploaded=0x16E474 + the shared
-// mad2_dsp_6210 responder drive it identically (block-ack pump sets the flag → verdict bit6
+// DSP engine drive it identically (block-ack pump sets the flag → verdict bit6
 // survives gate-1; the group-0x74 sub-13 ack clears verdict bit2 → gate-2 passes). Both verified
 // firing (bit2 clears @1.915M). But the 6250 does NOT yet reach standby: it has ONE EXTRA gate
 // the 6210 passes — a CALIBRATION-RECORD CHECKSUM at 0x304520 (the 6210 has the byte-identical
@@ -109,7 +109,7 @@ const ModelProfile model_6250 = {
         // dsp_uploaded = 0x16E474 — the self-test result flag, LIKE-FOR-LIKE with the 6210's
         // 0x16FFE4 (RE'd 2026-07-14; gen_sig of the 6210's self-test-pass leaf 0x4AFFB4 → 6250
         // 0x4C0F28 `ldr =0x16E474; ldrb; bx lr`, and setter 0x42A054 `ldr =0x16E474`). The shared
-        // ROM-6 self-test responder (mad2_dsp_6210) drives it exactly as on the 6210: the block-
+        // ROM-6 self-test responder drives it exactly as on the 6210: the block-
         // ack pump raises IRQ4 → firmware sets [0x16E474]=1 (gate-1) → responder posts the
         // group-0x74 sub-13 ack → handler clears verdict bit2 (gate-2) → standby.
         .verdict = 0x0017FD15u, .sim_gate = 0, .dsp_uploaded = 0x0016E474u,
@@ -131,7 +131,7 @@ const ModelProfile model_6250 = {
         .match = "NHM-3",
         .flash_size = 0x00400000u,
     },
-    .dsp = &mad2_dsp_6210,            // shared ROM-6 self-test-complete responder (like-for-like 6210)
+    .dsp = &mad2_dsp_rom6,           // ROM-6 faithful engine (src/mad2/dsp/dsp_rom6.c)
     // Repair this v5.00 library image's inconsistent RF-calibration checksum: the self-test at
     // 0x304520 recomputes sum(EEPROM calib 0x120..0x133) = 0x6D57 and compares it to the stored
     // checksum record (EEPROM offset 0x254) = 0x7095 — mismatch clears verdict bit6. The FFS entry

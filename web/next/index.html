@@ -144,6 +144,17 @@
       </div>
 
       <div class="dev-group">
+        <h3>Network</h3>
+        <!-- Patches EF_SPN in the software SIM and reboots; the firmware shows
+             it as the operator name on the home network. Empty reverts to the
+             firmware's own name for the emulated PLMN. -->
+        <label>Operator name
+          <input type="text" id="in-opname" maxlength="16" spellcheck="false">
+        </label>
+        <button id="btn-opname" class="quick-btn" type="button">Apply (reloads page)</button>
+      </div>
+
+      <div class="dev-group">
         <h3>Firmware</h3>
         <label class="fw-pick">
           Load a raw .fls image

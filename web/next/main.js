@@ -269,6 +269,12 @@
         // auto-release — the firmware decides tap vs hold, so press-and-hold works
         // (= native GUI). Interactive input routes here; keyLogical is the fallback.
         keyLogicalRaw: optWrap("dct3_web_key_logical_raw", null, ["number", "number"]),
+        // Network-side events (ROM-6 engine models): queue an incoming call /
+        // SMS that the emulated network pages to the camped phone. Sender is
+        // digits-only; SMS text ≤120 chars. Host pages drive these (e.g. a
+        // first-visit welcome SMS) via dct3.api.incomingSms(from, text).
+        incomingCall: optWrap("dct3_web_incoming_call", "number", ["string"]),
+        incomingSms:  optWrap("dct3_web_incoming_sms", "number", ["string", "string"]),
       };
     } catch (e) {
       setStatus("Emulator API mismatch.");
@@ -339,6 +345,65 @@
       if (C.setSimPinEnabled) tryDo("setSimPinEnabled", function () { C.setSimPinEnabled(0); });
       if (C.setSimPin)        tryDo("setSimPin",        function () { C.setSimPin(1234); });
     }
+
+    // -------------------------------------------------------------
+    // Operator name (SPN). The emulated network is always PLMN 208-01, which
+    // the firmware's built-in table names "Orange F". The SIM's Service
+    // Provider Name (EF_SPN, 6F46) takes precedence on the home network, and
+    // swSIM's filesystem is a plain JSON file in MEMFS — so we patch it there
+    // before boot (swSIM re-reads the file on every dct3_web_boot). This is a
+    // CAPABILITY, not branding: the host page sets the default via
+    // window.DCT3_OPERATOR_NAME (like DCT3_DEFAULT_FW), and anyone can play
+    // with it live via dct3SetOperatorName("Name") (≤16 GSM-alphabet chars;
+    // "" reverts to the firmware's own name) — also in devtools. A user's
+    // choice persists per browser and wins over the host default. No-op on
+    // cores without swSIM.
+    // -------------------------------------------------------------
+    var OPNAME_KEY = "dct3.next.opname";
+    var SWSIM_FS = "/third_party/swsim/gsm.json";
+    var opName = String(window.DCT3_OPERATOR_NAME || "");
+    try { var _on = localStorage.getItem(OPNAME_KEY); if (_on !== null) opName = _on; } catch (_) {}
+    function spnHex(name) {
+      if (!name) return "FF".repeat(17);            // virgin EF → firmware default name
+      // Display-condition 00: "display of registered PLMN NOT required" — the
+      // phone keeps showing the SIM's name after it registers. (01 makes it
+      // swap to the firmware's own PLMN-table name at registration.)
+      var h = "00";
+      for (var i = 0; i < 16; i++) {
+        var c = i < name.length ? name.charCodeAt(i) & 0x7f : 0xff;
+        h += ("0" + c.toString(16)).slice(-2);
+      }
+      return h.toUpperCase();
+    }
+    function patchSpn(name) {
+      try {
+        if (!mod.FS || !mod.FS.readFile) return false;
+        var fs = JSON.parse(new TextDecoder().decode(mod.FS.readFile(SWSIM_FS)));
+        var hits = 0;
+        (function walk(node) {
+          if (Array.isArray(node)) { node.forEach(walk); return; }
+          if (!node || typeof node !== "object") return;
+          if (node.id === "6F46" && node.contents)
+            { node.contents = { type: "hex", contents: spnHex(name) }; hits++; }
+          for (var k in node) walk(node[k]);
+        })(fs);
+        if (!hits) return false;
+        mod.FS.writeFile(SWSIM_FS, new TextEncoder().encode(JSON.stringify(fs)));
+        return true;
+      } catch (e) { return false; }                 // no swSIM fs on this core → no-op
+    }
+    patchSpn(opName);                               // ahead of the first boot
+    window.dct3SetOperatorName = function (name) {
+      name = String(name == null ? "" : name).slice(0, 16);
+      try { localStorage.setItem(OPNAME_KEY, name); } catch (_) {}
+      location.reload();
+    };
+    var inOpname = document.getElementById("in-opname");
+    var btnOpname = document.getElementById("btn-opname");
+    if (inOpname) inOpname.value = opName;
+    if (btnOpname) btnOpname.addEventListener("click", function () {
+      window.dct3SetOperatorName(inOpname ? inOpname.value : opName);
+    });
 
     // Fetch a raw .fls into MEMFS at /fw.fls. Used for firmware-free hosting
     // (no fw baked into dct3.data) and by the model switcher below.

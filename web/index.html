@@ -109,6 +109,29 @@
           </label>
           <span id="fw-name" class="val"></span>
         </div>
+        <div class="controls">
+          <label title="3410 only: inject a J2ME MIDlet into the phone's PMM game store, then reboot into the modified image. Select BOTH the game's .jar and its .jad together. Small games only (must fit the games block's free space).">Load game (.jar + .jad)
+            <input type="file" id="game-file" accept=".jar,.jad" multiple>
+          </label>
+          <span id="game-name" class="val"></span>
+        </div>
+      </div>
+
+      <div class="group incoming-network">
+        <h3>Incoming network</h3>
+        <label>From
+          <input type="tel" id="incoming-from" value="5551234" maxlength="20"
+                 inputmode="tel" autocomplete="off" aria-label="Incoming caller or SMS sender number">
+        </label>
+        <label>SMS text
+          <textarea id="incoming-text" maxlength="120" rows="2"
+                    aria-label="Incoming SMS text">Hello world</textarea>
+        </label>
+        <div class="controls">
+          <button id="btn-incoming-call" title="Queue a network-originated call. The phone is paged asynchronously after registration.">Incoming call</button>
+          <button id="btn-incoming-sms" title="Queue a network-originated SMS. The phone is paged asynchronously after registration.">Incoming SMS</button>
+        </div>
+        <span id="out-incoming" class="val" role="status" aria-live="polite"></span>
       </div>
 
       <div class="group">

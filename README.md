@@ -40,12 +40,12 @@ early. Model detection and version are read from the flash header — nothing is
 | Model | Code / ver | Status | Notes |
 |---|---|---|---|
 | **2100** | NAM-2 v5.84 | 🟡 partial | boots to the Security-code (FAID) screen but rejects the EEPROM-baked code (12345) — see #3 |
-| **3210** | NSE-8 v6.00 | ✅ interactive | boots to the "Security code" prompt and **accepts the factory code 12345** ("Code accepted"); no-SIM boots to "Insert SIM card". Real keypad matrix RE'd from the firmware keymap table (wiring differs from the 3310 despite identical keys); CCONT ch1 modelled as the battery-voltage input the undervolt guard reads |
+| **3210** | NSE-8 v6.00 | ✅ standby | boots to a **registered standby** (operator + signal) on the **ROM-4 network engine**: the CCONT persistent-ready bit is modelled so the startup readiness check passes organically (was Contact Service), and the factory security-level record is provisioned to its erased default so the phone no longer prompts for the code at power-up (12345 still accepted if the setting is re-enabled). No-SIM boots to "Insert SIM card". Real keypad matrix RE'd from the firmware keymap table (wiring differs from the 3310 despite identical keys); CCONT ch1 modelled as the battery-voltage input the undervolt guard reads |
 | **3310** | NHM-5 v5.79 | ✅ standby | reference baseline (kept byte-identical by `make guard`) |
 | **3330** | NHM-6 v4.50 | ✅ interactive | boots to the "Security codes" prompt and **accepts the factory code 12345** → first-boot Time wizard; verdict/upload cells self-heal per-build via the NHM family signatures. Known recoverable reason-0x73 reset (3410-family quirk, auto-recovered) |
 | **3350** | NHM-9 v5.22 | ✅ interactive | same flow as the 3330 (12345 → Time wizard) — but the common library image ships an empty EEPROM partition; graft a donor NHM 'EEPROM' block first (`tools/graft_eeprom_block.py`, 3330 donor validated) |
 | **3410** | NHM-2 v5.46 | ✅ standby | minor set-time clock-tick gap tracked separately |
-| **5110** | NSE-1 v5.30 | ✅ locked | boots into the MMI — **HLE DSP** (web) reaches PIN/standby; the **C54x DSP co-sim** (GUI) reaches the faithful "Security code" lock |
+| **5110** | NSE-1 v5.30 | ✅ locked | boots into the MMI to the faithful "Security code" (FAID) lock. Native/GUI now runs the **ROM-4 DSP engine** by default (accepts the SIM and camps); the real **C54x DSP co-sim** is opt-in via `DSP54_COSIM=1`, and the web **HLE DSP** reaches PIN/standby. FAID record provisioning is a **work in progress** — the identity/checksum records are written and the firmware reads them, but the lock is not cleared organically yet (the derive binds a RAM identity slot the firmware fills from the SIM, not the EEPROM IMEI) |
 | **5110i** | NSE-2 v5.53 | 🟡 partial | 2 MB 5110 refresh; Contact Service on the borrowed 5110 EEPROM (a 5110i-specific record self-test isn't provisioned) |
 | **5130** | NSK-1 v5.30 | ✅ locked | 5110 sibling (Xpress-on); boots to the "Security code" (FAID) lock |
 | **5190** | NSB-1 v6.71 | 🟡 partial | Contact Service; US NSB build fails an extra judged self-test element — RE pending |
@@ -66,7 +66,7 @@ early. Model detection and version are read from the flash header — nothing is
 | **8855** | NSM-4 v5.13 | ✅ standby | |
 | **8890** | NSB-6 v12.16 | 🟡 partial | Contact Service (US-band 8850) |
 
-Nineteen of the 26 registered models boot to a usable state today — standby (3310, 3410, 5210, 6210, 6250, 7110, 8210, 8250, 8850, 8855), interactive security-code entry (3210, 3330, 3350), or the normal Security-code lock (5110, 5130, 6110, 6130, 6150, 8810). Per-model detail lives in [`docs/MODELS.md`](docs/MODELS.md).
+Nineteen of the 26 registered models boot to a usable state today — standby (3210, 3310, 3410, 5210, 6210, 6250, 7110, 8210, 8250, 8850, 8855), interactive security-code entry (3330, 3350), or the normal Security-code lock (5110, 5130, 6110, 6130, 6150, 8810). Per-model detail lives in [`docs/MODELS.md`](docs/MODELS.md). Standbys camp on a synthetic test network (the 3210 and 8210 reach a registered idle with operator + signal).
 
 ---
 
@@ -168,11 +168,22 @@ without the people and projects that mapped this hardware first:
 - **osmocom-bb** — the open Calypso DSP API, the Rosetta stone for the MCU↔DSP mailbox.
 - **gnokii** / **Gammu** (and `dct3trac`) — the FBUS/MBUS service-protocol RE and the NHM-5 trace
   dictionary that names our broker events.
+- **Jumar Macato** ([jmacato](https://github.com/jmacato)) — **direct contributor**: built the
+  phone-side DSP engine behind the GSM network emulation (registration, SMS, incoming calls) and
+  the event-driven DSP runtime. The **GSM signalling** (RR/MM/CC over LAPDm and the MDI ring
+  format), the DSP↔MCU camp/registration handshake our faithful DSP engine models, and the
+  consolidated NHM-5 register-and-protocol reference for **RTC** and **SMS** (CP/RP, SMS-DELIVER,
+  EF_SMS storage, Smart-Messaging ringtones) are the ground-truth this network layer is built on.
+- **bitplane** — [nokia-dct3-re](https://github.com/bitplane/nokia-dct3-re): DCT3 reverse
+  engineering and a MAME driver, whose 3210 DSP message-format documentation informed the DSP↔MCU
+  modelling and the external-EEPROM FAID provisioning here.
 
 Vendored third-party code (see `third_party/` for licenses):
 
-- **mGBA** ARM core — Vicki Pfau (endrift), adapted to DCT3's big-endian ARM.
+- **mGBA** ARM core — Vicki Pfau (endrift), adapted to DCT3's big-endian ARM (MPL-2.0).
 - **qemu-calypso / bbaranoff** C54x — the TMS320C54x interpreter our DSP co-sim is built on (GPL-2).
+- **swSIM / swICC** — software SIM stack, © 2024 Tomasz Lisowski (BSD-3-Clause; `third_party/swsim/`,
+  `third_party/swicc/`).
 - **stb_image** — Sean Barrett.
 
 Any errors or misattributions here are ours, not theirs — corrections welcome.

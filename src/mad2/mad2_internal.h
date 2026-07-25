@@ -111,7 +111,8 @@ void    ext_eeprom_save(Mad2* m, const char* path);   // dump the 24C16 buffer (
 // SIMPHASE env override in mad2_init.
 uint32_t sim_read(Mad2* m, uint8_t off);
 void     sim_write(Mad2* m, uint8_t off, uint8_t v);
-void     sim_tick(Mad2* m);
+uint64_t sim_next_wake(Mad2* m);
+void     sim_advance_to(Mad2* m, uint64_t cycles);
 // Run the synthetic A3/A8 with the baked test Ki: RAND[16] -> SRES[4] + Kc[8].
 void     sim_run_gsm_algorithm(const uint8_t* rand16, uint8_t* sres4, uint8_t* kc8);
 

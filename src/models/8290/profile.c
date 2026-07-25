@@ -79,5 +79,5 @@ const ModelProfile model_8290 = {
         .match = "NSB-7",            // 8290 product code (0x1FC header) — unique to the 8290.
         .flash_size = 0,
     },
-    .dsp = &mad2_dsp_default,
+    .dsp = &mad2_dsp_rom6,           // ROM-6 faithful engine (src/mad2/dsp/dsp_rom6.c)
 };

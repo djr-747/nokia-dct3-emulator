@@ -88,5 +88,5 @@ const ModelProfile model_8250 = {
         .flash_size = 0,             // than 8210's "NSM-3"; MUST be registered first.
                                      // String-only match (like 8850).
     },
-    .dsp = &mad2_dsp_default,
+    .dsp = &mad2_dsp_rom6,           // ROM-6 faithful engine (src/mad2/dsp/dsp_rom6.c)
 };

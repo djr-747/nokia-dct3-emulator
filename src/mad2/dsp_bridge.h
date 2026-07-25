@@ -1,6 +1,6 @@
 // dsp_bridge.h — transport seam for a REMOTE DSP backend.
 //
-// `mad2_dsp_bridge` is a fourth DspOps backend (beside mad2_dsp_default / _rom4 /
+// `mad2_dsp_bridge` is another DspOps backend (beside mad2_dsp_rom6 / _rom4 /
 // _c54x). Instead of computing DSP behaviour locally, it forwards the entire MCU<->DSP
 // coupling over a byte stream to a remote DSP, which can be:
 //   (a) another emulator process running the c54x co-sim  (local validation), or

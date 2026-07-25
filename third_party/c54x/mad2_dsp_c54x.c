@@ -12,7 +12,7 @@
 //
 //   default (DSP54_COSIM unset): PASS-THROUGH. The real DSP is created (proving it
 //     loads + boots in-process) but the firmware still sees the faithful legacy
-//     mailbox model (dsp_default_*). 5110 behaviour is byte-identical to before — the
+//     mailbox model (dsp_rom4_*). 5110 behaviour is byte-identical to before — the
 //     safe baseline while the co-sim is brought up.
 //
 //   DSP54_COSIM=1: CO-SIM. The DSP is stepped each MCU tick and the HPI window
@@ -51,20 +51,24 @@ static int    g_realup = -1;   // DSP54_REALUP: faithful staged boot upload — 
                                //   cold 0x20002 reset-release edge, then it drives the live MCU upload
 static int    g_dsp_run;       // co-sim DSP gated by the MCU's DSP-reset-ctrl (0x20002 bit0):
                                //   held in reset (0) until the firmware releases it (1). REALUP only.
-static int    g_ratio = 1; // DSP54_RATIO
+static int    g_ratio = 1; // DSP54_RATIO: DSP clock cycles per elapsed ARM hardware cycle
 static int    g_intvec = 18;// DSP54_INTVEC (C54x INT2 = vec 18 -> 0x3598 host-cmd ISR)
 static int    g_log;
-static int    g_intrepeat;  // DSP54_INTREPEAT: re-pulse host int every N MCU steps (0=off;
+static int    g_intrepeat;  // DSP54_INTREPEAT: diagnostic re-pulse period in hardware cycles
                             // level-trigger experiment — a single edge is lost while INTM=1)
 static int    g_frameint;   // DSP54_FRAMEINT: C54x vector for the simulated codec frame int
                             // (e.g. 21=BRINT0 / 22=BXINT0, both enabled in IMR=0x52FD) (0=off)
-static int    g_frameper = 50000; // DSP54_FRAMEPER: raise the frame int every N MCU steps
-static uint64_t g_frameafter;     // DSP54_FRAMEAFTER: gate FRAMEINT until dsp_steps > N (so
+static int    g_frameper = 50000; // DSP54_FRAMEPER: diagnostic codec-frame period in hardware cycles
+static uint64_t g_frameafter;     // DSP54_FRAMEAFTER: hardware-cycle gate for FRAMEINT
                                   // the codec INT0 fires only AFTER the host-cmd handshake +
                                   // superloop entry settle — firing from step 0 corrupts boot)
 static int    g_p27_init, g_p27_on; static uint16_t g_p27_val; // DSP54_P27: codec RX sample on
                                   // port 0x27 (INT0 0x3204 reads it into the FIR buffer); silence=0
 static unsigned long long g_dspint_edges; // DSPINT doorbell strobes seen (diagnostic)
+static uint64_t g_host_cycle;             // monotonic ARM hardware clock supplied by DspOps
+static uint64_t g_dsp_advanced_cycle;     // last host cycle converted into C54x execution
+static uint64_t g_intrepeat_next_cycle;
+static uint64_t g_frame_next_cycle;
 
 // --- host I/O-port mailbox bridge -------------------------------------------------
 // The DSP PROM's host-command ISR (0x35B9) reads/writes PORTR/PORTW ports 1/2/3. In
@@ -594,8 +598,8 @@ static void c54x_port_write(void *opaque, uint16_t pa, uint16_t val) {
     // DSP54_FIQ0OUT=1: the FAITHFUL DSP->MCU ring-post interrupt. The MDIRCV enqueue
     // (PROM 0x37CE) signals the MCU with `port(1h) = 1` at 0x3807 after writing a ring
     // entry + advancing the tail; the MCU's FIQ0 handler (0x2EE9B6 -> 0x2C2824) drains
-    // head->tail. Raise FIQ0 on exactly that signal — the same line dsp_default raises for
-    // its MODELLED ring (dsp_default.c:226). Default OFF + env-gated. NOTE: gated downstream
+    // head->tail. Raise FIQ0 on exactly that signal — the same line the rom4 body raises for
+    // its MODELLED ring (dsp_rom4.c mdircv deposit). Default OFF + env-gated. NOTE: gated downstream
     // of a real blocker — the DSP's task bitmap [0x6E4] is 0 (the enable handlers in the
     // 0x8Exx host-cmd region never fire because the MCU's task-enable commands are absorbed
     // by the HLE), so the enqueue never runs and port1 never sees val=1 yet. This lands the
@@ -639,7 +643,6 @@ static void c54x_lazy_init(Mad2 *m) {
         g_realup = dsp54_faithful("DSP54_REALUP");   // faithful staged boot upload (default ON under cosim)
         const char *r = getenv("DSP54_RATIO");
         if (r && *r) { int v = atoi(r); if (v > 0) g_ratio = v; }
-        else if (g_cosim) g_ratio = 4;               // faithful default — boots loader1 to run-mode (doc Recipe C)
         const char *v = getenv("DSP54_INTVEC");
         if (v && *v) g_intvec = (int)strtol(v, 0, 0);
         else if (g_realup) g_intvec = 25;  // [0x20008] bit1 -> vec 25 (0x3772: work flag
@@ -742,7 +745,7 @@ static void c54x_lazy_init(Mad2 *m) {
     }
 }
 
-// True once the firmware's (dsp_default-modelled) DSP code-block upload has completed
+// True once the firmware's (rom4-body-modelled) DSP code-block upload has completed
 // (it sets dsp_uploaded itself). Until then the boot/upload handshake MUST be served by
 // the legacy model so the firmware actually performs its upload (the upload writes are
 // mirrored into the C54x core in c54x_write). After upload, optionally switch HPI reads to
@@ -885,7 +888,7 @@ static int c54x_read(Mad2 *m, uint32_t addr, int size, uint32_t ram_value, uint3
         // boot/upload phase (or DSP54_LIVE/SHAREDWIN unset): let the legacy model answer so the
         // firmware's modelled upload handshake runs.
     }
-    return dsp_default_read(m, addr, size, ram_value, out);
+    return dsp_mailbox_read(m, addr, size, ram_value, out);
 }
 
 // DSP-region WRITE. Pass-through delegates to the legacy model. In co-sim we mirror the
@@ -1272,10 +1275,10 @@ static int c54x_write(Mad2 *m, uint32_t addr, int size, uint32_t value) {
                 static int cb_on = -1; if (cb_on < 0) cb_on = getenv("DSP54_CMDBRIDGE") ? 1 : 0;
                 if (cb_on) { uint32_t k = (addr - 0x10000u) >> 1; if (k <= 0x53) dsp54_api_poke(g_dsp, (uint16_t)k, (uint16_t)value); }
             }
-            return dsp_default_write(m, addr, size, value);
+            return dsp_mailbox_write(m, addr, size, value);
         }
     }
-    return dsp_default_write(m, addr, size, value);
+    return dsp_mailbox_write(m, addr, size, value);
 }
 
 // DSP54_REALUP — faithful staged boot upload.
@@ -1293,8 +1296,16 @@ static int c54x_write(Mad2 *m, uint32_t addr, int size, uint32_t value) {
  * carried as data (ModelProfile.dsp_hpi_alias_base) so the firmware's own upload lands correctly
  * on every model; a missing loader1 is reported LOUDLY instead of silently seeded. */
 
-// Per-MCU-step pump. Always run the legacy tick (harmless in co-sim — its writes target
-// the same HPI RAM; superseded as the DSP takes over). In co-sim, advance the real DSP.
+// Keep the C54x clock domain synchronized to monotonic platform time.  The DSP
+// executes in c54x_tick, but its budget comes from elapsed hardware cycles rather
+// than from the number of ARM instructions the host happened to execute.
+static void c54x_sync_cycle(Mad2 *m, uint64_t cycles) {
+    (void)m;
+    g_host_cycle = cycles;
+}
+
+// Platform pump. Always run the legacy handshake work; in co-sim, advance the
+// real DSP by the independently clocked budget accumulated since the last pump.
 static void c54x_tick(Mad2 *m) {
     c54x_lazy_init(m);
     // DSP54_INITLOG (DSP->MCU side, HLE baseline): log the DSP->MCU signals the model raises —
@@ -1321,6 +1332,10 @@ static void c54x_tick(Mad2 *m) {
         }
       } }
     if (g_state == 1 && g_cosim) {
+        uint64_t elapsed_host_cycles = g_host_cycle - g_dsp_advanced_cycle;
+        g_dsp_advanced_cycle = g_host_cycle;
+        uint64_t dsp_budget64 = elapsed_host_cycles * (uint64_t)g_ratio;
+        int dsp_budget = dsp_budget64 > 100000u ? 100000 : (int)dsp_budget64;
         // NOTE: the 5110 DSP is largely RESIDENT mask-ROM — it self-populates its overlay/
         // vector/working RAM from its own DROM at boot (data[0x0F00]/0x500/0x580 etc. get real
         // content the firmware never wrote). The firmware only streams small block descriptors
@@ -1328,7 +1343,7 @@ static void c54x_tick(Mad2 *m) {
         // free-running, it boots and drains to the 0x408B idle (~23M steps, ~43% idle). Holding
         // it until "upload complete" actually prevents it reaching idle (it boots into a
         // continuous filter loop), so hold is opt-in only (DSP54_HOLD=1, for A/B). The essential
-        // fix is on the READ side (c54x_read serves the handshake from dsp_default so the
+        // fix is on the READ side (c54x_read serves the handshake from the rom4 body so the
         // firmware boots + performs its upload); writes still mirror into the C54x (harmless).
         static int released = -1, hold = -1;
         if (hold < 0) hold = getenv("DSP54_HOLD") ? 1 : 0;
@@ -1339,7 +1354,7 @@ static void c54x_tick(Mad2 *m) {
                 if (g_log) fprintf(stderr, "[dsp54] DSP released from reset at step %lluk "
                                    "(firmware upload complete)\n", (unsigned long long)(m->dsp_steps/1000));
             } else {
-                dsp_default_tick(m);   // keep the legacy upload-handshake pump running
+                dsp_mailbox_tick(m);   // keep the legacy upload-handshake pump running
                 return;                 // DSP held: do not step
             }
         }
@@ -1544,8 +1559,8 @@ static void c54x_tick(Mad2 *m) {
                 dsp54_api_poke(g_dsp, 0x72, (uint16_t)lg); done = 1;
                 if (g_log) fprintf(stderr, "[dsp54] LOADERGO: poked api_ram[0x72]=0x%04X (release loader1) @step %lluk\n",
                                    lg, (unsigned long long)(m->dsp_steps/1000)); } } }
-        if (!g_realup || g_dsp_run)   // REALUP: step only while the MCU has released the DSP (0x20002 bit0)
-            dsp54_step(g_dsp, g_ratio);
+        if ((!g_realup || g_dsp_run) && dsp_budget > 0)
+            dsp54_step(g_dsp, dsp_budget);
         spleak_done:;
         // DSP54_DSPHALT: the DSP froze at the armed PC — dump the full live memory map + regs ONCE,
         // then stop the process so we can disassemble what is REALLY there (DSP54_DSPHALTGO=1 to
@@ -1848,20 +1863,21 @@ static void c54x_tick(Mad2 *m) {
         // doorbell (ref/Nok-MADos-master/hw/mdi.c) — the MCU just advances the MDISND tail and the DSP
         // consumes the ring on its own frame cadence. Without a frame tick the DSP never re-polls after
         // the initial host-cmd arm (the cosim faked the wake via the [0x20008]->vec25 hack). Period =
-        // DSP54_FRAMEPER dsp_steps (default 50000). Kept OFF by default so the tested config stays
+        // DSP54_FRAMEPER hardware cycles (default 50000). Kept OFF by default so the tested config stays
         // byte-identical; promote to faithful-default only once it's proven to drive consumption.
         { static int ft_init = 0, ft_on = 0; static long ft_per = 50000; static unsigned long long ft_next = 0;
           if (!ft_init) { ft_init = 1; ft_on = getenv("DSP54_FRAMETICK") ? 1 : 0;
               const char *p = getenv("DSP54_FRAMEPER"); if (p && *p) ft_per = strtol(p, 0, 0);
               if (ft_per < 1) ft_per = 1; }
           if (ft_on && g_dsp_run) {
-              if (ft_next == 0) ft_next = m->dsp_steps + (unsigned long long)ft_per;
-              else if (m->dsp_steps >= ft_next) {
-                  ft_next = m->dsp_steps + (unsigned long long)ft_per;
+              if (ft_next == 0) ft_next = g_host_cycle + (unsigned long long)ft_per;
+              else if (g_host_cycle >= ft_next) {
+                  uint64_t events = 1u + (g_host_cycle - ft_next) / (uint64_t)ft_per;
+                  ft_next += events * (uint64_t)ft_per;
                   dsp54_host_interrupt(g_dsp, 16);   // INT0 = MAD2 frame sync (vec16 -> 0x3204)
                   if (g_log) { static unsigned n; if (++n <= 8) fprintf(stderr,
-                      "[dsp54] FRAMETICK: INT0 (vec16 frame) @dsp_steps=%lluk (period=%ld)\n",
-                      (unsigned long long)(m->dsp_steps/1000), ft_per); }
+                      "[dsp54] FRAMETICK: INT0 (vec16 frame) @cycle=%llu (period=%ld)\n",
+                      (unsigned long long)g_host_cycle, ft_per); }
               }
           }
         }
@@ -1969,7 +1985,7 @@ static void c54x_tick(Mad2 *m) {
         // sole sanity check (loopback fully off) regresses to CONTACT SERVICE, confirming the
         // probe echo is load-bearing. (A warm reboot re-runs the self-test, but DSP warm
         // re-staging is a separate open gap; not re-armed here — matches current behaviour.)
-        { static int bl_init = 0, bl_on = 0, bl_done = 0; static unsigned long long bl_echo_step = 0;
+        { static int bl_init = 0, bl_on = 0, bl_done = 0; static uint64_t bl_echo_cycle = 0;
           if (!bl_init) { bl_init = 1;
               bl_on = (dsp54_faithful("DSP54_COBBA") && !getenv("DSP54_COBBA_NOBSPLOOP")) ? 1 : 0; }
           if (bl_on && !bl_done && g_dsp && g_dsp_run) {
@@ -1987,15 +2003,15 @@ static void c54x_tick(Mad2 *m) {
                   uint16_t drr = dsp54_data_peek(g_dsp, 0x20);   // BSP receive  reg (BDRR0)
                   if (drr != dxr) {
                       dsp54_data_poke(g_dsp, 0x20, dxr);          // codec digital loopback echo
-                      if (dxr == 0x0AAA && !bl_echo_step)         // the self-test probe was just echoed
-                          bl_echo_step = m->dsp_steps ? m->dsp_steps : 1;
+                      if (dxr == 0x0AAA && !bl_echo_cycle)        // the self-test probe was just echoed
+                          bl_echo_cycle = g_host_cycle ? g_host_cycle : 1;
                       if (g_log) { static unsigned n; if (++n <= 8) fprintf(stderr,
                           "[dsp54] COBBA: BSP loopback DRR[0x20] <- DXR[0x21]=0x%04X @dsp_steps=%lluk\n",
                           dxr, (unsigned long long)(m->dsp_steps/1000)); }
                   }
               }
               // Self-test echoed + validated -> codec out of loopback; stop the per-tick peeks.
-              if (bl_echo_step && m->dsp_steps > bl_echo_step + 2000000ull) bl_done = 1;
+              if (bl_echo_cycle && g_host_cycle > bl_echo_cycle + 2000000ull) bl_done = 1;
           }
         }
         // DSP54_CMDLEVEL per-tick sample: keeps the line-level state honest between event
@@ -2010,19 +2026,20 @@ static void c54x_tick(Mad2 *m) {
         // [0x20008]; 0x3598 is IVT-only). So INT2 must be a SEPARATE periodic source — a tick that
         // makes the DSP poll the LATCHED port1 cmd word (cmd=(~[0x100AA])&[0x100A8]) and act on it:
         // bit1 -> 0x3621 arms the MDISND dequeue ([0x866]bit0). This probe fires vec18 every
-        // DSP54_CMDPOLLPER steps to TEST that timer-poll model (does it reach 0x35B9 + arm bit0?).
+        // DSP54_CMDPOLLPER hardware cycles to test that timer-poll model.
         { static int cp_init = 0, cp_on = 0; static long cp_per = 50000; static unsigned long long cp_next = 0;
           if (!cp_init) { cp_init = 1; cp_on = getenv("DSP54_CMDPOLL") ? 1 : 0;
               const char *p = getenv("DSP54_CMDPOLLPER"); if (p && *p) cp_per = strtol(p, 0, 0);
               if (cp_per < 1) cp_per = 1; }
           if (cp_on && g_dsp_run) {
-              if (cp_next == 0) cp_next = m->dsp_steps + (unsigned long long)cp_per;
-              else if (m->dsp_steps >= cp_next) {
-                  cp_next = m->dsp_steps + (unsigned long long)cp_per;
+              if (cp_next == 0) cp_next = g_host_cycle + (unsigned long long)cp_per;
+              else if (g_host_cycle >= cp_next) {
+                  uint64_t events = 1u + (g_host_cycle - cp_next) / (uint64_t)cp_per;
+                  cp_next += events * (uint64_t)cp_per;
                   dsp54_host_interrupt(g_dsp, 18);   // INT2 = host-cmd poll (vec18 -> 0x3598/0x35B9)
                   if (g_log) { static unsigned n; if (++n <= 8) fprintf(stderr,
-                      "[dsp54] CMDPOLL: INT2 (vec18 host-cmd poll) @dsp_steps=%lluk (period=%ld)\n",
-                      (unsigned long long)(m->dsp_steps/1000), cp_per); }
+                      "[dsp54] CMDPOLL: INT2 (vec18 host-cmd poll) @cycle=%llu (period=%ld)\n",
+                      (unsigned long long)g_host_cycle, cp_per); }
               }
           }
         }
@@ -2052,7 +2069,7 @@ static void c54x_tick(Mad2 *m) {
               Dsp54Status st; dsp54_status(g_dsp, &st);
               // REQUIRE the run-mode idle loop PC (0x319D-0x31A5) — NOT st.idle (which is also true
               // at the loader2 wait 0x0F6A, where the injection would be wiped by run-mode init).
-              if (st.pc >= 0x319D && st.pc <= 0x31A5 && m->dsp_steps > 1600000) {
+              if (st.pc >= 0x319D && st.pc <= 0x31A5 && g_host_cycle > 1600000u) {
                   it_done = 1;
                   dsp54_api_poke(g_dsp, 0x56, it_ctl);   // 0x856 OSC CTRL: bit0=enable (the 0xA598 gate)
                   dsp54_api_poke(g_dsp, 0x57, it_f1);    // 0x857 osc1 freq (1/4-Hz; keypad beep 0x0E10=900Hz)
@@ -2093,8 +2110,10 @@ static void c54x_tick(Mad2 *m) {
               const char *p = getenv("DSP54_TICKPER"); if (p && *p) tv_per = strtol(p, 0, 0);
               if (tv_per < 1) tv_per = 1; }
           if (tv_vec >= 0 && g_dsp_run) {
-              if (tv_next == 0) tv_next = m->dsp_steps + (unsigned long long)tv_per;
-              else if (m->dsp_steps >= tv_next) { tv_next = m->dsp_steps + (unsigned long long)tv_per;
+              if (tv_next == 0) tv_next = g_host_cycle + (unsigned long long)tv_per;
+              else if (g_host_cycle >= tv_next) {
+                  uint64_t events = 1u + (g_host_cycle - tv_next) / (uint64_t)tv_per;
+                  tv_next += events * (uint64_t)tv_per;
                   dsp54_host_interrupt(g_dsp, tv_vec);
                   if (g_log) { static unsigned n; if (++n <= 6) fprintf(stderr,
                       "[dsp54] TICKVEC: fired vec %d @dsp_steps=%lluk (per=%ld)\n",
@@ -2183,17 +2202,19 @@ static void c54x_tick(Mad2 *m) {
         // MMR 0x58 bit0 in a TWO-PHASE handshake — 0x7EBE spins while bit0 SET (wait peripheral
         // done), idle(3), then 0x7ECC spins while bit0 CLEAR (wait next tick). So bit0 is a periodic
         // frame-timer flag that must TOGGLE each frame. The C54x lift never models it, so the DSP
-        // spins forever (RATIO=4). Toggle bit0 every <ticks> MCU steps to model the frame timebase.
+        // spins forever (RATIO=4). Toggle bit0 every configured hardware-cycle period.
         // (DSP54_MMR58CLR=1 = legacy "always clear", only passes phase 1.) Default OFF.
         { static int m58_init = 0, m58_clr = 0; static uint64_t m58_per = 0, m58_next = 0; static uint16_t m58_bit = 0;
           if (!m58_init) { m58_init = 1; m58_clr = getenv("DSP54_MMR58CLR") ? 1 : 0;
               const char *p = getenv("DSP54_MMR58PER"); if (p && *p) { long v = strtol(p,0,0); if (v>0) m58_per=(uint64_t)v; } }
           if (m58_clr) { uint16_t v = dsp54_data_peek(g_dsp, 0x58); if (v & 1) dsp54_data_poke(g_dsp, 0x58, v & ~1u); }
-          else if (m58_per && m->dsp_steps >= m58_next) { m58_next = m->dsp_steps + m58_per;
+          else if (m58_per && g_host_cycle >= m58_next) {
+              uint64_t events = 1u + (g_host_cycle - m58_next) / m58_per;
+              m58_next += events * m58_per;
               m58_bit ^= 1; uint16_t v = dsp54_data_peek(g_dsp, 0x58);
               dsp54_data_poke(g_dsp, 0x58, (uint16_t)((v & ~1u) | m58_bit)); } }
-        // DSP54_FRAMECADENCE=<steps> (R1 decisive test): model the MCU's per-frame codec/call
-        // command. After the DSP first reaches idle, every <steps> MCU steps deliver ONE 0x1c-group
+        // DSP54_FRAMECADENCE=<cycles> (R1 decisive test): model the MCU's per-frame codec/call
+        // command. After the DSP first reaches idle, every configured hardware-cycle period delivers ONE 0x1c-group
         // host command (default 0x10 = bit4) via the real INT1 path and let the DSP return to idle
         // between pulses (NOT a tight burst like INJMDISND). FINDING (R1, canonical doc): this
         // flips the DSP out of idle into the codec/frame regime (codec 0x45C2/0x460E/port-2D-wait
@@ -2210,17 +2231,18 @@ static void c54x_tick(Mad2 *m) {
             if (fc_every) {
                 Dsp54Status st; dsp54_status(g_dsp, &st);
                 if (!fc_armed && (st.pc == 0x408C || st.pc == 0x408B || st.pc == 0x407C)) {
-                    fc_armed = 1; fc_next = m->dsp_steps + fc_every;
-                    if (g_log) fprintf(stderr, "[dsp54] FRAMECADENCE: DSP idle @%lluk — cmd 0x%04X every %llu steps\n",
-                                       (unsigned long long)(m->dsp_steps/1000), fc_cmd, (unsigned long long)fc_every);
+                    fc_armed = 1; fc_next = g_host_cycle + fc_every;
+                    if (g_log) fprintf(stderr, "[dsp54] FRAMECADENCE: DSP idle @cycle=%llu — cmd 0x%04X every %llu cycles\n",
+                                       (unsigned long long)g_host_cycle, fc_cmd, (unsigned long long)fc_every);
                 }
-                if (fc_armed && m->dsp_steps >= fc_next) {
-                    fc_next = m->dsp_steps + fc_every; fc_n++;
+                if (fc_armed && g_host_cycle >= fc_next) {
+                    uint64_t events = 1u + (g_host_cycle - fc_next) / fc_every;
+                    fc_next += events * fc_every; fc_n++;
                     mcu_set_word(m, g_port1_addr, fc_cmd);
                     mcu_set_word(m, g_port2_addr, 0x0000);
                     dsp54_host_interrupt(g_dsp, g_intvec);
-                    if (g_log && fc_n <= 8) fprintf(stderr, "[dsp54] FRAMECADENCE: frame %llu cmd 0x%04X @%lluk\n",
-                                       (unsigned long long)fc_n, fc_cmd, (unsigned long long)(m->dsp_steps/1000));
+                    if (g_log && fc_n <= 8) fprintf(stderr, "[dsp54] FRAMECADENCE: frame %llu cmd 0x%04X @cycle=%llu\n",
+                                       (unsigned long long)fc_n, fc_cmd, (unsigned long long)g_host_cycle);
                 }
             }
         }
@@ -2346,7 +2368,12 @@ static void c54x_tick(Mad2 *m) {
         // (mid DSP-math block-repeat) goes pending then is lost. Re-pulse periodically to test
         // whether the host-cmd ISR runs once it gets an INTM=0 window. Only after the firmware
         // has issued at least one real doorbell (g_dspint_edges>0), so we don't poke pre-boot.
-        if (g_intrepeat && g_dspint_edges && (m->dsp_steps % (uint64_t)g_intrepeat) == 0) {
+        if (g_intrepeat && g_dspint_edges && !g_intrepeat_next_cycle)
+            g_intrepeat_next_cycle = g_host_cycle + (uint64_t)g_intrepeat;
+        if (g_intrepeat_next_cycle && g_host_cycle >= g_intrepeat_next_cycle) {
+            uint64_t periods = 1u +
+                (g_host_cycle - g_intrepeat_next_cycle) / (uint64_t)g_intrepeat;
+            g_intrepeat_next_cycle += periods * (uint64_t)g_intrepeat;
             if (g_log) {
                 static int nlog = 0;
                 if (nlog < 12) { nlog++;
@@ -2371,8 +2398,12 @@ static void c54x_tick(Mad2 *m) {
         // 0x408B idle (INTM=0). The C54x timer is dead in the lift + left stopped, so pace it
         // via the serial frame interrupt instead. Experimental — find the vector/period that
         // settles the DSP at idle so it can service the host INT2.
-        if (g_frameint && m->dsp_steps > g_frameafter &&
-            (m->dsp_steps % (uint64_t)g_frameper) == 0) {
+        if (g_frameint && !g_frame_next_cycle && g_host_cycle >= g_frameafter)
+            g_frame_next_cycle = g_host_cycle + (uint64_t)g_frameper;
+        if (g_frame_next_cycle && g_host_cycle >= g_frame_next_cycle) {
+            uint64_t periods = 1u +
+                (g_host_cycle - g_frame_next_cycle) / (uint64_t)g_frameper;
+            g_frame_next_cycle += periods * (uint64_t)g_frameper;
             // DSP54_FRAMEDBG=1: dump DSP state around the first 8 injections (wake-vs-service
             // diagnosis — a woken-but-INTM-masked idle resumes inline and the ISR never runs).
             static int fdbg = -1; if (fdbg < 0) fdbg = getenv("DSP54_FRAMEDBG") ? 1 : 0;
@@ -2422,9 +2453,17 @@ static void c54x_tick(Mad2 *m) {
             }
         }
     }
-    dsp_default_tick(m);
+    // This backend is selected only by the ROM-4 5110 profile. In pass-through
+    // mode its HLE fallback must therefore have ROM-4 idle behaviour, not the
+    // ROM-6 group-0x03 keep-alive stream the shared body would emit.
+    m->dsp_no_keepalive = 1;
+    dsp_mailbox_tick(m);
 }
 
 const DspOps mad2_dsp_c54x = {
-    "c54x", c54x_read, c54x_write, c54x_tick,
+    .name = "c54x",
+    .read = c54x_read,
+    .write = c54x_write,
+    .tick = c54x_tick,
+    .sync_cycle = c54x_sync_cycle,
 };

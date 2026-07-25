@@ -100,5 +100,14 @@ const ModelProfile model_8210 = {
         .flash_size = 0,             // "NSM-3D" (8250) — register 8250 BEFORE 8210. String-
                                      // only match (like 8850); NSM-3 is unique to 8210/8250.
     },
-    .dsp = &mad2_dsp_default,
+    // Provision the stale DSP-calibration checksum on load (the in-flash analog of the 5110
+    // tune-checksum finalize; see model.h calib_cksum_*). The stock dump's framed journal
+    // record `08 f7 02 54` (flash device addr 0x3E866C = file 0x1E866C) stores 0x7B26, but the
+    // DSP self-test recomputes 0x77E2 over the calibration data and rejects the mismatch ->
+    // CONTACT SERVICE. Writing the firmware-computed checksum makes the EEPROM factory-
+    // consistent so the self-test passes ORGANICALLY (no fake verdict, no firmware-patch shim);
+    // idempotent, and retires the need for the pre-fixed `(EEPROM)` image.
+    .calib_cksum_off = 0x003E866Cu,
+    .calib_cksum_val = 0x77E2u,
+    .dsp = &mad2_dsp_rom6,           // ROM-6 faithful engine (src/mad2/dsp/dsp_rom6.c)
 };

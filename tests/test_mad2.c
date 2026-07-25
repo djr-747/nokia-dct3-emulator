@@ -336,6 +336,47 @@ static void test_dbgcon(void) {
     CHECK_EQ("probe read (byte)", mad2_read(&g_m, 0, DCT3_DBGCON_CHAR, 1, 0), 0xDEu);
 }
 
+// --- DSP phase-2 codeblock demand-page sequence -----------------------------
+// The running DSP demand-pages its runtime blocks at [0x100E2] in the order
+// loader(0x14) -> main(0x01) -> overlay(0x02) (ROM6 bridge ground truth,
+// 2026-07-17; resolves faithfulness gap 6-1 vs the old always-0x01 model).
+// Drive the pump directly: latch dsp_running, fire a pump tick, then feed the
+// firmware's "block done" reply (0x0004) and assert the request word advances.
+static void test_dsp_codeblock(void) {
+    printf("[dsp] phase-2 codeblock demand-page sequence 0x14->0x01->0x02\n");
+    const ModelProfile* p = fixture();
+    const uint32_t req   = p->fw.dsp_cb_req;      // 0x100E2 — request halfword (BE; id in low byte)
+    const uint32_t reply = p->fw.dsp_cb_reply;    // 0x100E4 — firmware's ack word
+    g_m.dsp_running = 1;                           // pretend the DSP code is live (phase 2)
+
+    // Event-driven pump: arm the code-block deadline and advance rtc_mono past it so the
+    // tick fires. A fresh reqblk (0) seeds the sequence at the loader block.
+    g_m.dsp_cb_deadline_cyc = g_m.rtc_mono + 1; g_m.rtc_mono += 1; dsp_mailbox_tick(&g_m);
+    CHECK_EQ("phase-2 seeds request at loader block", g_mem[req + 1], 0x14);
+
+    // Firmware finishes the loader (reply 0x0004) -> the reply handler advances to the main
+    // block and re-arms the deadline; advancing rtc_mono past it fires the request.
+    dsp_mailbox_write(&g_m, reply, 2, 0x0004);
+    g_m.rtc_mono += 256; dsp_mailbox_tick(&g_m);
+    CHECK_EQ("loader done -> requests main block", g_mem[req + 1], 0x01);
+
+    // Firmware finishes the main block -> DSP asks for the runtime overlay.
+    dsp_mailbox_write(&g_m, reply, 2, 0x0004);
+    g_m.rtc_mono += 256; dsp_mailbox_tick(&g_m);
+    CHECK_EQ("main done -> requests overlay block", g_mem[req + 1], 0x02);
+
+    // Overlay done -> upload complete: the deadline clears (pump idle, no further block queued).
+    dsp_mailbox_write(&g_m, reply, 2, 0x0004);
+    CHECK_EQ("overlay done -> upload complete (pump idle)", g_m.dsp_cb_deadline_cyc, 0);
+
+    // A partial-block reply (0x0002, not 0x0004) re-arms the deadline but does NOT advance the block id.
+    g_m.dsp_cb_deadline_cyc = 0;
+    dsp_mailbox_write(&g_m, reply, 2, 0x0002);
+    CHECK("partial reply re-arms the pump", g_m.dsp_cb_deadline_cyc != 0);
+    g_m.rtc_mono += 256; dsp_mailbox_tick(&g_m);
+    CHECK_EQ("partial reply keeps the same block id", g_mem[req + 1], 0x02);
+}
+
 int main(void) {
     printf("=== mad2 device-model unit tests ===\n");
     test_flash();
@@ -347,6 +388,7 @@ int main(void) {
     test_sim_auth();
     test_audio_mixer();
     test_dbgcon();
+    test_dsp_codeblock();
     printf("=== %d passed, %d failed ===\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

@@ -156,5 +156,5 @@ const ModelProfile model_3410 = {
         .match = "NHM-2",            // 3410 product code (in the PPM header of the dump)
         .flash_size = 0x00400000u,   // 4 MB — with the NHM-2 string, unambiguous
     },
-    .dsp = &mad2_dsp_default,        // shared/legacy DSP behaviour (verify for 3410)
+    .dsp = &mad2_dsp_rom6,           // ROM-6 faithful engine (src/mad2/dsp/dsp_rom6.c)
 };

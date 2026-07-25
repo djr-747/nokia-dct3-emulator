@@ -448,15 +448,31 @@ void mad2_write(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t value)
             //). So a write clears ACT (the ack); EN/MSK latch. FIQ5
             // (Timer1 overflow) is a SEPARATE interrupt acked via 0x20008 by handler 0x2E4418,
             // so it is not touched here (it used to be, from the old FIQ5/FIQ8 conflation).
-            m->fiq8_ctrl = (uint8_t)(value & ~0x02u);            // EN/MSK latch; ACT (bit1) never latches set
+            {
+                int was_running = (m->fiq8_ctrl & 0x01u) && !(m->fiq8_ctrl & 0x04u);
+                m->fiq8_ctrl = (uint8_t)(value & ~0x02u);        // EN/MSK latch; ACT never latches set
+                int now_running = (m->fiq8_ctrl & 0x01u) && !(m->fiq8_ctrl & 0x04u);
+                if (!now_running) {
+                    m->fiq8_next_cyc = 0;
+                } else if (!was_running || !m->fiq8_next_cyc) {
+                    uint64_t period = DCT3_ARM_HZ / (m->fiq8_hz ? m->fiq8_hz : 100u);
+                    m->fiq8_next_cyc = m->rtc_mono + (period ? period : 1u);
+                }
+            }
             break;
-        case 0x18: m->mbus_ctrl = (uint8_t)value & 0x7Fu; break; // MBUS control (TX-en bit5, RX-en bit6)
+        case 0x18:
+            m->mbus_ctrl = (uint8_t)value & 0x7Fu;       // TX-en bit5, RX-en bit6
+            if ((m->mbus_txe && (m->mbus_ctrl & 0x20)) ||
+                (m->mbus_rxdrdy && (m->mbus_ctrl & 0x40))) mad2_raise_fiq(m, 2);
+            else                                          mad2_ack_fiq(m, 2);
+            break;
         case 0x1A:   // MBUS TX data: load byte; loading clears TX-empty, and the byte
-            // finishes shifting after mbus_tx_delay -> sets TX-empty -> raises FIQ2.
+            // completes asynchronously at its monotonic deadline -> TX-empty/FIQ2.
             m->mbus_txe = 0;
+            mad2_ack_fiq(m, 2);                          // loading TX consumes TX-empty level
             m->mbus_tx_byte = (uint8_t)value;   // latch for the host bridge (emit on shift-out)
             m->mbus_tx_pending = 1;
-            m->mbus_tx_delay = 64;
+            m->mbus_tx_deadline_cyc = m->rtc_mono + 64u;
             break;
         case 0x15: {  // PUP control: bit5 = buzzer enable, bit4 = vibra enable
             emu_audio_render(m);   // flush PCM up to now at the OLD level -> sample-accurate onset/end
@@ -525,7 +541,18 @@ void mad2_write(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t value)
         // GENSIO CCONT write + START are routed above the switch as profile data
         // (gensio.ccont_w / gensio.start) — see the LCD+CCONT block.
         case IO_IRQ_ACT:  m->irq_pending &= ~(uint8_t)value; cc_int_update(m); break;  // write 1 to clear; CCONT line re-asserts IRQ2 if still pending
-        case IO_FIQ_ACT:  m->fiq_pending &= ~(uint8_t)value; break;
+        case IO_FIQ_ACT:
+            m->fiq_pending &= ~(uint8_t)value;
+            // Level-triggered sources are recomputed on the ACK event itself.
+            // This replaces the old per-instruction "re-raise" polling.
+            if (((uint8_t)value & (1u << 6)) &&
+                (m->sim_uart_int & 0x70u))                 // RXRDY|WWT|TXEMPTY
+                mad2_raise_fiq(m, 6);
+            if (((uint8_t)value & (1u << 2)) &&
+                ((m->mbus_txe && (m->mbus_ctrl & 0x20)) ||
+                 (m->mbus_rxdrdy && (m->mbus_ctrl & 0x40))))
+                mad2_raise_fiq(m, 2);
+            break;
         case IO_IRQ_MASK: m->irq_mask = (uint8_t)value; break;
         case IO_FIQ_MASK:
             // Unmasking FIQ3 kicks off a frame in the 3310 firmware: assert it once so
@@ -541,7 +568,7 @@ void mad2_write(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t value)
             // here (the kickoff), keep the bit-timer free of synthetic traffic, and run
             // MBUS RX over FIQ2 (FIQ_MBUSRX) like MADos — see the 0x19/0x1A read path.
             if ((m->fiq_mask & 0x08) && !((uint8_t)value & 0x08) && !(m->mbus_ctrl & 0x20))
-                m->fiq3_delay = 64;
+                m->fiq3_deadline_cyc = m->rtc_mono + 64u;
             m->fiq_mask = (uint8_t)value;
             break;
         case IO_INT_CTRL: m->int_ctrl = (uint8_t)value; break;
@@ -602,4 +629,3 @@ void mad2_mmio_audit_dump(const Mad2* m) {
     }
     printf("===\n");
 }
-

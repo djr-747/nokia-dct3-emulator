@@ -8,6 +8,72 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define VBATT_FULL          0x02C0u
+#define VBATT_RISE_PERIOD   5000000ull
+
+static void mad2_update_charge_current(Mad2* m) {
+    if (!m->charger_present)          m->adc[7] = 0x000;
+    else if (m->adc[2] < 0x02B0u)     m->adc[7] = 0x0180;
+    else                              m->adc[7] = 0x0020;
+}
+
+void mad2_set_battery_adc(Mad2* m, uint16_t adc) {
+    if (!m) return;
+    m->adc[2] = adc & 0x03FFu;
+    mad2_update_charge_current(m);
+    m->vbatt_rise_next_cyc =
+        m->charger_present && m->adc[2] < VBATT_FULL
+        ? m->rtc_mono + VBATT_RISE_PERIOD : 0;
+}
+
+void mad2_set_charger_adc(Mad2* m, uint16_t adc) {
+    if (!m) return;
+    m->adc[5] = adc & 0x03FFu;
+    uint8_t present = m->adc[5] >= 0x0100u;
+    if (present != m->charger_present) {
+        m->charger_present = present;
+        m->cc_int_lines |= 0x08u;
+        cc_int_update(m);
+    }
+    mad2_update_charge_current(m);
+    m->vbatt_rise_next_cyc =
+        present && m->adc[2] < VBATT_FULL
+        ? m->rtc_mono + VBATT_RISE_PERIOD : 0;
+}
+
+static uint64_t mad2_timer0_next_match(const Mad2* m) {
+    uint64_t den = DCT3_ARM_HZ * ((uint64_t)m->t0_div + 1u);
+    uint64_t raw = (m->rtc_mono * DCT3_T0_HZ) / den;
+    uint16_t current = (uint16_t)(raw + m->t0_offset);
+    uint32_t delta = (uint16_t)(m->t0_dest - current);
+    if (!delta) delta = 65536u;
+    uint64_t target = raw + delta;
+    return (target * den + DCT3_T0_HZ - 1u) / DCT3_T0_HZ;
+}
+
+static void deadline_min(uint64_t* next, uint64_t candidate) {
+    if (candidate && candidate < *next) *next = candidate;
+}
+
+uint64_t mad2_next_event_cycle(Mad2* m) {
+    if (!m) return UINT64_MAX;
+    uint64_t next = UINT64_MAX;
+    deadline_min(&next, sim_next_wake(m));
+    deadline_min(&next, m->rtc_min_next);
+    deadline_min(&next, m->rtc_sec_next);
+    deadline_min(&next, m->t1_wrap_next);
+    deadline_min(&next, m->fiq8_next_cyc);
+    deadline_min(&next, m->fiq3_deadline_cyc);
+    deadline_min(&next, m->mbus_tx_deadline_cyc);
+    deadline_min(&next, m->fiq4_next_cyc);
+    deadline_min(&next, m->wdt_deadline_cyc);
+    deadline_min(&next, m->vbatt_rise_next_cyc);
+    deadline_min(&next, mad2_timer0_next_match(m));
+    const DspOps* d = m->dsp_override ? m->dsp_override : m->model->dsp;
+    if (d && d->next_wake) deadline_min(&next, d->next_wake(m));
+    return next;
+}
+
 // Advance Timer0 from the CPU cycle count; latch IRQ4 when it crosses dest.
 // Use the real Timer0 frequency relative to the ARM clock so the firmware's
 // programmed intervals map to a faithful number of CPU cycles: Timer0 ticks at
@@ -21,7 +87,8 @@ void mad2_timers_tick(Mad2* m, uint32_t cycles) {
     { int64_t d = (int64_t)cycles - (int64_t)m->rtc_last_cyc;
       if (d < 0) d += 0x20000000;
       m->rtc_mono += (uint64_t)d; m->rtc_last_cyc = cycles; }
-    sim_tick(m);   // SIM: deliver pending ATR, re-arm FIQ6 for queued RX, FIQ7 on insert/remove
+    if (sim_next_wake(m) <= m->rtc_mono)
+        sim_advance_to(m, m->rtc_mono);
     // CCONT charger-detect (CContINT3): the CCONT raises INT3 on a charger plug/unplug
     // edge; the firmware's IRQ2 handler then re-reads the charger ADC (ch5) and starts/
     // stops the charging UI. Edge-detect the modelled charger voltage (set by the web UI)
@@ -36,9 +103,7 @@ void mad2_timers_tick(Mad2* m, uint32_t cycles) {
       // firmware reads ch7 to decide "charging" vs "not charging" (display_msg DMI_WARNING).
       // Model current flowing while the charger is connected and the battery isn't full;
       // at/near full it tapers to ~0 (which legitimately reads "not charging / full").
-      if (!present)                    m->adc[7] = 0x000;          // no charger -> no current
-      else if (m->adc[2] < 0x02B0u)    m->adc[7] = 0x0180;         // charging: current flows
-      else                             m->adc[7] = 0x0020;         // battery full: taper to trickle
+      mad2_update_charge_current(m);
 
       // Battery-voltage dynamics while charging. The firmware's charge state machine
       // (TASK_17_CHARGE @ 0x0022A578, state 65/0x41) asserts 0x5C0A and bails to
@@ -52,16 +117,19 @@ void mad2_timers_tick(Mad2* m, uint32_t cycles) {
       // emulated time), slow enough that the firmware's charge logic still sees
       // a level it'll act on. Charger unplug freezes the level — discharge isn't
       // modeled (idle wall-clock is short on the emu; no UX value yet).
-      #define VBATT_FULL          0x02C0u   // ~3.7 V — firmware's idea of "full"
-      #define VBATT_RISE_PERIOD   5000000ull // ~0.4 s emulated per +1 raw step
       if (present && m->adc[2] < VBATT_FULL) {
-          if (m->rtc_mono - m->vbatt_rise_last_cyc >= VBATT_RISE_PERIOD) {
-              m->adc[2]++;
-              m->vbatt_rise_last_cyc = m->rtc_mono;
+          if (!m->vbatt_rise_next_cyc)
+              m->vbatt_rise_next_cyc = m->rtc_mono + VBATT_RISE_PERIOD;
+          if (m->rtc_mono >= m->vbatt_rise_next_cyc) {
+              uint64_t due = 1u + (m->rtc_mono - m->vbatt_rise_next_cyc) / VBATT_RISE_PERIOD;
+              uint64_t room = VBATT_FULL - m->adc[2];
+              if (due > room) due = room;
+              m->adc[2] = (uint16_t)(m->adc[2] + due);
+              m->vbatt_rise_next_cyc += due * VBATT_RISE_PERIOD;
+              if (m->adc[2] >= VBATT_FULL) m->vbatt_rise_next_cyc = 0;
           }
       } else {
-          // Anchor so the first tick after a plug-in doesn't immediately step.
-          m->vbatt_rise_last_cyc = m->rtc_mono;
+          m->vbatt_rise_next_cyc = 0;
       }
     }
     // ===== PERF: nextEvent body-skip (the hot-path win) =======================================
@@ -80,14 +148,14 @@ void mad2_timers_tick(Mad2* m, uint32_t cycles) {
             && m->rtc_mono < m->t1_wrap_next                 // Timer1 16-bit wrap not due
             && !m->rtc_alr_enabled                           // RTC-alarm subsystem not armed (block 1)
             && !(m->cc_int_lines & 0x80)                     // no un-acked RTC-alarm line (block 2)
-            && !(m->fiq8_ctrl & 0x01)                        // FIQ8 ct_timer not enabled
+            && (!m->fiq8_next_cyc || m->rtc_mono < m->fiq8_next_cyc)
             && !m->power_off                                 // not in the power-off latch
-            && !m->fiq3_delay && !m->mbus_tx_delay           // no MBUS TxD / TX countdown pending
+            && (!m->fiq3_deadline_cyc || m->rtc_mono < m->fiq3_deadline_cyc)
+            && (!m->mbus_tx_deadline_cyc || m->rtc_mono < m->mbus_tx_deadline_cyc)
             && !m->mbus_txe && !m->mbus_rxdrdy               // no MBUS FIQ2 source
             && !(m->fiq_pending & (1u << 2))                 // FIQ2 not pending (still needs deassert)
-            && !m->fiq4_period                               // no FIQ4 heartbeat
-            && !(m->wdt_reg && m->wdt_cc && !m->wdt_disabled // watchdog won't trip this tick
-                 && (m->rtc_mono - m->wdt_last_kick_cyc) > m->wdt_window_cyc))
+            && (!m->fiq4_next_cyc || m->rtc_mono < m->fiq4_next_cyc)
+            && (!m->wdt_deadline_cyc || m->rtc_mono < m->wdt_deadline_cyc))
             goto edge_skip;
     }
     // CCONT RTC-MIN interrupt (CContINT5): fires once per real minute. The 3310 idle
@@ -108,6 +176,23 @@ void mad2_timers_tick(Mad2* m, uint32_t cycles) {
         m->cc_int_lines |= 0x20;   // INT5 RTC-MIN pending
         m->rtc_min_edges++;
         cc_int_update(m);
+    }
+    // RTC-SECOND (INT4/bit4) edge — bitplane fires the CCONT second interrupt every second
+    // (ccont.cpp:143); we previously latched only the minute (INT5). Latch INT4 per second and
+    // let the firmware's own mask (reg 0x0F, all-masked at reset) gate delivery onto IRQ2 — so
+    // this is inert unless the firmware unmasks INT4, exactly as on real hardware. CCSEC=0 opts
+    // out (A/B). SIMPACE/CCSEC-style knobs stay env-driven; default ON.
+    {
+        static int cc_sec_on = -1;
+        if (cc_sec_on < 0) cc_sec_on = getenv("CCSEC") ? (atoi(getenv("CCSEC")) != 0) : 1;
+        if (cc_sec_on) {
+            if (m->rtc_sec_next == 0) m->rtc_sec_next = ((m->rtc_mono / 13000000ull) + 1u) * 13000000ull;
+            if (m->rtc_mono >= m->rtc_sec_next) {
+                m->rtc_sec_next = ((m->rtc_mono / 13000000ull) + 1u) * 13000000ull;
+                m->cc_int_lines |= 0x10;   // INT4 RTC-SEC pending (mask-gated in cc_int_update)
+                cc_int_update(m);
+            }
+        }
     }
     // inject INT5 (RTC-MIN) edges early + unmask, to exercise the IRQ2
     // CCONT cascade ISR without waiting a full emulated minute (780M cyc). CCFORCE5_AT =
@@ -211,13 +296,15 @@ void mad2_timers_tick(Mad2* m, uint32_t cycles) {
     // mad2_fiq_poll asserts the FIQ until then. 1 centisecond = 13e6/100 cycles, derived
     // from the MONOTONIC rtc_mono accumulator (not the rebased `cycles`). Disabled at
     // boot (MSK set), so this is dormant until the firmware starts a stopwatch/countdown.
-    if ((m->fiq8_ctrl & 0x01) && !(m->fiq8_ctrl & 0x04)) {
-        uint64_t cs = m->rtc_mono / (DCT3_ARM_HZ / (uint64_t)m->fiq8_hz);
-        if (cs != m->fiq8_last_cs) {
-            m->fiq8_last_cs = cs;
-            m->fiq8_ctrl |= 0x02;     // ct_timer fired -> ACT pending (FIQ8)
-            m->fiq8_ticks++;
-        }
+    if (m->fiq8_next_cyc && m->rtc_mono >= m->fiq8_next_cyc &&
+        (m->fiq8_ctrl & 0x01) && !(m->fiq8_ctrl & 0x04)) {
+        uint64_t period = DCT3_ARM_HZ / (m->fiq8_hz ? m->fiq8_hz : 100u);
+        if (!period) period = 1;
+        uint64_t elapsed = m->rtc_mono - m->fiq8_next_cyc;
+        uint64_t events = 1u + elapsed / period;
+        m->fiq8_next_cyc += events * period;
+        m->fiq8_ctrl |= 0x02;         // ct_timer fired -> ACT pending (FIQ8)
+        m->fiq8_ticks += events;
     }
     // Watchdog starvation diagnostic + (optional, armed-only) time-out reset. The
     // firmware kicks the dog regularly; if no kick arrives within the time-out window
@@ -225,17 +312,18 @@ void mad2_timers_tick(Mad2* m, uint32_t cycles) {
     // starvation. We do
     // NOT reset the CPU by default (our pacing can starve it): WDTRESET=1 latches a
     // trip. A power-off (WDT=0) deliberately stops feeding, so don't count that.
-    if (m->wdt_reg != 0x00 && m->wdt_cc != 0x00 && !m->power_off && !m->wdt_disabled) {
+    if (m->wdt_deadline_cyc && m->rtc_mono >= m->wdt_deadline_cyc &&
+        m->wdt_reg != 0x00 && m->wdt_cc != 0x00 && !m->power_off && !m->wdt_disabled) {
         // 49 s window on rtc_mono — the RE-confirmed real-HW CCONT WDT timeout
         // (D-09): CCONT_RESET_WDT 0x2EEB94 reloads WDReg with 49 (0x31) every kick,
         // WDReg is denominated in seconds (0x20=32 s default). Was a 6 s placeholder
         // (~8x too short); the firmware kicks ~every 1.49 s so 49 s leaves ~47 s of
         // margin. Measured on rtc_mono (NOT cpu->cycles, which rebases every ~40 s).
-        if (m->rtc_mono - m->wdt_last_kick_cyc > m->wdt_window_cyc) {
-            m->wdt_starved++;
-            m->wdt_last_kick_cyc = m->rtc_mono;   // re-window so we count once per lapse
-            if (m->wdt_reset_armed) m->wdt_tripped = 1;  // armed only; no actual halt here
-        }
+        uint64_t window = m->wdt_window_cyc ? m->wdt_window_cyc : 1u;
+        uint64_t events = 1u + (m->rtc_mono - m->wdt_deadline_cyc) / window;
+        m->wdt_starved += events;
+        m->wdt_deadline_cyc += events * window;
+        if (m->wdt_reset_armed) m->wdt_tripped = 1;  // armed only; no actual halt here
     }
     // Clean power-off (ccont_poweroff wrote WDT/reg05 = 0x00). Surface it as state and
     // treat it as the faithful NVRAM-flush point. We do NOT halt during normal boot:
@@ -244,13 +332,17 @@ void mad2_timers_tick(Mad2* m, uint32_t cycles) {
     if (m->power_off && !m->power_off_commit) {
         if (m->power_off_armed) m->power_off_commit = 1;  // flush committed (diagnostic)
     }
-    if (m->fiq3_delay && --m->fiq3_delay == 0) mad2_raise_fiq(m, 3);  // MBUS TxD-empty kickoff (FIQ3)
+    if (m->fiq3_deadline_cyc && m->rtc_mono >= m->fiq3_deadline_cyc) {
+        m->fiq3_deadline_cyc = 0;
+        mad2_raise_fiq(m, 3);                         // MBUS timer event (FIQ3)
+    }
     // MBUS transmit engine: when the loaded byte finishes shifting, the TX register
     // goes empty; while the transmitter is enabled this raises FIQ2 (the MBUS event
     // ISR), which loads the next byte. FIQ2 de-asserts when the firmware writes the
     // next byte (clears mbus_txe) or disables TX (clears control bit5), so it fires
     // exactly once per byte and not after the final byte (no storm).
-    if (m->mbus_tx_delay && --m->mbus_tx_delay == 0) {
+    if (m->mbus_tx_deadline_cyc && m->rtc_mono >= m->mbus_tx_deadline_cyc) {
+        m->mbus_tx_deadline_cyc = 0;
         m->mbus_txe = 1;
         if (m->mbus_tx_pending) {       // the loaded byte finished shifting -> emit to the host ring
             m->mbus_tx_pending = 0;
@@ -259,28 +351,22 @@ void mad2_timers_tick(Mad2* m, uint32_t cycles) {
                 m->mbus_tx_bytes++;
             }
         }
+        if (m->mbus_ctrl & 0x20) mad2_raise_fiq(m, 2);
     }
-    // FIQ2 is the single MBUS event line: it asserts for EITHER TX-empty (while the
-    // transmitter is enabled, ctrl bit5) OR RX-data-ready (while the receiver is enabled,
-    // ctrl bit6) — the firmware's FIQ2 ISR reads status 0x19 to tell which (bit4 TXE,
-    // bit5 RXDRDY). Modelling only the TX half meant an injected RX byte's FIQ2 (set via
-    // mbus_rx_signal / the boot_trace MBUSFRAME path) was torn down by this same tick
-    // before the per-byte RX ISR could consume it, so multi-byte service frames never
-    // assembled. RXDRDY (mbus_rxdrdy) is set only while injected bytes wait and clears on
-    // FIFO drain (mbus_rx_pop), so at normal boot the RX term is always 0 → byte-identical.
-    if ((m->mbus_txe   && (m->mbus_ctrl & 0x20)) ||
-        (m->mbus_rxdrdy && (m->mbus_ctrl & 0x40))) mad2_raise_fiq(m, 2);
-    else                                           mad2_ack_fiq(m, 2);
-    // Periodic scheduler tick (FIQ4). Edge-detect a tick boundary and latch FIQ4;
+    // Periodic scheduler tick (FIQ4). The optional diagnostic heartbeat owns an
+    // explicit deadline; it does not sample/divide the clock on every instruction.
     // the handler 0x2E4426 acks it via [0x20008]=0x10. Derive the boundary from the
     // MONOTONIC rtc_mono accumulator, NOT the raw `cycles` arg — the core rebases
     // cycles down by 0x20000000 periodically, which made this heartbeat phase-JUMP
     // at every rebase relative to the soft-timer walk (whose time base is the
     // rtc_mono-derived Timer0). That phase discontinuity let FIQ4 preempt the walk
     // mid-operation and corrupt the heap free-list (the low-battery idle wedge).
-    if (m->fiq4_period) {
-        uint32_t t = (uint32_t)(m->rtc_mono / m->fiq4_period);
-        if (t != m->fiq4_lasttick) { m->fiq4_lasttick = t; mad2_raise_fiq(m, 4); }
+    if (m->fiq4_next_cyc && m->rtc_mono >= m->fiq4_next_cyc) {
+        uint64_t elapsed = m->rtc_mono - m->fiq4_next_cyc;
+        uint64_t periods = 1u + elapsed / m->fiq4_period;
+        m->fiq4_next_cyc += periods * m->fiq4_period;
+        m->fiq4_lasttick += (uint32_t)periods;
+        mad2_raise_fiq(m, 4);
     }
     // Body-skip rejoin: a quiescent tick jumps here, bypassing the edge body above.
   edge_skip:
@@ -312,9 +398,17 @@ void mad2_timers_tick(Mad2* m, uint32_t cycles) {
         }
     }
     // DSP pump (mailbox acks, IRQ4 generation, self-test + boot-msg injection) is
-    // per-model behaviour (DspOps; see models/model.h, default in src/mad2/dsp_default.c).
+    // per-model behaviour (DspOps; see models/model.h and src/mad2/dsp/dsp_rom4.c / dsp_rom6.c).
+    // Runtime RF/GSM work is deadline-driven: a backend that supplies next_wake /
+    // advance_to is serviced only when its monotonic event deadline has arrived.
     { const DspOps* d = m->dsp_override ? m->dsp_override : m->model->dsp;
-      if (d && d->tick) d->tick(m); }
+      if (d) {
+          if (d->sync_cycle) d->sync_cycle(m, m->rtc_mono);
+          if (d->advance_to &&
+              (!d->next_wake || d->next_wake(m) <= m->rtc_mono))
+              d->advance_to(m, m->rtc_mono);
+          if (d->tick) d->tick(m);
+      } }
     uint64_t d = (uint64_t)m->t0_div + 1;
     uint16_t c = (uint16_t)((m->rtc_mono * DCT3_T0_HZ) / (DCT3_ARM_HZ * d) + m->t0_offset);   // monotonic base + divider-continuity offset (see Timer1 note)
     uint16_t prev = m->t0_last;
@@ -371,4 +465,3 @@ int mad2_fiq_poll(const Mad2* m) {
     if ((m->fiq8_ctrl & 0x02) && !(m->fiq8_ctrl & 0x04)) return 8;
     return -1;
 }
-

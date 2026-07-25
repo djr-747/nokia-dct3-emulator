@@ -28,10 +28,10 @@
 // ---- transport (native sockets; inert on wasm) ------------------------------
 static int   g_fd = -1;
 static int   g_framed;            // 1 = framed serial transport (else raw socket/fd)
-static int   g_synperiod = 2048;
+static uint64_t g_sync_period_cyc = 2048;
 static uint8_t g_lastcc[16];
 static int   g_doorbell;          // a DSPINT strobe happened since last sync
-static uint64_t g_tickn;
+static uint64_t g_host_cycle;
 static unsigned long g_st_step, g_st_poll, g_st_win, g_st_cells, g_st_rcv, g_st_snd, g_st_blk, g_st_done, g_st_timeout, g_st_shifted;
 
 #ifndef __EMSCRIPTEN__
@@ -99,14 +99,16 @@ int dsp_bridge_enabled(void) {
     const char* spec = getenv("DSP_BRIDGE");
     if (!spec || !*spec) return 0;
     if (g_fd < 0) {
-        const char* sp = getenv("DSPB_SYNC_PERIOD");
-        if (sp) g_synperiod = atoi(sp);
+        const char* sp = getenv("DSPB_SYNC_CYCLES");
+        if (!sp) sp = getenv("DSPB_SYNC_PERIOD"); // compatibility: now interpreted as hardware cycles
+        if (sp) g_sync_period_cyc = strtoull(sp, 0, 0);
         g_fd = sock_setup(spec);
         if (g_fd < 0) { fprintf(stderr, "[dspb] FAILED to open transport '%s'\n", spec); return 0; }
 #ifndef __EMSCRIPTEN__
         dspx_init(&g_x, g_fd, g_framed);
 #endif
-        fprintf(stderr, "[dspb] connected (sync every %d ticks, %s)\n", g_synperiod,
+        fprintf(stderr, "[dspb] connected (sync every %llu hardware cycles, %s)\n",
+                (unsigned long long)g_sync_period_cyc,
                 g_framed ? "framed serial" : "raw stream");
         // COLD SYSTEM RESTART before the MCU boots. We send DSPB_RESET, which the proxy now services as a
         // FULL ASIC reset (IO_CTSI_RST bit2 == ccont_reboot) — NOT the old warm DSP-only 0x20002 toggle that
@@ -284,7 +286,7 @@ static int bridge_write(Mad2* m, uint32_t addr, int size, uint32_t value) {
 // Advance the remote DSP by `delta` and apply its window deltas + interrupts into the MCU.
 // This is THE clock-gate: the MCU blocks here until the remote DSP has stepped and reported
 // back. Returns 0 on success, -1 on transport loss (g_fd cleared).
-static uint64_t g_last_sync;
+static uint64_t g_last_sync_cycle;
 
 // ---- frame instrumentation (DSPB_LOG=1): prove SND/RCV + window data come back from the phone -----
 static int g_log = -1;
@@ -613,7 +615,7 @@ static int bridge_read(Mad2* m, uint32_t addr, int size, uint32_t ram_value, uin
     if (k2_early) handshake = 1;
     if (!handshake) return 0;
     if (bridge_drain_step(m, DSPB_POLL, (uint32_t)g_readstep)) return 0;  // EXACT n insns, no ratio
-    g_last_sync = g_tickn;                           // the read just synced; reset the periodic timer
+    g_last_sync_cycle = g_host_cycle;                // the read just synced; reset the periodic timer
     if (!m->mem) return 0;
     uint32_t a = addr & m->mem_mask, v = 0;
     for (int i = 0; i < size; i++) v = (v << 8) | m->mem[(a + i) & m->mem_mask];  // big-endian
@@ -747,8 +749,6 @@ static void bridge_tick(Mad2* m) {
         }
     }
 
-    g_tickn++;
-
     // DSPB_HLE_VERIFY fast path: during the latched verify phase EVERY DSP interaction is HLE'd host-
     // side (block-acks + verdict in bridge_read, block DATA dropped in bridge_write) — the proxy is not
     // needed at all. Skip the per-STEP round-trip + pacing so the MCU runs the 115-block copy loop at
@@ -757,7 +757,7 @@ static void bridge_tick(Mad2* m) {
     // the verdict read disarms the latch, in time for the dsp_disable -> final-block -> warm-reset
     // sequence to reach the real DSP. Only under HLE_VERIFY: the faithful pump forwards real block data
     // and MUST keep syncing to deliver it + pull the DSP's real handshake.
-    if (g_hle_verify > 0 && g_ba_armed) { g_last_sync = g_tickn; return; }
+    if (g_hle_verify > 0 && g_ba_armed) { g_last_sync_cycle = g_host_cycle; return; }
 
     // Mode select (once): edge-driven push/drain, or the default periodic-STEP clock.
     if (g_edge < 0) {
@@ -773,15 +773,23 @@ static void bridge_tick(Mad2* m) {
     }
 
     // Default: sync on a doorbell strobe, or periodically (to pull spontaneous DSP keep-alive IRQs).
-    int due = g_doorbell || (g_synperiod > 0 && (g_tickn - g_last_sync) >= (uint64_t)g_synperiod);
+    int due = g_doorbell || (g_sync_period_cyc > 0 &&
+                             g_host_cycle - g_last_sync_cycle >= g_sync_period_cyc);
     if (!due) return;
     g_doorbell = 0;
 
-    // STEP carries the REAL number of MCU ticks since the last sync, so the remote DSP
-    // advances proportionally (delta * its ratio) and the keep-alive timing stays right.
-    uint32_t delta = (uint32_t)(g_tickn - g_last_sync);
-    g_last_sync = g_tickn;
+    // STEP carries elapsed monotonic hardware cycles since the last sync. It is
+    // independent of ARM instruction count/CPI, so the remote DSP clock does not
+    // speed up or slow down when the emulated CPU's instruction mix changes.
+    uint64_t elapsed = g_host_cycle - g_last_sync_cycle;
+    uint32_t delta = elapsed > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed;
+    g_last_sync_cycle = g_host_cycle;
     bridge_drain_step(m, DSPB_STEP, delta);           // ratio-scaled by the server (time-pacing)
+}
+
+static void bridge_sync_cycle(Mad2* m, uint64_t cycles) {
+    (void)m;
+    g_host_cycle = cycles;
 }
 
 const DspOps mad2_dsp_bridge = {
@@ -789,6 +797,7 @@ const DspOps mad2_dsp_bridge = {
     .read  = bridge_read,          // coherent window reads under DSPB_SYNCREAD (else inert -> RAM)
     .write = bridge_write,
     .tick  = bridge_tick,
+    .sync_cycle = bridge_sync_cycle,
 };
 
 #else  // __EMSCRIPTEN__ — browser build: no serial/socket transport exists.

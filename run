@@ -87,6 +87,9 @@ scenario() {
     gui)
       BIN=build/dct3_boot_trace_gui; STEPS=400000000; KNOBS="GUI=1"
       DESC="live SDL GUI (auto-dummy video when headless)" ;;
+    camp)
+      BIN=build/dct3_boot_trace_gui; STEPS=400000000; KNOBS="GUI=1 ROM6NEW=1"
+      DESC="live GUI, faithful ROM6NEW radio-camp engine + swSIM software SIM (3310)" ;;
     gui-reset)
       BIN=build/dct3_boot_trace_gui; STEPS=60000000
       KNOBS="GUI=1 GUIKEYLOG=1 GUIREBOOTAT=30000000"
@@ -105,7 +108,7 @@ scenario() {
     *) return 1 ;;
   esac
 }
-SCENARIOS="boot gui gui-reset reset-recover nosim faid-bake"
+SCENARIOS="boot gui camp gui-reset reset-recover nosim faid-bake"
 
 # ── usage ─────────────────────────────────────────────────────────────────
 usage() {
@@ -182,19 +185,18 @@ scenario "$SCEN"        || { echo "run: unknown scenario '$SCEN' (have: $SCENARI
 # EE5110SAVE (faid-bake) must not be overridden.
 case "$MODEL" in
   5110)
-    # DSP54_COSIM is a PRESENCE check in the binary (=0 still enables it). Honor a user
-    # override here: pass DSP54_COSIM=0 to turn cosim OFF (we drop the var entirely below),
-    # any non-zero value keeps it on, none => default on. Pre-scan the trailing args.
-    _ucos=""; for a in "$@"; do case "$a" in DSP54_COSIM=*) _ucos="${a#DSP54_COSIM=}";; esac; done
-    [ -z "$_ucos" ] && KNOBS="DSP54_COSIM=1 $KNOBS"
+    # DSP engine: DEFAULT is the ROM-4 network engine (accepts SIM + camps/registers with
+    # swSIM, like the 3210). The real C54x co-sim is now OPT-IN — pass DSP54_COSIM=1 to run
+    # it. mad2_init treats the var's PRESENCE as the opt-in and picks ROM-4 when it is unset,
+    # so the run script must NOT force it on; a user-passed DSP54_COSIM=1 is forwarded by the
+    # global KEY=VAL arg loop below (and DSP54_COSIM=0 is dropped there, staying on ROM-4).
+    # EEPROM: use the SAME source the 5110 guard uses — the baked virgin NokiX blob
+    # (EE_NSE1) + load-time eeprom_provision finalize, NO EE5110= override. (The old
+    # auto-pickup of firmware/nse-1-faid.bin diverged from the guard and never cleared
+    # the FAID gate anyway.) EE5110SAVE bakes still honour their own note.
     EE_NOTE="virgin NokiX blob + load-time finalize (tune cksum + DSP-fault latch 0x607)"
     case " $KNOBS " in *EE5110SAVE=*)
-      EE_NOTE="baking → firmware/nse-1-faid.bin (EE5110SAVE)" ;;
-    *)
-      if [ -f firmware/nse-1-faid.bin ]; then
-        KNOBS="EE5110=firmware/nse-1-faid.bin $KNOBS"
-        EE_NOTE="firmware/nse-1-faid.bin (baked) + load-time finalize"
-      fi ;;
+      EE_NOTE="baking → (EE5110SAVE target)" ;;
     esac
     # Canonical soak for a headless boot: 320M covers three ~94M-step DSP-watchdog
     # checks (103M/197M/291M) past the old reason-0x68 window. A trailing numeric

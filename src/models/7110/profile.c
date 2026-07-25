@@ -153,7 +153,7 @@ const ModelProfile model_7110 = {
     // wiring, identical in shape to the 5110: native = the real C54x co-sim (DSP54_COSIM=1; the 7110
     // uploads its OWN ROM-4 blocks onto the shared ROM-4 PROM via DSP54_REALUP — proven 2026-06-17),
     // pass-through to the HLE otherwise; wasm = the ROM-4 HLE (no C54x core). Was mis-bound to
-    // mad2_dsp_default (the ROM-6 HLE).
+    // the shared ROM-6 HLE of the day (now the rom6 engine).
     // The native C54x co-sim CANNOT boot the 7110 DSP: it runs the 5110's resident PROM
     // (re/dsp-5110/raw/dsp_full.bin) while the 7110 uploads its OWN blocks (only 36%
     // F073-overlapped), so the 7110's code far-branches into incompatible PROM routines and
@@ -163,5 +163,5 @@ const ModelProfile model_7110 = {
     // (bind mad2_dsp_c54x + DSP54_COSIM=1 to study the real DSP)
     // 7110-SPECIFIC ROM-4 responder (src/models/7110/dsp_7110.c): same revision as the
     // 5110/6110/3210 (mad2_dsp_rom4) but its own DSP self-test reply model — the phones differ.
-    .dsp = &mad2_dsp_7110,           // ROM-4 HLE responder, 7110-specific (native + web)
+    .dsp = &mad2_dsp_rom6,           // ROM-6 faithful engine (src/mad2/dsp/dsp_rom6.c)
 };

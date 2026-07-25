@@ -17,7 +17,11 @@ uint8_t mbus_rx_pop(Mad2* m) {
     if (m->mbus_rx_head == m->mbus_rx_tail) return 0xFF;   // empty: idle line reads 0xFF
     uint8_t b = m->mbus_rx[m->mbus_rx_head++ % sizeof(m->mbus_rx)];
     m->mbus_rx_bytes++;
-    if (mbus_rx_count(m) == 0) m->mbus_rxdrdy = 0;         // FIFO drained -> RXDRDY clears
+    if (mbus_rx_count(m) == 0) {
+        m->mbus_rxdrdy = 0;                                // FIFO drained -> RXDRDY clears
+        if (!(m->mbus_txe && (m->mbus_ctrl & 0x20)))
+            mad2_ack_fiq(m, 2);
+    }
     return b;
 }
 // Assert RXDRDY + FIQ2 while bytes wait (only meaningful in RECEIVE mode, ctrl bit6).

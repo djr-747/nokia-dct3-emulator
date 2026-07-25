@@ -113,5 +113,5 @@ const ModelProfile model_8850 = {
     // block-ack IRQ4 (flag 0x135664) and the self-test FIQ0 reply are driven by the
     // resolved per-build addresses above (dsp_uploaded / verdict), NOT a custom hack.
     // (Old src/models/8850/dsp.c IRQ4_PERIOD=20000 injector deleted.)
-    .dsp = &mad2_dsp_default,
+    .dsp = &mad2_dsp_rom6,           // ROM-6 faithful engine (src/mad2/dsp/dsp_rom6.c)
 };

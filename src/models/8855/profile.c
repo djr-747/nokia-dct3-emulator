@@ -83,5 +83,5 @@ const ModelProfile model_8855 = {
         .match = "NSM-4",            // 8855 product code (0x1FC header)
         .flash_size = 0x00400000u,   // 4 MB
     },
-    .dsp = &mad2_dsp_default,
+    .dsp = &mad2_dsp_rom6,           // ROM-6 faithful engine (src/mad2/dsp/dsp_rom6.c)
 };

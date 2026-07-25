@@ -155,7 +155,7 @@ typedef struct {
     // = the heap accounting struct and LR = the caller left waiting for memory. 0 = no sig.
     uint32_t malloc_fail;     // alloc-fail / block-retry PC   (3310 v5.79 = 0x299B26)
     // Task-14 (readiness state machine) cancel state — READ-ONLY for the DSP
-    // keep-alive emitter (src/mad2/dsp_default.c). The emulated DSP supplies the
+    // keep-alive emitter (src/mad2/dsp/dsp_rom4.c bodies + rom6_idle_heartbeat). The emulated DSP supplies the
     // post-boot MDIRCV traffic the firmware consumes to advance task-14 to its
     // state-6 completion, so task-14's OWN STATE_FANOUT (0x267734) cancels the 0xE4
     // (MSG_T4_MDI_FAULT) DSP-liveness watchdog soft-timer (docs/dsp-reset-chain-3310-
@@ -434,7 +434,7 @@ typedef struct {
 // generation, message injection) differs per model, and editing the shared mad2
 // code risks the byte-identical 3310 boot. So the DSP behaviour is a per-model
 // vtable: mad2_read/mad2_write/mad2_tick dispatch to the profile's `dsp` ops.
-// `mad2_dsp_default` carries the current (3310/legacy) behaviour; a model with a
+// The engines are per-ROM-revision (mad2_dsp_rom4 / mad2_dsp_rom6); a model with a
 // genuinely different DSP boot supplies its own ops (e.g. src/models/8850/dsp.c).
 struct Mad2;   // opaque here; the ops cast it back (defined in src/mad2/mad2.h)
 typedef struct DspOps {
@@ -447,6 +447,14 @@ typedef struct DspOps {
     int  (*write)(struct Mad2* m, uint32_t addr, int size, uint32_t value);
     // Per-step DSP pump: mailbox acks, IRQ4 generation, self-test/boot-msg injection.
     void (*tick)(struct Mad2* m);
+    // Optional asynchronous runtime scheduler. `sync_cycle` updates the backend's
+    // clock view without performing work. `next_wake` returns the next monotonic
+    // rtc_mono cycle at which the backend has protocol work to do, or UINT64_MAX when
+    // idle. `advance_to` is called only when that deadline is reached.  Boot/mailbox
+    // mechanics remain in tick; RF/GSM backends must not synthesize elapsed time there.
+    void (*sync_cycle)(struct Mad2* m, uint64_t cycles);
+    uint64_t (*next_wake)(struct Mad2* m);
+    void (*advance_to)(struct Mad2* m, uint64_t cycles);
     // Optional HLE tone report: for backends that do NOT emit real codec PCM, report the
     // tone the MCU has commanded via the COBBA HPI registers so emu_audio can synthesize it
     // into the shared PCM stream. Return 1 and fill *f1_hz (osc1 / plain beep) + *f2_hz (osc2
@@ -454,23 +462,20 @@ typedef struct DspOps {
     // real C54x plays the tone itself through the codec (DXR tap), so the mixer must NOT.
     int  (*hle_tone)(struct Mad2* m, int* f1_hz, int* f2_hz);
 } DspOps;
-// Shared HLE tone reader (defined in dsp_default.c): reads the model-invariant COBBA tone
+// Shared HLE tone reader (src/mad2/dsp/dsp_tone.c): reads the model-invariant COBBA tone
 // registers (DCT3_TONE_*). Every HLE DSP backend points .hle_tone at this; the cosim leaves
 // it NULL. Kept in the DSP layer (not the mixer) because tone generation is a DSP function.
 int dsp_hle_tone(struct Mad2* m, int* f1_hz, int* f2_hz);
-extern const DspOps mad2_dsp_default;   // ROM-6 (3310/33xx/34xx/82xx/8850) — shared legacy behaviour
-// HLE DSP responders are organised BY Nokia DSP ROM revision: ROM 4 = 5110/6110
-// (src/mad2/dsp_rom4.c, cosim-grounded), ROM 6 = mad2_dsp_default above. Distinct TUs so ROM-4
-// fidelity work can't regress the byte-identical 3310 (ROM-6) boot. See
+// HLE DSP engines are organised BY Nokia DSP ROM revision: ROM 4 = 5110/6110/
+// 3210 + variants (src/mad2/dsp/dsp_rom4.c, cosim-grounded), ROM 6 = the faithful engine
+// (src/mad2/dsp/dsp_rom6.c) for the whole v6 family incl. 7110 and 6210/6250. Distinct TUs so
+// ROM-4 fidelity work can't regress the guarded ROM-6 boots. See
 // docs/research/5110-.
-extern const DspOps mad2_dsp_rom4;      // ROM-4 (5110/6110/3210) responder — shared
-// ROM-4 but a SEPARATE responder for the 7110 (NSE-5): same revision, but its own DSP self-test
-// conversation (cmd-0x70 sub-0x04/0x06/0x0E via the PORT1 API path) — kept distinct so the 7110
-// reply model never entangles the shared 5110/6110/3210 path. src/models/7110/dsp_7110.c.
-extern const DspOps mad2_dsp_7110;      // ROM-4 (7110) responder — 7110-specific self-test
-// ROM-6 base (mad2_dsp_default) + the 6210's self-test-complete ack (group-0x74 sub-13 clears
-// verdict bit2). Separate TU so the 3310 ROM-6 guard boot stays byte-identical. src/models/6210/dsp_6210.c.
-extern const DspOps mad2_dsp_6210;      // ROM-6 (6210) responder — 6210-specific self-test-complete
+extern const DspOps mad2_dsp_rom4;      // ROM-4 (5110/6110/3210 + variants) engine — shared
+extern const DspOps mad2_dsp_rom6;      // ROM-6 faithful engine (also declared in mad2/dsp/dsp_rom6.h)
+// (The former per-model responders mad2_dsp_7110 / mad2_dsp_6210 and the legacy shared
+// mad2_dsp_default were retired 2026-07-24: the whole ROM-6 family — incl. 7110 and
+// 6210/6250 — runs the faithful rom6 engine, whose own SIML + self-test paths cover them.)
 // Real TMS320C54x co-sim backend (third_party/c54x/mad2_dsp_c54x.c). NATIVE-ONLY: the
 // 635 KB C54x interpreter is excluded from the wasm build, so the symbol exists only in
 // the native link. Reference it under #ifndef __EMSCRIPTEN__ (the wasm build keeps the
@@ -493,6 +498,35 @@ typedef struct BusOps {
     int (*write)(struct Mad2* m, uint32_t addr, int size, uint32_t value);
 } BusOps;
 extern const BusOps mad2_bus_serial;   // early-MAD2 serial-attached EEPROM + bus status
+
+// --- FAID / factory-identity provisioning (external-EEPROM models) -------------
+// A factory-fresh external EEPROM ships an ERASED identity block, so the firmware's
+// identity comparison fails and it presents "Security code" on every boot (regardless of the
+// phone-lock setting), and the integrity-checksum mismatch clears the service-present bit used
+// by startup — which blocks network registration. When a model carries this descriptor, the
+// eeprom_provision service (src/services/eeprom_provision.c) writes a coherent identity +
+// derived security state and finalizes the two integrity checksums so the identity comparison
+// passes and service-present stays set. RE + algorithm for the 3210: Gareth Davidson (bitplane),
+// github.com/bitplane/nokia-dct3-re (, tools/make_eeprom_profile.py).
+// Offsets are per firmware build; 0 fields are skipped. This is a per-model contract so every
+// external-EEPROM profile can opt in as its identity block is reverse-engineered.
+typedef struct EepromFaid {
+    uint16_t identity_off;      // 14 IMEI digits, high-nibble-first BCD  (3210 v6.00 = 0x000C)
+    uint16_t seccode_off;       // 5-digit phone security code, BCD        (3210 = 0x0110)
+    uint16_t secstate_off;      // derived 8-byte identity/security state  (3210 = 0x06C8)
+    uint16_t tunesec_cksum_off; // BE32 tune/security checksum store        (3210 = 0x011C)
+    uint16_t tunesec_sum_end;   // tune/security sum range end (exclusive)  (3210 = 0x011E)
+    uint16_t config_start;      // contact/config sum range start           (3210 = 0x0120)
+    uint16_t config_cksum_off;  // BE16 contact/config checksum store        (3210 = 0x0244)
+    uint16_t config_corr0;      // correction byte excluded from config sum  (3210 = 0x0154)
+    uint16_t config_corr1;      // second correction byte                    (3210 = 0x0155)
+    const char* imei_prefix;    // 14-digit IMEI prefix to provision (NULL -> identity untouched)
+    const char* security_code;  // 5-digit security code (NULL -> "12345")
+    uint16_t seclevel_off;      // stored security-level user setting; provisioning erases it to
+                                // 0xFF = factory default (off). 0x00 = "ask for the security
+                                // code at power-up" (3210 = 0x06EE — a dumped blob may carry the
+                                // previous owner's setting; 0 = leave untouched)
+} EepromFaid;
 
 // --- The profile --------------------------------------------------------------
 typedef struct ModelProfile {
@@ -527,6 +561,9 @@ typedef struct ModelProfile {
     // (or an EE5110 file override) into m->i2c_eeprom; the web build relies on it (no MEMFS file).
     const uint8_t* i2c_eeprom_default;
     uint32_t       i2c_eeprom_size;
+    // FAID / factory-identity provisioning for this model's external EEPROM (see EepromFaid
+    // above). NULL = no identity provisioning (the model's other checksum fix-ups still run).
+    const EepromFaid* eeprom_faid;
     // DSP HPI bulk code-upload window alias (C54x co-sim only; NATIVE). Most DCT3 map the
     // DSP DARAM upload window at the SAME MCU base as the control/mailbox cells (0x10000),
     // so the firmware writes uploaded DSP code into 0x10000-0x10FFF (DSP word = 0x800 + k).

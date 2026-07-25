@@ -36,6 +36,14 @@ APP_HDRS  := $(shell find src -name '*.h' 2>/dev/null)
 CORE_SRCS := $(shell find third_party/mgba-arm/src -name '*.c' 2>/dev/null)
 CORE_OBJS := $(patsubst %.c,$(OBJDIR)/%.o,$(CORE_SRCS))
 
+# swSIM software-SIM sources — shared by the native trace/gui targets AND the wasm/web
+# build (see the SWSIM sections below for the wiring rationale). Defined up here, ABOVE
+# the $(OUT_JS) rule, so SWSIM_WASM_OBJS is non-empty when that rule's prerequisites are
+# expanded (make expands prereqs when the rule is read). net.c (socket transport) excluded.
+SWSIM_INC       := -Ithird_party/swicc/include -Ithird_party/swicc/src -Ithird_party/swsim/include
+SWSIM_SRCS      := $(filter-out third_party/swicc/src/net.c,$(wildcard third_party/swicc/src/*.c) $(wildcard third_party/swicc/src/fs/*.c) $(wildcard third_party/swicc/src/dbg/*.c)) $(wildcard third_party/swsim/src/*.c) third_party/swsim/sim_swsim.c
+SWSIM_WASM_OBJS := $(patsubst %.c,$(OBJDIR)/%.o,$(SWSIM_SRCS))
+
 # The header-dependency rule below is the FIRST explicit rule in the file, which
 # would silently become make's default goal ("make" = build one .o, not the wasm
 # the header comment promises). Pin the documented default.
@@ -51,11 +59,11 @@ $(APP_OBJS): $(APP_HDRS)
 OUT_DIR := web
 OUT_JS  := $(OUT_DIR)/dct3.js
 
-CFLAGS      := -std=c99 -O2 -flto -Wall -Wextra $(APP_INC) $(DEFS)
+CFLAGS      := -std=c99 -O2 -flto -Wall -Wextra $(APP_INC) $(DEFS) -DSWSIM_BUILD   # -DSWSIM_BUILD: activate the mad2_sim.c swSIM intercept in the wasm build (web default SIM)
 CORE_CFLAGS := -std=c99 -O2 -flto -Wall $(CORE_INC) $(DEFS)   # -O2 (was -Os): faster ARM core
 
 # C functions exposed to JS: boot + run loop + framebuffer + keypad.
-EXPORTS := _dct3_version,_dct3_web_boot,_dct3_web_run,_dct3_web_run_cycles,_dct3_web_cycles,_dct3_web_fb,_dct3_web_step,_dct3_web_powered_off,_dct3_web_reset_request,_dct3_web_reset_last_reason,_dct3_web_reset_total,_dct3_web_reset_recovered,_dct3_web_reset_count,_dct3_web_reset_last_pc,_dct3_web_reset_last_cpsr,_dct3_web_warm_reset,_dct3_web_reg,_dct3_web_lcd_writes,_dct3_web_lcd_mode,_dct3_web_leds,_dct3_web_led_rgb,_dct3_web_buzzer_on,_dct3_web_buzzer_div,_dct3_web_buzzer_vol,_dct3_web_buzzer_chirp,_dct3_web_pcm_read,_dct3_web_pcm_ptr,_dct3_web_pcm_rate,_dct3_web_tone_hz,_dct3_web_tone_hz2,_dct3_web_tone_amp,_dct3_web_vibra_on,_dct3_web_set_battery,_dct3_web_get_battery,_dct3_web_set_charger,_dct3_web_get_charger,_dct3_web_set_sim,_dct3_web_get_sim,_dct3_web_sim_apdus,_dct3_web_set_sim_pin_enabled,_dct3_web_set_sim_pin,_dct3_web_set_sim_puk,_dct3_web_sim_pin_state,_dct3_web_ccont_mask,_dct3_web_ccont_lines,_dct3_web_rtc_now,_dct3_web_rtc_min_edges,_dct3_web_rtc_writes,_dct3_web_rtc_raw,_dct3_web_rtc_wr_pc,_dct3_web_rtc_wr_lr,_dct3_web_getstr_on,_dct3_web_getstr_dump,_dct3_web_key,_dct3_web_key_logical,_dct3_web_key_logical_raw,_dct3_web_power,_dct3_web_set_skip_seclock,_dct3_web_pc,_dct3_web_t0_ticks,_dct3_web_t1_edges,_dct3_web_fiq8_ticks,_dct3_web_t0_counter,_dct3_web_t1_counter,_dct3_web_fiqs,_dct3_web_irqs,_dct3_web_ram,_dct3_web_kbd,_dct3_web_key_raw,_dct3_web_dbg_watch,_dct3_web_dbg_count,_dct3_web_set_key_hold,_dct3_web_get_key_hold,_dct3_web_msglog_pc,_dct3_web_msglog_buf,_dct3_web_msglog_size,_dct3_web_msglog_w,_dct3_web_ram_ptr,_dct3_web_msglog_lrbuf,_dct3_web_set_oneshot,_dct3_web_stub_add,_dct3_web_stub_clear,_dct3_web_stub_hits,_dct3_web_wrwatch_on,_dct3_web_wrwatch_npc,_dct3_web_wrwatch_pc,_dct3_web_wrwatch_net,_dct3_web_wrwatch_cnt,_dct3_web_wrwatch_lr,_dct3_web_wrwatch_szn,_dct3_web_wrwatch_sz,_dct3_web_wrwatch_sza,_dct3_web_wrwatch_szf,_dct3_web_acall_window,_dct3_web_acall_n,_dct3_web_acall_lr,_dct3_web_acall_cnt,_dct3_web_acall_egsz,_dct3_web_call,_dct3_web_call_count,_dct3_web_call_result,_dct3_web_seccode_reset,_dct3_web_regspike,_dct3_web_regspike_count,_dct3_web_cap_set,_dct3_web_cap_val,_dct3_web_cap_hits,_dct3_web_ccw,_dct3_web_difftrace,_dct3_web_sendlog_on,_dct3_web_sendlog_w,_dct3_web_sendlog_at,_dct3_web_sendlog_lr,_dct3_web_eeprom_off,_dct3_web_eeprom_size,_dct3_web_eeprom_writes,_dct3_web_i2c_eeprom_ptr,_dct3_web_i2c_eeprom_size,_dct3_web_i2c_eeprom_writes,_dct3_web_flash_cmds,_dct3_web_flash_programs,_dct3_web_flash_last_addr,_dct3_web_model,_dct3_web_flash_hi,_dct3_web_lcd_w,_dct3_web_lcd_h,_dct3_web_lcd_banks,_dct3_web_kp_family,_dct3_web_ccwr_w,_dct3_web_ccwr_lr,_dct3_web_ccwr_reg,_dct3_web_ccwr_val,_dct3_web_pcring_crashed,_dct3_web_pcring_w,_dct3_web_pcring_n,_dct3_web_pcring_at,_dct3_web_pcring_cpsr,_dct3_web_set_recover,_dct3_web_get_recover,_dct3_web_set_wdt_service,_dct3_web_get_wdt_service,_dct3_web_wdt_inhibited,_dct3_web_set_reboot_early,_dct3_web_get_reboot_early,_dct3_web_postmortem_buf,_dct3_web_postmortem_len,_dct3_web_assert_count,_dct3_web_heap_fail_count,_dct3_web_heap_fail_lr,_dct3_web_leak_on,_dct3_web_heapcurve_on,_dct3_web_heap_used,_dct3_web_leak_count,_dct3_web_leak_dump,_dct3_web_leak_buf,_dct3_web_leak_len,_dct3_web_heapcurve_count,_dct3_web_heapcurve_step,_dct3_web_heapcurve_used,_dct3_web_trace_on,_dct3_web_trace_count,_dct3_web_trace_cyc,_dct3_web_trace_step,_dct3_web_trace_pc,_dct3_web_trace_cpsr,_dct3_web_trace_fiq,_dct3_web_trace_irq,_dct3_web_branch_on,_dct3_web_branch_arm,_dct3_web_branch_count,_dct3_web_branch_pc,_dct3_web_branch_target,_dct3_web_branch_lr,_dct3_web_branch_sp,_dct3_web_branch_step,_dct3_web_branch_type,_dct3_web_branch_depth,_dct3_web_branch_cpsr_mode,_dct3_web_branch_r0,_dct3_web_branch_r1,_dct3_web_branch_r4,_dct3_web_branch_r9,_dct3_web_irq_mask,_dct3_web_fiq_mask,_dct3_web_irq_pending,_dct3_web_fiq_pending
+EXPORTS := _dct3_version,_dct3_web_setenv,_dct3_web_boot,_dct3_web_run,_dct3_web_run_cycles,_dct3_web_cycles,_dct3_web_fb,_dct3_web_step,_dct3_web_powered_off,_dct3_web_reset_request,_dct3_web_reset_last_reason,_dct3_web_reset_total,_dct3_web_reset_recovered,_dct3_web_reset_count,_dct3_web_reset_last_pc,_dct3_web_reset_last_cpsr,_dct3_web_warm_reset,_dct3_web_reg,_dct3_web_lcd_writes,_dct3_web_lcd_mode,_dct3_web_leds,_dct3_web_led_rgb,_dct3_web_buzzer_on,_dct3_web_buzzer_div,_dct3_web_buzzer_vol,_dct3_web_buzzer_chirp,_dct3_web_pcm_read,_dct3_web_pcm_ptr,_dct3_web_pcm_rate,_dct3_web_tone_hz,_dct3_web_tone_hz2,_dct3_web_tone_amp,_dct3_web_vibra_on,_dct3_web_set_battery,_dct3_web_get_battery,_dct3_web_set_charger,_dct3_web_get_charger,_dct3_web_set_sim,_dct3_web_get_sim,_dct3_web_sim_apdus,_dct3_web_incoming_call,_dct3_web_incoming_sms,_dct3_web_set_sim_pin_enabled,_dct3_web_set_sim_pin,_dct3_web_set_sim_puk,_dct3_web_sim_pin_state,_dct3_web_ccont_mask,_dct3_web_ccont_lines,_dct3_web_rtc_now,_dct3_web_rtc_min_edges,_dct3_web_rtc_writes,_dct3_web_rtc_raw,_dct3_web_rtc_wr_pc,_dct3_web_rtc_wr_lr,_dct3_web_getstr_on,_dct3_web_getstr_dump,_dct3_web_key,_dct3_web_key_logical,_dct3_web_key_logical_raw,_dct3_web_power,_dct3_web_set_skip_seclock,_dct3_web_pc,_dct3_web_t0_ticks,_dct3_web_t1_edges,_dct3_web_fiq8_ticks,_dct3_web_t0_counter,_dct3_web_t1_counter,_dct3_web_fiqs,_dct3_web_irqs,_dct3_web_ram,_dct3_web_kbd,_dct3_web_key_raw,_dct3_web_dbg_watch,_dct3_web_dbg_count,_dct3_web_set_key_hold,_dct3_web_get_key_hold,_dct3_web_msglog_pc,_dct3_web_msglog_buf,_dct3_web_msglog_size,_dct3_web_msglog_w,_dct3_web_ram_ptr,_dct3_web_msglog_lrbuf,_dct3_web_set_oneshot,_dct3_web_stub_add,_dct3_web_stub_clear,_dct3_web_stub_hits,_dct3_web_wrwatch_on,_dct3_web_wrwatch_npc,_dct3_web_wrwatch_pc,_dct3_web_wrwatch_net,_dct3_web_wrwatch_cnt,_dct3_web_wrwatch_lr,_dct3_web_wrwatch_szn,_dct3_web_wrwatch_sz,_dct3_web_wrwatch_sza,_dct3_web_wrwatch_szf,_dct3_web_acall_window,_dct3_web_acall_n,_dct3_web_acall_lr,_dct3_web_acall_cnt,_dct3_web_acall_egsz,_dct3_web_call,_dct3_web_call_count,_dct3_web_call_result,_dct3_web_seccode_reset,_dct3_web_regspike,_dct3_web_regspike_count,_dct3_web_cap_set,_dct3_web_cap_val,_dct3_web_cap_hits,_dct3_web_ccw,_dct3_web_difftrace,_dct3_web_sendlog_on,_dct3_web_sendlog_w,_dct3_web_sendlog_at,_dct3_web_sendlog_lr,_dct3_web_eeprom_off,_dct3_web_eeprom_size,_dct3_web_eeprom_writes,_dct3_web_i2c_eeprom_ptr,_dct3_web_i2c_eeprom_size,_dct3_web_i2c_eeprom_writes,_dct3_web_flash_cmds,_dct3_web_flash_programs,_dct3_web_flash_last_addr,_dct3_web_model,_dct3_web_flash_hi,_dct3_web_lcd_w,_dct3_web_lcd_h,_dct3_web_lcd_banks,_dct3_web_kp_family,_dct3_web_ccwr_w,_dct3_web_ccwr_lr,_dct3_web_ccwr_reg,_dct3_web_ccwr_val,_dct3_web_pcring_crashed,_dct3_web_pcring_w,_dct3_web_pcring_n,_dct3_web_pcring_at,_dct3_web_pcring_cpsr,_dct3_web_set_recover,_dct3_web_get_recover,_dct3_web_set_wdt_service,_dct3_web_get_wdt_service,_dct3_web_wdt_inhibited,_dct3_web_set_reboot_early,_dct3_web_get_reboot_early,_dct3_web_postmortem_buf,_dct3_web_postmortem_len,_dct3_web_assert_count,_dct3_web_heap_fail_count,_dct3_web_heap_fail_lr,_dct3_web_leak_on,_dct3_web_heapcurve_on,_dct3_web_heap_used,_dct3_web_leak_count,_dct3_web_leak_dump,_dct3_web_leak_buf,_dct3_web_leak_len,_dct3_web_heapcurve_count,_dct3_web_heapcurve_step,_dct3_web_heapcurve_used,_dct3_web_trace_on,_dct3_web_trace_count,_dct3_web_trace_cyc,_dct3_web_trace_step,_dct3_web_trace_pc,_dct3_web_trace_cpsr,_dct3_web_trace_fiq,_dct3_web_trace_irq,_dct3_web_branch_on,_dct3_web_branch_arm,_dct3_web_branch_count,_dct3_web_branch_pc,_dct3_web_branch_target,_dct3_web_branch_lr,_dct3_web_branch_sp,_dct3_web_branch_step,_dct3_web_branch_type,_dct3_web_branch_depth,_dct3_web_branch_cpsr_mode,_dct3_web_branch_r0,_dct3_web_branch_r1,_dct3_web_branch_r4,_dct3_web_branch_r9,_dct3_web_irq_mask,_dct3_web_fiq_mask,_dct3_web_irq_pending,_dct3_web_fiq_pending
 
 # Flash image preloaded into MEMFS at /fw.fls (fetched at runtime as web/dct3.data).
 # Factory-reset v5.79: clean defaults, no carrier customisations, neutral
@@ -69,6 +77,12 @@ LDFLAGS := -O2 -flto --no-entry \
            -sEXPORTED_FUNCTIONS=$(EXPORTS) \
            -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8,HEAP16,HEAPU32,FS
 
+# swSIM card fixture, preloaded into MEMFS at the shim's default fopen path so the
+# browser (no host FS) resolves third_party/swsim/gsm.json. Preloaded (not embedded)
+# because this emcc makes --preload/--embed mutually exclusive and the firmware already
+# uses --preload-file; both land in web/dct3.data.
+SWSIM_PRELOAD := --preload-file "third_party/swsim/gsm.json@/third_party/swsim/gsm.json"
+
 .PHONY: all serve clean check-core test webtest trace gui gui-release deb disfw simprobe fw-manifest
 MANIFEST := $(OUT_DIR)/asset-manifest.json
 
@@ -78,13 +92,13 @@ all: $(MANIFEST)
 # No firmware committed to this repo — without one, the module builds firmware-free
 # and the page loads a flash image the user supplies (drop it in as web/dct3.data,
 # or via the UI). See README "Firmware — bring your own".
-$(OUT_JS): $(APP_OBJS) $(CORE_OBJS)
+$(OUT_JS): $(APP_OBJS) $(CORE_OBJS) $(SWSIM_WASM_OBJS)
 	@if [ -f "$(WEB_FW)" ]; then \
 	  echo "[web] preloading firmware: $(WEB_FW)"; \
-	  $(EMCC) $(LDFLAGS) --preload-file "$(WEB_FW)@/fw.fls" $(APP_OBJS) $(CORE_OBJS) -o $(OUT_JS); \
+	  $(EMCC) $(LDFLAGS) --preload-file "$(WEB_FW)@/fw.fls" $(SWSIM_PRELOAD) $(APP_OBJS) $(CORE_OBJS) $(SWSIM_WASM_OBJS) -o $(OUT_JS); \
 	else \
 	  echo "[web] no firmware at '$(WEB_FW)' — building firmware-free module (supply web/dct3.data yourself)"; \
-	  $(EMCC) $(LDFLAGS) $(APP_OBJS) $(CORE_OBJS) -o $(OUT_JS); \
+	  $(EMCC) $(LDFLAGS) $(SWSIM_PRELOAD) $(APP_OBJS) $(CORE_OBJS) $(SWSIM_WASM_OBJS) -o $(OUT_JS); \
 	fi
 
 # Content-address the immutable web assets (hashed filenames + no-store manifest)
@@ -122,17 +136,24 @@ TEST_CFLAGS := -std=gnu99 -O1 -g -Wall $(APP_INC) -Itools $(DEFS)   # -Itools: m
 TRACE_CFLAGS := -std=gnu99 -O2 -flto -g -Wall $(APP_INC) -Itools $(DEFS)
 TEST_WR_BIN := build/dct3_test_wr
 TEST_MAD2_BIN := build/dct3_test_mad2
+TEST_MDI_BIN := build/dct3_test_mdi
 
-test: $(TEST_BIN) $(TEST_WR_BIN) $(TEST_MAD2_BIN) $(DBGCON_BIN)
+test: $(TEST_BIN) $(TEST_WR_BIN) $(TEST_MAD2_BIN) $(TEST_MDI_BIN) $(DBGCON_BIN)
 	@./$(TEST_BIN)
 	@./$(TEST_WR_BIN)
 	@./$(TEST_MAD2_BIN)
+	@./$(TEST_MDI_BIN)
 	@./$(DBGCON_BIN)
+
+# Shared MDI ring/frame helpers (src/mad2/dsp/mdi.h) — pure, header-only, no Mad2 dep.
+$(TEST_MDI_BIN): tests/test_mdi.c src/mad2/dsp/mdi.h
+	@mkdir -p build
+	$(CC) $(TEST_CFLAGS) tests/test_mdi.c -o $@
 
 # dbgcon client-lib selftest: the freestanding tools/dbgcon/dbgcon.h driven against the
 # REAL emulator port (mad2 device model, no ARM core), proving the emu-vs-real gate.
 DBGCON_BIN  := build/dct3_dbgcon_selftest
-DBGCON_SRCS := tools/dbgcon/dbgcon_selftest.c tools/dbgcon/dbgcon_stripcheck.c $(shell find src/mad2 src/models -name '*.c' 2>/dev/null) tools/sim_bridge.c $(C54X_SRCS)
+DBGCON_SRCS := tools/dbgcon/dbgcon_selftest.c tools/dbgcon/dbgcon_stripcheck.c $(shell find src/mad2 src/models src/services -name '*.c' 2>/dev/null) tools/sim_bridge.c $(C54X_SRCS)
 $(DBGCON_BIN): $(DBGCON_SRCS) $(APP_HDRS)
 	@mkdir -p build
 	$(CC) $(TEST_CFLAGS) $(C54X_INC) -Itools $(DBGCON_SRCS) -o $@
@@ -170,7 +191,7 @@ $(TEST_WR_BIN): $(TEST_WR_SRCS) $(HARNESS_SRCS) src/mad2/mad2.h
 # the mGBA core: the tests poke device registers directly, no firmware execution.
 # Self-contained glob (this rule precedes the MAD2_SRCS/MODEL_SRCS definitions, so
 # re-glob here rather than reference them).
-TEST_MAD2_SRCS := tests/test_mad2.c $(shell find src/mad2 src/models -name '*.c' 2>/dev/null) tools/sim_bridge.c $(C54X_SRCS)
+TEST_MAD2_SRCS := tests/test_mad2.c $(shell find src/mad2 src/models src/services -name '*.c' 2>/dev/null) tools/sim_bridge.c $(C54X_SRCS)
 $(TEST_MAD2_BIN): $(TEST_MAD2_SRCS) $(APP_HDRS)
 	@mkdir -p build
 	$(CC) $(TEST_CFLAGS) $(C54X_INC) $(TEST_MAD2_SRCS) -o $@
@@ -187,17 +208,56 @@ HARNESS_SRCS := $(shell find src/harness -name '*.c' 2>/dev/null)
 # Device model — globbed so the per-subsystem split (mad2_<sub>.c) is auto-picked
 # by the native drivers, exactly like the wasm APP_SRCS glob already does.
 MAD2_SRCS := $(shell find src/mad2 -name '*.c' 2>/dev/null)
+# Standalone services (src/services) — invoked by the platform but not part of it. The wasm
+# APP_SRCS glob already picks these up; the native driver/test lists are explicit, so add them.
+SERVICES_SRCS := $(shell find src/services -name '*.c' 2>/dev/null)
 
 TRACE_BIN  := build/dct3_boot_trace
-TRACE_SRCS := tools/boot_trace.c src/core/dct3_core.c src/core/dct3_debug_stub.c $(MAD2_SRCS) tools/sim_bridge.c tools/mbus_bridge.c $(MODEL_SRCS) $(HARNESS_SRCS) $(CORE_SRCS) $(C54X_SRCS)
+TRACE_SRCS := tools/boot_trace.c src/core/dct3_core.c src/core/dct3_debug_stub.c $(MAD2_SRCS) $(SERVICES_SRCS) tools/sim_bridge.c tools/mbus_bridge.c $(MODEL_SRCS) $(HARNESS_SRCS) $(CORE_SRCS) $(C54X_SRCS)
 FW         ?=
+
+# swSIM software-SIM backend (third_party/swicc + third_party/swsim, both BSD-3-Clause,
+# vendored — see third_party/swsim/README.md). Linked into boot_trace ONLY. The mad2_sim.c
+# intercept is #ifdef SWSIM_BUILD-gated so the wasm/test/guard builds never reference the
+# swSIM symbol and stay byte-identical; at runtime it is chosen automatically for the
+# ROM6NEW 3310 path (opt out with SWSIM=0, force elsewhere with SWSIM=1). swICC needs C11
+# (static_assert) so this target builds at -std=gnu11. net.c (socket transport) is excluded
+# — the card is driven in-process (deterministic, no external process/socket).
+# (SWSIM_INC / SWSIM_SRCS are defined up top, above the $(OUT_JS) rule, so the wasm
+# build can reference SWSIM_WASM_OBJS in that rule's prerequisites.)
+TRACE_SWSIM_CFLAGS := -std=gnu11 -O2 -flto -g -Wall $(APP_INC) -Itools $(DEFS) -DSWSIM_BUILD $(SWSIM_INC)
+
+# --- swSIM in the WASM/web build ------------------------------------------------
+# The browser emulator uses swSIM too: it is the spec-complete, DISK-BACKED-PERSISTENT
+# SIM (UPDATE RECORD writes the swICC disk buffer and sticks, unlike the synthetic EF
+# table's no-op). The swICC/swSIM TUs are compiled to wasm objects at -std=gnu11 (swICC
+# needs C11 static_assert) with -DSWSIM_BUILD + SWSIM_INC and linked into web/dct3.js.
+# The app TUs get -DSWSIM_BUILD via CFLAGS (see top) so the mad2_sim.c intercept is live;
+# it defaults ON on the web (#ifdef __EMSCRIPTEN__), SWSIM=0 in Module.ENV opts out.
+# BROWSER FS: there is no host FS, so gsm.json is EMBEDDED into MEMFS at
+# /third_party/swsim/gsm.json (the shim's default fopen path) via --embed-file in
+# LDFLAGS; the swiccfs save target /tmp/dct3_swsim.swiccfs is emscripten-MEMFS-writable
+# (/tmp is created by default). net.c (socket transport) stays excluded from SWSIM_SRCS.
+# SWSIM_WASM_OBJS is defined up top (above $(OUT_JS)); the objects build via the pattern
+# rules below (swICC/swSIM TUs at -std=gnu11 with -DSWSIM_BUILD).
+# -include endian.h: swICC (fs/disk.c) calls htobe16() but never includes <endian.h> —
+# on glibc it is pulled in transitively, but emscripten's musl libc does not, so force it.
+SWSIM_WASM_CFLAGS := -std=gnu11 -O2 -flto -Wall $(APP_INC) $(DEFS) -DSWSIM_BUILD $(SWSIM_INC) -include endian.h
+
+$(OBJDIR)/third_party/swicc/%.o: third_party/swicc/%.c
+	@mkdir -p $(dir $@)
+	$(EMCC) $(SWSIM_WASM_CFLAGS) -c $< -o $@
+
+$(OBJDIR)/third_party/swsim/%.o: third_party/swsim/%.c
+	@mkdir -p $(dir $@)
+	$(EMCC) $(SWSIM_WASM_CFLAGS) -c $< -o $@
 
 trace: $(TRACE_BIN)
 	@./$(TRACE_BIN) $(if $(FW),"$(FW)")
 
-$(TRACE_BIN): $(TRACE_SRCS)
+$(TRACE_BIN): $(TRACE_SRCS) $(SWSIM_SRCS)
 	@mkdir -p build
-	$(CC) $(TRACE_CFLAGS) $(C54X_INC) $(TRACE_SRCS) -o $@
+	$(CC) $(TRACE_SWSIM_CFLAGS) $(C54X_INC) $(TRACE_SRCS) $(SWSIM_SRCS) -o $@
 
 # --- Native SDL2 GUI overlay (compile-gated) ------------------------------------
 # SAME source set as the headless boot_trace PLUS tools/gui_sdl.c, compiled with
@@ -209,9 +269,12 @@ GUI_SRCS    := $(TRACE_SRCS) tools/gui_sdl.c
 SDL_CFLAGS  := $(shell sdl2-config --cflags)
 SDL_LIBS    := $(shell sdl2-config --libs)
 gui: $(GUI_BIN)
-$(GUI_BIN): $(GUI_SRCS)
+# swSIM is linked into the GUI too (same -DSWSIM_BUILD / -std=gnu11 as boot_trace) so
+# `ROM6NEW=1 ./run 3310 gui` (or the `camp` scenario) drives the faithful engine against
+# the software SIM in the live GUI — not just headless boot_trace. net.c stays excluded.
+$(GUI_BIN): $(GUI_SRCS) $(SWSIM_SRCS)
 	@mkdir -p build
-	$(CC) $(TRACE_CFLAGS) $(C54X_INC) -DDCT3_SDL $(SDL_CFLAGS) $(GUI_SRCS) $(SDL_LIBS) -o $@
+	$(CC) $(TRACE_SWSIM_CFLAGS) $(C54X_INC) -DDCT3_SDL $(SDL_CFLAGS) $(GUI_SRCS) $(SWSIM_SRCS) $(SDL_LIBS) -o $@
 
 # --- Beta/release GUI: lean 3310-only, no co-sim, debug knobs compiled out --------
 # For sharing with a beta tester (+ `make deb`). Differences vs

@@ -33,6 +33,29 @@ void mad2_init(Mad2* m, const ModelProfile* prof) {
     // talks to a remote DSP (another emulator's c54x co-sim, or real phone proxy FW).
     if (dsp_bridge_enabled()) { m->dsp_override = &mad2_dsp_bridge;
         fprintf(stderr, "[dspb] DSP backend = remote bridge\n"); }
+#ifndef __EMSCRIPTEN__
+    // C54x-cosim models (the native 5110 binds mad2_dsp_c54x): the real TMS320C54x
+    // co-sim runs ONLY when DSP54_COSIM is set. Without it, use the faithful ROM-4
+    // network engine (rom4_tick) rather than the c54x pass-through body — that engine
+    // accepts the SIM and camps/registers with swSIM, matching the 3210. DSP54_COSIM is
+    // a presence check (=0 still selects cosim), so gate on getenv != NULL. The run
+    // script no longer forces DSP54_COSIM=1 for the 5110, so `./run 5110` is ROM-4.
+    else if (prof && prof->dsp == &mad2_dsp_c54x && getenv("DSP54_COSIM") == NULL) {
+        m->dsp_override = &mad2_dsp_rom4;
+        fprintf(stderr, "[dspb] DSP backend = ROM-4 network engine "
+                        "(cosim off; set DSP54_COSIM=1 for the real C54x)\n");
+    }
+#endif
+    // No further engine *selection* beyond the bridge / cosim opt-out: the DSP engine is the profile's .dsp,
+    // organised by ROM revision (src/mad2/dsp/): mad2_dsp_rom6 for the ROM-6 family
+    // (3310/33xx/34xx/52xx/55xx/62xx/71xx/82xx/885x/8890/2100), mad2_dsp_rom4 for the
+    // ROM-4 set (5110/6110/3210 + variants); the native 5110 profile binds the
+    // mad2_dsp_c54x cosim directly.
+    rom6_reset(m);      // explicit per-boot build of the rom6 engine state (memset already zeroed it)
+    rom4_reset(m);      // explicit per-boot build of the rom4 engine state (memset already zeroed it)
+    // Seed the card identity for the selected backend. This is only the pre-read
+    // default; once EF_IMSI/EF_AD are returned, RF/GSM uses those active values.
+    mad2_sim_select_plmn(m);
     m->fw    = prof->fw;   // constant fallbacks; the shell overlays signature hits via model_resolve()
     // Healthy power readings so the firmware doesn't abort boot on a flat battery.
     // Sourced from the model profile's CCONT A/D reset defaults (per-model pack).
@@ -48,6 +71,12 @@ void mad2_init(Mad2* m, const ModelProfile* prof) {
     m->adc[3] = prof->battery.bsi;      // battery type (BSI): genuine NiMH pack (BMC-3) -> normal path
     m->adc[4] = prof->battery.temp;     // battery temperature: nominal (room temp; in the charge window)
     m->adc[5] = prof->battery.charger;  // charger voltage: none connected
+    // Analog RSSI (CCONT ADC channel 1): jmacato (github.com/jmacato) §5.3 known-good boot value 0x220 — the CCONT-side
+    // analog received-level sample the firmware radio task reads (separate from the DSP MDI RSSI).
+    // We previously left ch1 = 0 (no phone reads 0 here); 0x220 is the faithful no-signal baseline.
+    // ADC_RSSI overrides it (raise it to model a strong served carrier for the GSM bring-up).
+    m->adc[1] = 0x220;
+    { const char* r = getenv("ADC_RSSI"); if (r && *r) m->adc[1] = (uint16_t)strtoul(r, 0, 0); }
     m->fiq_mask = 0xFF;  // all interrupts masked at reset; firmware enables as needed
     m->irq_mask = 0xFF;
     m->cc_int_mask = 0xFF;  // CCONT cascade powers up all-masked; firmware writes 0xF0 (enables CHARGER/INT3)
@@ -126,6 +155,7 @@ void mad2_init(Mad2* m, const ModelProfile* prof) {
     // actual written reload value. Defensive: ensures a sane window even if the gate is ever
     // reached before a kick (the memset-0 would otherwise make a 0-cycle window trip instantly).
     m->wdt_window_cyc = 49ull * DCT3_ARM_HZ;
+    m->wdt_deadline_cyc = 0;  // armed by the first real CCONT/CTSI watchdog load
     // Two DISTINCT timer interrupts, de-conflated (Blacksphere §8: FIQ5 = Timer1/sleep-
     // counter 0x04 overflow; FIQ8 = ct_timer, ctrl reg 0x20016):
     //
@@ -185,6 +215,7 @@ void mad2_init(Mad2* m, const ModelProfile* prof) {
     // restores the legacy heartbeat for A/B (old behaviour = FIQ4HB=65000 + T0FIQ4=0).
     m->fiq4_period = 0;
     { const char* hb = getenv("FIQ4HB"); if (hb && *hb) m->fiq4_period = (uint32_t)strtoul(hb, 0, 0); }
+    m->fiq4_next_cyc = m->fiq4_period;
     // RTC-MIN (INT5) cached target: first minute boundary (1 min = 13e6 cyc/s * 60). The
     // per-instruction tick compares rtc_mono against this; recomputed at each edge (see mad2_timers).
     m->rtc_min_next = 13000000ull * 60ull;
@@ -226,6 +257,7 @@ void mad2_init(Mad2* m, const ModelProfile* prof) {
     // driver detects it via the SIMI UART (ATR on activate) + reads its EFs over
     // T=0, clearing the disp49 SIM gate faithfully. Toggle off to model "no SIM".
     m->sim_present = getenv("SIMABSENT") ? 0 : 1;
+    m->sim_rx_pace_cyc = -1;   // uninit -> sim_pace_cyc() reads SIMPACE env on first use
     // SIMPHASE env knob: override EF_PHASE byte. 0=Phase 1, 2=Phase 2 (default), 3=Phase 2+.
     { const char* ph = getenv("SIMPHASE"); if (ph && *ph) EF_PHASE[0] = (uint8_t)atoi(ph); }
     // CHV1 (PIN): default = active SIM with CHV1 DISABLED (no PIN prompt) — a convenience
@@ -259,6 +291,7 @@ void mad2_init(Mad2* m, const ModelProfile* prof) {
             m->sim_wwt_threshold_cyc = 0;   // disabled
         }
         m->sim_wwt_last_active_cyc = 0;
+        m->sim_wwt_next_cyc = 0;
     }
     // (default here so a pre-init read isn't a blank screen; the firmware sets it anyway)
     // DSP runtime boot-indication injector (brute-force; see mad2.h). DSPMSG="t[,l,b..]"
@@ -277,6 +310,20 @@ void mad2_init(Mad2* m, const ModelProfile* prof) {
     // under cosim (mirrors dsp54_faithful() in the c54x glue — kept inline to avoid a core->c54x dep).
     { const char *e = getenv("DSPNOSELFTEST");
       m->dsp_selftest_off = (e && *e) ? (atoi(e) != 0) : (getenv("DSP54_COSIM") ? 1 : 0); }
+    // SIML local-security responder. Opt-in on native
+    // (faithful default OFF), but ON by default in the web build (dct3_web_boot sets DSPSIML=1
+    // before this init). UNFAITHFUL when active — an HLE stand-in for the undumped SIML crypto
+    // mask ROM; the warning below fires once. DSPSIML=0 forces it off everywhere. Cosim is
+    // unaffected: the responder sits behind the HLE quiet-gate (dsp_hle_quiet).
+    { const char *e = getenv("DSPSIML");
+      m->dsp_siml_en = (e && *e) ? (atoi(e) != 0) : 0; }
+    if (m->dsp_siml_en) {
+        static int siml_warned = 0;
+        if (!siml_warned) { siml_warned = 1;
+            fprintf(stderr, "[dsp] UNFAITHFUL: SIML local-security responder ON by default "
+                            "(HLE stand-in for the undumped SIML crypto ROM); set DSPSIML=0 for the faithful path\n");
+        }
+    }
     // (The DSP model drives every decision from DSP-visible signals only — see the
     // dsp_st_req / dsp_running fields in mad2.h. It never reads MCU-private RAM; the
     // verdict / dsp_uploaded FwAddrs remain for harness telemetry + post-mortem labels.)

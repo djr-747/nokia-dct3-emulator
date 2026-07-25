@@ -118,5 +118,5 @@ const ModelProfile model_3310 = {
         // image) from matching the 2 MB 3310 here — those fall through to the 3330.
         .flash_size = 0x00200000u,   // 2 MB
     },
-    .dsp = &mad2_dsp_default,        // shared/legacy DSP behaviour
+    .dsp = &mad2_dsp_rom6,           // ROM-6 faithful engine (src/mad2/dsp/dsp_rom6.c)
 };

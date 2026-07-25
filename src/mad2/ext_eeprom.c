@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "services/eeprom_provision.h"
 
 static void i2c_load(Mad2* m) {
     if (m->i2c_loaded) return;
@@ -41,99 +42,9 @@ static void i2c_load(Mad2* m) {
         printf("[i2c] WARN no EE5110 file and no baked blob for this model\n");
     }
 
-    // Finalize the "Eeprom Tune Checksum" the boot self-test validates. The NokiX virgin
-    // nse-1.bin ships WITHOUT a self-consistent tune checksum (its stored field @0x11E does
-    // not equal the sum of its own data), so the firmware's self-test (fn 0x231AF6 ->
-    // checksum 0x22EAFC, 5110 v5.30) fails the tune-checksum compare at 0x22EDA8 and clears
-    // the MMI-ready verdict bit6 -> false "CONTACT SERVICE". A factory-calibrated phone has a
-    // self-consistent external EEPROM; model that by recomputing the field on load. Algorithm:
-    //   tune_ck = ( sum(EE[0x40..0x11E)) - EE[0x74] - EE[0x75] ) & 0xFFFF   (stored BE @0x11E)
-    // (the EE[0x74..0x76) term is the firmware's 0x27A732 adjustment). Idempotent: a correctly
-    // checksummed dump recomputes to the same value. EE5110_RAW=1 skips it (checksum-fault A/B).
-    // The tune-checksum offsets + DSP-fault-latch record below are 5110 (24C16) specific. Other
-    // serial-EEPROM models (e.g. the 6110's 24C64) have a different EEPROM layout, so applying
-    // the 5110 algorithm would CORRUPT them — gate it to the 2K/24C16 device. The 6110's own
-    // virgin-provisioning, if needed, is a separate bring-up step. EE5110_RAW also opts out.
-    int is_24c16 = !(m->model && m->model->i2c_eeprom_size > 2048);
-    if (is_24c16 && !getenv("EE5110_RAW")) {
-        unsigned s = 0;
-        for (int i = 0x40; i < 0x11E; i++) s += m->i2c_eeprom[i];
-        s = (s - m->i2c_eeprom[0x74] - m->i2c_eeprom[0x75]) & 0xFFFF;
-        m->i2c_eeprom[0x11E] = (uint8_t)(s >> 8);
-        m->i2c_eeprom[0x11F] = (uint8_t)(s & 0xFF);
-        if (getenv("I2CLOG")) printf("[i2c] tune checksum finalized @0x11E = 0x%04X\n", s);
-
-        // Provision the DSP-fault latch (record 0x607, 1 byte @EE[0x29E]) on a virgin image.
-        // RE'd 2026-06-12 (the legacy reason-0x68 idle reset, 5110 v5.30): the firmware's DSP
-        // watchdog (msg-29 handler 0x291C1C -> checker 0x288962, one check per ~94M steps
-        // ~= 7.2 s) reads this PERSISTED fault latch from the external 24C16 via the record
-        // store (group table flash 0x2A6438; rec 0x607 -> {off 0x29E, len 1} — format proven
-        // against the known FAID rec 0x706 -> {0x32C, 8}). bit0 set stages SWDSP reboot reason
-        // 0x68, bit1 reason 0x69 (stager 0x2889FC, gated [0x10B541] in {5,6} && [0x10FF94]==0).
-        // An ERASED byte (0xFF) reads as "fault latched" -> deterministic 0x68 ~283M after a
-        // cold boot (measured; staged @283.5M, fired @296.2M). No code in the MCU image writes
-        // rec 0x607 (reader-only) — it is factory/service-provisioned data, so a factory phone
-        // ships 0x00 = no fault. Provision ONLY the virgin 0xFF state (a real latched value from
-        // a baked dump is preserved). EE5110_RAW=1 skips this too, but is NOT a clean watchdog
-        // A/B (it also skips the tune cksum -> CONTACT SERVICE boot, where the msg-29 watchdog
-        // never arms; MEASURED: RAW 300M = no trip). The control is this fix absent on a
-        // tune-valid image: deterministic 0x68 staged @283.5M (measured pre-fix).
-        if (m->i2c_eeprom[0x29E] == 0xFF) {
-            m->i2c_eeprom[0x29E] = 0x00;
-            if (getenv("I2CLOG")) printf("[i2c] DSP-fault latch (rec 0x607) provisioned @0x29E = 0x00\n");
-        }
-    } else if (!getenv("EE5110_RAW")) {
-        // Larger serial EEPROMs (24C64/128/256 — the 6110-family + 8810). The tune-checksum
-        // above is 24C16-specific and MUST NOT run here (different layout), and these blobs
-        // ship a valid checksum anyway. But the SAME DSP-fault latch (record 0x607) exists,
-        // at a DIFFERENT offset in this record layout: the firmware's descriptor table (8810
-        // v6.02 = flash 0x2FCB10, group 6 index 7) places rec 0x607 -> {off 0x3F2, len 1},
-        // vs the 24C16's 0x29E. The nse-3 (6110) / nsm-1 (6150) NokiX blobs already ship 0x00
-        // there (so they never trip the watchdog), but the nse-6 (8810) blob ships it VIRGIN
-        // (0xFF) -> the same reason-0x68 SWDSP idle reset the 5110 had (measured: staged
-        // @283.5M). Provision the virgin state only, exactly as the 24C16 path — a factory
-        // phone ships 0x00 (no fault); a real latched value in a supplied dump is preserved.
-        if (m->model->i2c_eeprom_size > 0x3F2 && m->i2c_eeprom[0x3F2] == 0xFF) {
-            m->i2c_eeprom[0x3F2] = 0x00;
-            if (getenv("I2CLOG")) printf("[i2c] DSP-fault latch (rec 0x607) provisioned @0x3F2 = 0x00\n");
-        }
-    }
-
-    // NSB calibration-record checksum finalize (5190/6190). The NSB self-test BUILDER validates
-    // stored[off] == ( Σ EEPROM[beg..beg+len) − adj_hi − adj_lo ) & 0xFFFF before keeping verdict
-    // bit6 (5190 gate 0x239FF4; compute 0x239DA4; adjustment 0x295BCC reads word@0x154). The
-    // baked analogue blob (5110 nse-1) is not self-consistent under this formula → false CONTACT
-    // SERVICE. Make it consistent, exactly like the 24C16 tune checksum above. Idempotent: the
-    // sum range [beg, beg+len) excludes the stored field, so re-finalizing reproduces the value.
-    // EE5110_RAW opts out (checksum-fault A/B). Requires 2-byte addressing (i2c_two_byte_addr).
-    if (m->model && m->model->nsb_cksum_off && !getenv("EE5110_RAW")) {
-        uint32_t off = m->model->nsb_cksum_off;
-        uint32_t beg = m->model->nsb_cksum_beg;
-        uint32_t len = m->model->nsb_cksum_len;
-        uint32_t adjo = m->model->nsb_cksum_adj;
-        unsigned s = 0;
-        for (uint32_t i = beg; i < beg + len; i++) s += m->i2c_eeprom[i & 0x7FFF];
-        unsigned adj = ((unsigned)m->i2c_eeprom[adjo & 0x7FFF] << 8) | m->i2c_eeprom[(adjo + 1) & 0x7FFF];
-        s = (s - (adj >> 8) - (adj & 0xFF)) & 0xFFFF;
-        m->i2c_eeprom[off & 0x7FFF]       = (uint8_t)(s >> 8);
-        m->i2c_eeprom[(off + 1) & 0x7FFF] = (uint8_t)(s & 0xFF);
-        if (getenv("I2CLOG")) printf("[i2c] NSB calib checksum finalized @0x%X = 0x%04X\n", off, s);
-    }
-    // Second NSB checksum — self-test result item 18 (validator 0x26CC4C): 16-bit byte-sum
-    // over EEPROM[0..off) stored as a LE u32 at [off] (off word-aligned, outside its own sum,
-    // upper 2 bytes zeroed). Runs after the 5110 tune finalize (which only touches 0x11E/0x11F,
-    // both >= off here — outside the sum range — and are overwritten by the u32 store below).
-    if (m->model && m->model->nsb_cksum2_off && !getenv("EE5110_RAW")) {
-        uint32_t off = m->model->nsb_cksum2_off;
-        unsigned s = 0;
-        for (uint32_t i = 0; i < off; i++) s += m->i2c_eeprom[i & 0x7FFF];
-        s &= 0xFFFF;
-        m->i2c_eeprom[off       & 0x7FFF] = 0;                          // BE u32 (DCT3 = big-endian ARM)
-        m->i2c_eeprom[(off + 1) & 0x7FFF] = 0;
-        m->i2c_eeprom[(off + 2) & 0x7FFF] = (uint8_t)(s >> 8);
-        m->i2c_eeprom[(off + 3) & 0x7FFF] = (uint8_t)(s & 0xFF);
-        if (getenv("I2CLOG")) printf("[i2c] NSB calib checksum#2 finalized @0x%X = 0x%04X\n", off, s);
-    }
+    // All factory provisioning (per-revision checksums, DSP-fault latch, FAID
+    // identity) is owned by the eeprom_provision service, not the MAD2 platform.
+    eeprom_provision(m);
 }
 
 // Eager init entry (called from mad2_init for external-EEPROM models): populate m->i2c_eeprom

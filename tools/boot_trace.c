@@ -247,7 +247,7 @@ static long fw_load(DCT3Core* c, const char* path, uint32_t raw_base) {
 // chosen snapshot step.
 
 // Inject one MDIRCV message at the queue's current tail and raise FIQ0.
-// Mirrors the self-test reply path in src/mad2/dsp_default.c.
+// Mirrors the self-test reply path in src/mad2/dsp/dsp_rom4.c.
 static void sweep_inject_mdircv(Harness* h, DCT3Core* c, uint8_t group,
                                 const uint8_t* payload, uint8_t payload_len)
 {
@@ -675,10 +675,10 @@ int main(int argc, char** argv) {
     if (getenv("CCONT0E")) h.mad2.ccont[0x0E] = (uint8_t)strtoul(getenv("CCONT0E"), NULL, 0);
     // CCONT A/D overrides (diagnostic): VBATT=adc2 BSI=adc3(battery type) BTEMP=adc4 CHARGER=adc5.
     // The 8850 uses a Li-ion BLB-2 pack — a different BSI than the 3310 NiMH default.
-    if (getenv("VBATT"))   h.mad2.adc[2] = (uint16_t)strtoul(getenv("VBATT"), NULL, 0);
+    if (getenv("VBATT"))   mad2_set_battery_adc(&h.mad2, (uint16_t)strtoul(getenv("VBATT"), NULL, 0));
     if (getenv("BSI"))     h.mad2.adc[3] = (uint16_t)strtoul(getenv("BSI"), NULL, 0);
     if (getenv("BTEMP"))   h.mad2.adc[4] = (uint16_t)strtoul(getenv("BTEMP"), NULL, 0);
-    if (getenv("CHARGER")) h.mad2.adc[5] = (uint16_t)strtoul(getenv("CHARGER"), NULL, 0);
+    if (getenv("CHARGER")) mad2_set_charger_adc(&h.mad2, (uint16_t)strtoul(getenv("CHARGER"), NULL, 0));
     if (getenv("KEYSPECIAL")) h.mad2.kbd_special_cols = (uint8_t)strtoul(getenv("KEYSPECIAL"), NULL, 0);
     if (getenv("KEYROW") && getenv("KEYCOL"))
         h.mad2.kbd_norm_cols[strtoul(getenv("KEYROW"),NULL,0) & 7] = 1u << (strtoul(getenv("KEYCOL"),NULL,0) & 7);
@@ -845,7 +845,7 @@ int main(int argc, char** argv) {
     long softwdt_keepalive = getenv("SOFTWDT_KEEPALIVE") ? atol(getenv("SOFTWDT_KEEPALIVE")) : 0;
     uint64_t softwdt_period = getenv("SOFTWDT_KEEPALIVE_PERIOD")
         ? (uint64_t)strtoull(getenv("SOFTWDT_KEEPALIVE_PERIOD"), NULL, 0) : 1000000ull;
-    uint64_t softwdt_last_cyc = 0;
+    uint64_t softwdt_next_cyc = softwdt_period;
     if (softwdt_keepalive)
         printf("SOFTWDT_KEEPALIVE: clearing [0x0011FF1A] every %llu cycles "
                "(research knob; reroutes around the SWDSP/DSP-reset reason-0x68 chain)\n",
@@ -964,20 +964,22 @@ int main(int argc, char** argv) {
     }
     long poke_after = getenv("POKEAFTER") ? atol(getenv("POKEAFTER")) : 0;
     long poke_after2 = getenv("POKEAFTER2") ? atol(getenv("POKEAFTER2")) : 0; // apply POKE2s only from this step
-    // KEYRELEASE=<step>: release the held power key (kbd_special_cols=0) at this step,
+    // KEYRELEASE=<cycle>: release the held power key on a monotonic hardware-cycle deadline,
     // modelling a real momentary power-button press->release. The boot needs PWR held
     // through the power-on-reason gate (~2M); the startup handler may wait for the
     // key-up before drawing the idle screen. -1 (default) = never release (hold).
-    long key_release = getenv("KEYRELEASE") ? atol(getenv("KEYRELEASE")) : -1;
+    uint64_t key_release = getenv("KEYRELEASE")
+        ? strtoull(getenv("KEYRELEASE"), 0, 0) : UINT64_MAX;
     int key_released = 0;
-    // KEYPRESS=<step>[ KEYPRESSRC=<row>,<col> KEYPRESSDUR=<steps>]: model a real
-    // momentary press of a NORMAL matrix key. At <step> set kbd_norm_cols[row] bit
-    // <col> (key down) + raise keypad IRQ0; after KEYPRESSDUR steps clear it (key up)
+    // KEYPRESS=<cycle>[ KEYPRESSRC=<row>,<col> KEYPRESSDUR=<cycles>]: model a real
+    // momentary press of a NORMAL matrix key on the shared hardware clock.
     // + raise IRQ0 again. The keypad is wake-on-keypress (any change -> IRQ bit0 ->
     // ISR 0x2E8C10 -> scan 0x2EBE80 -> keycode via table 0x32E718). Default key =
     // (row 1,col 2) = KEY_1 (a digit -> disp49 number-entry draw).
-    long key_press = getenv("KEYPRESS") ? atol(getenv("KEYPRESS")) : -1;
-    long key_press_dur = getenv("KEYPRESSDUR") ? atol(getenv("KEYPRESSDUR")) : 400000;
+    uint64_t key_press = getenv("KEYPRESS")
+        ? strtoull(getenv("KEYPRESS"), 0, 0) : UINT64_MAX;
+    uint64_t key_press_dur = getenv("KEYPRESSDUR")
+        ? strtoull(getenv("KEYPRESSDUR"), 0, 0) : 400000u;
     int kp_row = 1, kp_col = 2;
     if (getenv("KEYPRESSRC")) sscanf(getenv("KEYPRESSRC"), "%d,%d", &kp_row, &kp_col);
     kp_row &= 7; kp_col &= 7;
@@ -987,20 +989,19 @@ int main(int argc, char** argv) {
     // DXR tap feeds it; cf. DSP54_PCMCAP which writes the same stream to disk).
     // Default OFF; summary prints at exit next to the LCD block.
     if (getenv("PCMSINK")) h.mad2.pcm_sink = pcmsink_count;
-    // SLIDEOPEN=<step>: open the slide-cover (reed switch) at this step on a slide phone;
-    // SLIDECLOSE=<step>: close it. Drives mad2_slide_set (cover IRQ + open/closed message).
-    long slide_open_at  = getenv("SLIDEOPEN")  ? atol(getenv("SLIDEOPEN"))  : -1;
-    long slide_close_at = getenv("SLIDECLOSE") ? atol(getenv("SLIDECLOSE")) : -1;
+    // Slide-cover host inputs are hardware-cycle deadlines too.
+    uint64_t slide_open_at = getenv("SLIDEOPEN")
+        ? strtoull(getenv("SLIDEOPEN"), 0, 0) : UINT64_MAX;
+    uint64_t slide_close_at = getenv("SLIDECLOSE")
+        ? strtoull(getenv("SLIDECLOSE"), 0, 0) : UINT64_MAX;
     int slide_opened = 0, slide_closed = 0;
 
-    // --- REPLAY=<json|file>: nav-style step-keyed replay (H1; Phase 8 plan 05) ---------
+    // --- REPLAY=<json|file>: nav-style hardware-cycle event replay ---------------------
     // Accepts the minimal canonical form nav.mjs uses (tools/nav.mjs:127-188): a
-    // step-keyed ARRAY  [{"key":"c","step":9692410261},{"key":"c","step":10321084655}]
-    // — keys fired at an exact emulated INSTRUCTION-count step (the monotonic `steps`
-    // counter, NOT raw cpu->cycles; cadence is step-based per Pitfall §"cadence must be
-    // step-based, not cycles"). The value is either inline JSON or a path to a .json file.
+    // ARRAY [{"key":"c","cycle":9692410261},...]. Legacy "step" fields are accepted
+    // as aliases but interpreted on the monotonic hardware-cycle clock.
     // Each record drives the SAME keypad-inject idiom KEYPRESS uses (set kbd_norm_cols[row]
-    // bit + raise IRQ0 on DOWN, clear + raise on UP after REPLAYDUR steps) — no reimpl.
+    // bit + raise IRQ0 on DOWN, clear + raise on UP after REPLAYDUR cycles) — no reimpl.
     //
     // KEYS[] vocabulary mirrors nav.mjs's 3310 keypad matrix EXACTLY (the [row,col] pairs
     // from web/index.html data-row/data-col), so a macro recorded against nav reproduces
@@ -1014,10 +1015,11 @@ int main(int argc, char** argv) {
         {"*",4,4,1},{"#",4,2,1},{"menu",4,3,1},{"up",0,1,1},{"down",1,1,1},{"c",0,4,1},
         {"pwr",0,0,0},{"off",0,0,0},{"wait",0,0,0},
     };
-    typedef struct { long step; int row; int col; int matrix; char name[8]; } ReplayEvt;
+    typedef struct { uint64_t cycle; int row; int col; int matrix; char name[8]; } ReplayEvt;
     ReplayEvt* replay_evts = NULL; int replay_n = 0, replay_i = 0;
-    int replay_down = 0; long replay_down_step = 0; int replay_down_row = 0, replay_down_col = 0;
-    long replay_dur = getenv("REPLAYDUR") ? atol(getenv("REPLAYDUR")) : key_press_dur;
+    int replay_down = 0; uint64_t replay_up_cycle = 0; int replay_down_row = 0, replay_down_col = 0;
+    uint64_t replay_dur = getenv("REPLAYDUR")
+        ? strtoull(getenv("REPLAYDUR"), 0, 0) : key_press_dur;
     if (getenv("REPLAY")) {
         const char* spec = getenv("REPLAY");
         char* buf = NULL;
@@ -1045,19 +1047,22 @@ int main(int argc, char** argv) {
                 while (*q && *q != '"' && kn < 7) kname[kn++] = *q++;
                 kname[kn] = 0;
             }
-            // Find the step in this record: search both directions to the record braces.
-            // Simplest robust approach: look for the nearest "step" after this "key" but
+            // Find the deadline in this record: prefer "cycle"/"cyc", then accept
+            // legacy "step" as a hardware-cycle alias.
             // before the next "key" (records are objects; nav emits key then step or vice
             // versa — scan a bounded window from the enclosing '{').
             const char* rec_start = p; while (rec_start > json && *rec_start != '{') rec_start--;
             const char* rec_end = strchr(p, '}'); if (!rec_end) rec_end = json + strlen(json);
-            long stepv = -1;
-            const char* sp = strstr(rec_start, "\"step\"");
+            uint64_t cyclev = UINT64_MAX;
+            const char* sp = strstr(rec_start, "\"cycle\"");
+            if (!sp || sp >= rec_end) sp = strstr(rec_start, "\"cyc\"");
+            if (!sp || sp >= rec_end) sp = strstr(rec_start, "\"step\"");
             if (sp && sp < rec_end) {
                 const char* sq = strchr(sp, ':');
-                if (sq) { sq++; while (*sq == ' ' || *sq == '\t') sq++; stepv = atol(sq); }
+                if (sq) { sq++; while (*sq == ' ' || *sq == '\t') sq++;
+                    cyclev = strtoull(sq, 0, 0); }
             }
-            if (stepv >= 0 && kname[0]) {
+            if (cyclev != UINT64_MAX && kname[0]) {
                 int row = 0, col = 0, matrix = 0, known = 0;
                 // Model-aware logical resolve FIRST: map the canonical key name -> KeyId,
                 // then ask the ACTIVE profile for its (row,col). The KEYS[] table below is
@@ -1089,9 +1094,10 @@ int main(int argc, char** argv) {
                   if (rp && rp < rec_end && cp && cp < rec_end) {
                     const char* rq = strchr(rp, ':'); const char* cq = strchr(cp, ':');
                     if (rq && cq) { row = atoi(rq + 1); col = atoi(cq + 1); matrix = 1; known = 1; } } }
-                if (!known) fprintf(stderr, "[replay] WARN unknown key '%s' @step %ld — cursor-advance only\n", kname, stepv);
+                if (!known) fprintf(stderr, "[replay] WARN unknown key '%s' @cycle %llu — cursor-advance only\n",
+                                    kname, (unsigned long long)cyclev);
                 if (replay_n >= cap) { cap *= 2; replay_evts = (ReplayEvt*)realloc(replay_evts, (size_t)cap * sizeof(ReplayEvt)); }
-                replay_evts[replay_n].step = stepv;
+                replay_evts[replay_n].cycle = cyclev;
                 replay_evts[replay_n].row = row; replay_evts[replay_n].col = col;
                 replay_evts[replay_n].matrix = matrix;
                 snprintf(replay_evts[replay_n].name, sizeof(replay_evts[replay_n].name), "%s", kname);
@@ -1100,11 +1106,12 @@ int main(int argc, char** argv) {
             p = rec_end;
         }
         free(buf);
-        printf("REPLAY: %d step-keyed event(s) parsed (cadence = INSTRUCTION count, dur=%ld); "
-               "keys resolved via active model's profile (emu_keyline)\n", replay_n, replay_dur);
+        printf("REPLAY: %d hardware-cycle event(s) parsed (duration=%llu cycles); "
+               "keys resolved via active model's profile (emu_keyline)\n",
+               replay_n, (unsigned long long)replay_dur);
         for (int e = 0; e < replay_n; ++e)
-            printf("  [replay] @step %ld  key=%s  (row %d,col %d)%s\n",
-                   replay_evts[e].step, replay_evts[e].name, replay_evts[e].row,
+            printf("  [replay] @cycle %llu  key=%s  (row %d,col %d)%s\n",
+                   (unsigned long long)replay_evts[e].cycle, replay_evts[e].name, replay_evts[e].row,
                    replay_evts[e].col, replay_evts[e].matrix ? "" : "  [non-matrix: cursor-advance]");
     }
 
@@ -1239,10 +1246,44 @@ gui_run_start:   // in-process warm-reboot target (PWR held 30s); GUI build only
         }
     }
     struct timespec mbus_anchor = {0, 0}; uint64_t mbus_anchor_cyc = 0; int mbus_anchored = 0;
+    uint64_t mbus_poll_period_cyc = getenv("MBUSPOLL_CYC")
+        ? strtoull(getenv("MBUSPOLL_CYC"), 0, 0) : 4096u;
+    uint64_t mbus_poll_next_cyc = mbus_poll_period_cyc;
+
+    // Reference-network host inputs. These enter through the same asynchronous
+    // queue used by the web/native APIs; IMSI paging is emitted later by the RF
+    // scheduler and is never synthesized at this call site.
+    const char* incoming_call = getenv("INCOMING_CALL");
+    const char* incoming_sms_from = getenv("INCOMING_SMS_FROM");
+    const char* incoming_sms_text = getenv("INCOMING_SMS_TEXT");
+    // Host input deadlines use the same monotonic 13 MHz hardware-cycle clock
+    // as RF/DSP events. Instruction count is not time: ARM instructions have
+    // variable cost, and scheduling here by `steps` made the same nominal input
+    // arrive at a completely different GSM frame than Noks.
+    uint64_t incoming_at_cycle = getenv("INCOMING_AT")
+        ? strtoull(getenv("INCOMING_AT"), 0, 0) : 35000000u;
+    int incoming_queued = 0;
 
     for (; steps < budget; ++steps) {
         struct ARMCore* cpu = &c->cpu;
         uint32_t pc = (uint32_t)cpu->gprs[15] - (cpu->cpsr.t ? 4u : 8u);
+
+        if (!incoming_queued && h.mad2.rtc_mono >= incoming_at_cycle) {
+            int queued = 0;
+            if (incoming_call && *incoming_call)
+                queued |= rom6_queue_incoming_call(&h.mad2, incoming_call);
+            if ((incoming_sms_from && *incoming_sms_from) ||
+                (incoming_sms_text && *incoming_sms_text))
+                queued |= rom6_queue_incoming_sms(
+                    &h.mad2,
+                    incoming_sms_from && *incoming_sms_from ? incoming_sms_from : "12345",
+                    incoming_sms_text && *incoming_sms_text ? incoming_sms_text : "Hello from Noks");
+            incoming_queued = 1;
+            if (incoming_call || incoming_sms_from || incoming_sms_text)
+                printf("[gsm] host input %s at cycle %llu (step %ld)\n",
+                       queued ? "queued" : "rejected (reference DSP inactive/full)",
+                       (unsigned long long)h.mad2.rtc_mono, steps);
+        }
 
         // Headless keypad injection (calibration/testing): KEYINJECT=ROW,COL presses that
         // matrix cell at KEYINJECTAT (default 4M) for KEYHOLD steps (default 300k) then
@@ -1322,13 +1363,16 @@ gui_run_start:   // in-process warm-reboot target (PWR held 30s); GUI build only
             }
         }
 
-        // MBUS service bridge. RX must be fed PER STEP (mbus_bridge_feed) so a byte lands the
+        // MBUS service bridge. RX is fed on each observed UART state transition so a byte lands the
         // instant the firmware drains the previous one — the firmware's RX-enable opens only
         // briefly between bytes, and a periodic feed skips past those windows so the frame
         // never assembles. The fd I/O + TX forward + wall-clock pacing stay batched (every
-        // 256 steps) to keep syscalls off the hot path.
+        // monotonic deadline to keep syscalls off the hot path.
         if (mbus_fd >= 0) mbus_bridge_feed(&h.mad2);
-        if (mbus_fd >= 0 && (steps & 0xFF) == 0) {
+        if (mbus_fd >= 0 && h.mad2.rtc_mono >= mbus_poll_next_cyc) {
+            uint64_t period = mbus_poll_period_cyc ? mbus_poll_period_cyc : 1u;
+            mbus_poll_next_cyc +=
+                (1u + (h.mad2.rtc_mono - mbus_poll_next_cyc) / period) * period;
             mbus_bridge_poll(&h.mad2, mbus_fd);
             struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
             if (!mbus_anchored) { mbus_anchor = now; mbus_anchor_cyc = h.mad2.rtc_mono; mbus_anchored = 1; }
@@ -1353,9 +1397,10 @@ gui_run_start:   // in-process warm-reboot target (PWR held 30s); GUI build only
         // out, a single physical key-hold spans millions of emulated steps, and the
         // firmware's hold-auto-repeat turns one tap into a menu-scroll storm. (vsync, when
         // honoured, makes that sleep ~zero; the throttle is the robust floor.)
-        static uint64_t gui_last_frame_cyc = 0;
-        if (gui_on && (h.mad2.rtc_mono - gui_last_frame_cyc) >= 216667u) {
-            gui_last_frame_cyc = h.mad2.rtc_mono;
+        static uint64_t gui_next_frame_cyc = 216667u;
+        if (gui_on && h.mad2.rtc_mono >= gui_next_frame_cyc) {
+            gui_next_frame_cyc +=
+                (1u + (h.mad2.rtc_mono - gui_next_frame_cyc) / 216667u) * 216667u;
             GuiInput gi = gui_frame(&h.mad2, &c->cpu, (long long)steps, NULL);
             if (gi.reboot) goto gui_warm_reboot;
             while (gi.paused && !gi.quit) gi = gui_frame(&h.mad2, &c->cpu, (long long)steps, NULL);
@@ -1409,65 +1454,80 @@ gui_run_start:   // in-process warm-reboot target (PWR held 30s); GUI build only
                        (unsigned long)(cpu->gprs[14] & 0xFFFFFF), steps);
             }
         }
-        if (key_release >= 0 && !key_released && steps >= key_release) {
+        if (key_release != UINT64_MAX && !key_released && h.mad2.rtc_mono >= key_release) {
             h.mad2.kbd_special_cols = 0; key_released = 1;
             // The keypad is wake-on-keypress: a key state change raises IRQ bit0
             // (handler 0x2E8C10 -> scan 0x2EBD76). Releasing the key without the
             // interrupt is invisible to the firmware, so assert bit0 here.
             h.mad2.irq_pending |= 0x01;
-            printf("KEYRELEASE: power key released + keypad IRQ0 raised at step %ld\n", steps);
+            printf("KEYRELEASE: power key released + keypad IRQ0 raised at cycle %llu (step %ld)\n",
+                   (unsigned long long)h.mad2.rtc_mono, steps);
         }
-        if (slide_open_at >= 0 && !slide_opened && steps >= slide_open_at) {
+        if (slide_open_at != UINT64_MAX && !slide_opened && h.mad2.rtc_mono >= slide_open_at) {
             mad2_slide_set(&h.mad2, 1); slide_opened = 1;
-            printf("SLIDEOPEN: reed switch -> open + cover IRQ at step %ld\n", steps);
+            printf("SLIDEOPEN: reed switch -> open + cover IRQ at cycle %llu\n",
+                   (unsigned long long)h.mad2.rtc_mono);
         }
-        if (slide_close_at >= 0 && !slide_closed && steps >= slide_close_at) {
+        if (slide_close_at != UINT64_MAX && !slide_closed && h.mad2.rtc_mono >= slide_close_at) {
             mad2_slide_set(&h.mad2, 0); slide_closed = 1;
-            printf("SLIDECLOSE: reed switch -> closed + cover IRQ at step %ld\n", steps);
+            printf("SLIDECLOSE: reed switch -> closed + cover IRQ at cycle %llu\n",
+                   (unsigned long long)h.mad2.rtc_mono);
         }
-        if (key_press >= 0 && !key_down && steps >= key_press) {
+        if (key_press != UINT64_MAX && !key_down && h.mad2.rtc_mono >= key_press) {
             h.mad2.kbd_norm_cols[kp_row] |= (uint8_t)(1u << kp_col);
             mad2_keypad_irq(&h.mad2); key_down = 1;   // matrix edge (8850-class source bit too)
-            printf("KEYPRESS: key DOWN (row %d,col %d) + keypad IRQ0 at step %ld\n", kp_row, kp_col, steps);
+            printf("KEYPRESS: key DOWN (row %d,col %d) + keypad IRQ0 at cycle %llu\n",
+                   kp_row, kp_col, (unsigned long long)h.mad2.rtc_mono);
         }
-        if (key_down && !key_up && steps >= key_press + key_press_dur) {
+        if (key_down && !key_up && h.mad2.rtc_mono >= key_press + key_press_dur) {
             h.mad2.kbd_norm_cols[kp_row] &= (uint8_t)~(1u << kp_col);
             mad2_keypad_irq(&h.mad2); key_up = 1;
-            printf("KEYPRESS: key UP + keypad IRQ0 at step %ld\n", steps);
+            printf("KEYPRESS: key UP + keypad IRQ0 at cycle %llu\n",
+                   (unsigned long long)h.mad2.rtc_mono);
         }
-        // REPLAY (H1): fire the next step-keyed event when the INSTRUCTION-count `steps`
-        // counter reaches its step. DOWN drives the SAME keypad-inject idiom KEYPRESS uses
-        // (set kbd_norm_cols bit + raise IRQ0); UP clears it + raises IRQ0 after replay_dur
-        // steps. A non-matrix key ("pwr"/"off"/"wait") just advances the cursor (no edge).
-        if (replay_down && steps >= replay_down_step + replay_dur) {
+        // Replay input is a pair of asynchronous host edges on rtc_mono.
+        if (replay_down && h.mad2.rtc_mono >= replay_up_cycle) {
             h.mad2.kbd_norm_cols[replay_down_row] &= (uint8_t)~(1u << replay_down_col);
             mad2_keypad_irq(&h.mad2); replay_down = 0;
-            printf("REPLAY: key UP (row %d,col %d) + keypad IRQ0 at step %ld\n",
-                   replay_down_row, replay_down_col, steps);
+            printf("REPLAY: key UP (row %d,col %d) + keypad IRQ0 at cycle %llu\n",
+                   replay_down_row, replay_down_col, (unsigned long long)h.mad2.rtc_mono);
         }
-        if (!replay_down && replay_i < replay_n && steps >= replay_evts[replay_i].step) {
+        if (!replay_down && replay_i < replay_n &&
+            h.mad2.rtc_mono >= replay_evts[replay_i].cycle) {
             ReplayEvt* ev = &replay_evts[replay_i];
+            // REPLAYSHOT=1 (testing): render the LCD (ASCII + build/lcd_ks<NN>.pgm)
+            // just before each key so the on-screen state the key acts on is
+            // observable as a filmstrip in one run. Inert unless REPLAYSHOT set.
+            if (getenv("REPLAYSHOT")) {
+                printf("REPLAY-LCD: state BEFORE key #%d '%s' @step %ld:\n",
+                       replay_i, ev->name, steps);
+                mad2_render_ascii(&h.mad2);
+                char pth[64]; snprintf(pth, sizeof pth, "build/lcd_ks%02d.pgm", replay_i);
+                mad2_save_pgm(&h.mad2, pth);
+            }
             if (ev->matrix) {
                 h.mad2.kbd_norm_cols[ev->row] |= (uint8_t)(1u << ev->col);
                 mad2_keypad_irq(&h.mad2);
-                replay_down = 1; replay_down_step = steps;
+                replay_down = 1; replay_up_cycle = h.mad2.rtc_mono + replay_dur;
                 replay_down_row = ev->row; replay_down_col = ev->col;
-                printf("REPLAY: key DOWN %s (row %d,col %d) + keypad IRQ0 at step %ld\n",
-                       ev->name, ev->row, ev->col, steps);
+                printf("REPLAY: key DOWN %s (row %d,col %d) + keypad IRQ0 at cycle %llu\n",
+                       ev->name, ev->row, ev->col, (unsigned long long)h.mad2.rtc_mono);
             } else {
-                printf("REPLAY: non-matrix event %s at step %ld (cursor-advance only)\n",
-                       ev->name, steps);
+                printf("REPLAY: non-matrix event %s at cycle %llu (cursor-advance only)\n",
+                       ev->name, (unsigned long long)h.mad2.rtc_mono);
             }
             replay_i++;
         }
-        // CHARGERAT=<step>: simulate plugging a charger (set charger-voltage ADC ch5)
+        // CHARGERAT=<cycle>: simulate plugging a charger (set charger-voltage ADC ch5)
         // so the CCONT charger-detect (CContINT3 -> IRQ2) edge fires. Verifies the
         // firmware's IRQ2 cascade handler responds (reads CCONT 0x0E, runs charge UI).
-        { static long chg_at = -2; static int chg_done = 0;
-          if (chg_at == -2) chg_at = getenv("CHARGERAT") ? atol(getenv("CHARGERAT")) : -1;
-          if (chg_at >= 0 && !chg_done && steps >= chg_at) {
-              h.mad2.adc[5] = 0x2C0; chg_done = 1;
-              printf("CHARGERAT: charger connected (adc5=0x2C0) at step %ld\n", steps);
+        { static uint64_t chg_at = UINT64_MAX; static int chg_init = 0, chg_done = 0;
+          if (!chg_init) { chg_init = 1; if (getenv("CHARGERAT"))
+              chg_at = strtoull(getenv("CHARGERAT"), 0, 0); }
+          if (chg_at != UINT64_MAX && !chg_done && h.mad2.rtc_mono >= chg_at) {
+              mad2_set_charger_adc(&h.mad2, 0x2C0); chg_done = 1;
+              printf("CHARGERAT: charger connected (adc5=0x2C0) at cycle %llu\n",
+                     (unsigned long long)h.mad2.rtc_mono);
           } }
         if (steps >= poke_after)
             for (int pk = 0; pk < poke_n; ++pk) c->ram[poke_addr[pk] & DCT3_RAM_MASK] = poke_val[pk];
@@ -1786,9 +1846,11 @@ gui_run_start:   // in-process warm-reboot target (PWR held 30s); GUI build only
         // SOFTWDT_KEEPALIVE: clear the supervisor counter at the configured cadence.
         // Done at the harness level (mad2_timers_tick has no RAM pointer). Uses the
         // monotonic cycle accumulator so SLICE rebases don't trip the period check.
-        if (softwdt_keepalive && (h.mad2.rtc_mono - softwdt_last_cyc) >= softwdt_period) {
+        if (softwdt_keepalive && h.mad2.rtc_mono >= softwdt_next_cyc) {
             c->ram[0x0011FF1Au & DCT3_RAM_MASK] = 0;
-            softwdt_last_cyc = h.mad2.rtc_mono;
+            uint64_t period = softwdt_period ? softwdt_period : 1u;
+            softwdt_next_cyc +=
+                (1u + (h.mad2.rtc_mono - softwdt_next_cyc) / period) * period;
         }
         // Post-step recover apply (shared): mad2_timers_tick already ran above; the
         // harness now applies a pending recover (gated by recovery policy — a no-op when
@@ -2076,10 +2138,10 @@ gui_warm_reboot:
     // after it (lines ~498-517) — most critically m->mem (the core RAM pointer): without
     // it the next guest access NULL-derefs. Mirror the original env overrides + resolve.
     if (getenv("CCONT0E"))    h.mad2.ccont[0x0E]   = (uint8_t)strtoul(getenv("CCONT0E"), NULL, 0);
-    if (getenv("VBATT"))      h.mad2.adc[2]        = (uint16_t)strtoul(getenv("VBATT"), NULL, 0);
+    if (getenv("VBATT"))      mad2_set_battery_adc(&h.mad2, (uint16_t)strtoul(getenv("VBATT"), NULL, 0));
     if (getenv("BSI"))        h.mad2.adc[3]        = (uint16_t)strtoul(getenv("BSI"), NULL, 0);
     if (getenv("BTEMP"))      h.mad2.adc[4]        = (uint16_t)strtoul(getenv("BTEMP"), NULL, 0);
-    if (getenv("CHARGER"))    h.mad2.adc[5]        = (uint16_t)strtoul(getenv("CHARGER"), NULL, 0);
+    if (getenv("CHARGER"))    mad2_set_charger_adc(&h.mad2, (uint16_t)strtoul(getenv("CHARGER"), NULL, 0));
     if (getenv("KEYSPECIAL")) h.mad2.kbd_special_cols = (uint8_t)strtoul(getenv("KEYSPECIAL"), NULL, 0);
     h.mad2.verbose  = getenv("CCVERBOSE") ? (int)atol(getenv("CCVERBOSE")) : (getenv("VERBOSE") ? 60 : 0);
     h.mad2.mem      = c->ram;                  // <- the fix: rebind core RAM (memset nulled it)

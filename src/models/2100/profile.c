@@ -123,7 +123,7 @@ const ModelProfile model_2100 = {
         // [dsp_uploaded]==0) so the 0x2D0C54 ISR runs, consumes the DSP self-test reply,
         // and sets [0x10EC50]=1 -> verdict keeps bit6 (no CONTACT SERVICE). The runner
         // 0x2D0724 kicks the exchange: streams the request to HPI mailbox 0x100F6, writes
-        // cb cmd [0x100E4]=2 (drives dsp_cb_delay), arms [0x10EC50]=0. FAITHFUL: IRQ4 is
+        // cb cmd [0x100E4]=2 (arms the DSP code-block deadline), [0x10EC50]=0. FAITHFUL: IRQ4 is
         // the real DSP "block/result done" signal; the ISR sets the flag organically once
         // (no DSPIRQ force, no poke of the result byte).
         // Security-code oracle (RE 2026-06-17): the boot security-code lock verifies the
@@ -153,5 +153,5 @@ const ModelProfile model_2100 = {
         .match = "NAM-2",            // 2100 product code (0x1FC version header)
         .flash_size = 0x00200000u,   // 2 MB
     },
-    .dsp = &mad2_dsp_default,        // shared/legacy DSP behaviour (verify for 2100)
+    .dsp = &mad2_dsp_rom6,           // ROM-6 faithful engine (src/mad2/dsp/dsp_rom6.c)
 };

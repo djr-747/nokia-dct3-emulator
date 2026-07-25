@@ -287,6 +287,15 @@ static uint32_t g_heapcurve_step[HEAPCURVE_N];   // low 32 of g_step at the samp
 static uint32_t g_heapcurve_used[HEAPCURVE_N];   // [0x10484C] used-bytes (BE u32)
 static uint32_t g_heapcurve_w = 0;               // total samples (ring idx = w % N)
 
+// Set an env knob from JS (e.g. "GSMBRIDGE"="1", "GSMLOG"="1"). The getenv-gated features — the
+// GSMBRIDGE network bring-up stack, SIMACCEPT, DSP54_COSIM, etc. — latch their config on their first
+// tick, so JS must call this BEFORE dct3_web_boot(). emscripten's setenv/getenv share one env table.
+extern int setenv(const char* name, const char* value, int overwrite);  // POSIX; hidden under -std=c99
+EMSCRIPTEN_KEEPALIVE
+void dct3_web_setenv(const char* name, const char* val) {
+    if (name && *name) setenv(name, (val && *val) ? val : "1", 1);
+}
+
 EMSCRIPTEN_KEEPALIVE
 void dct3_web_call(uint32_t fn, uint32_t r0, uint32_t r1) {
     g_call_fn = fn; g_call_r0 = r0; g_call_r1 = r1; g_call_pending = 1;
@@ -426,6 +435,17 @@ int dct3_web_boot(void) {
     // kill_faid_check) passes the boot integrity check instead of warm-rebooting
     // (reset reason 4). No-op on an unpatched image (byte-identical).
     dct3_fix_mcu_checksum(g_core);
+
+    // Web build defaults: turn on the SIML responder, the SIM-lock unlock RAM patch, and the
+    // GSMBRIDGE network bring-up stack so a real SIM is accepted and the phone reaches standby +
+    // registers on the network out of the box (UNFAITHFUL HLE stand-ins; each logs a one-time
+    // console warning when active). GSMBRIDGE keeps its L1_SCH_ARMED safety interlock, so it only
+    // acts once the firmware is genuinely running a carrier search. overwrite=0 so an explicit
+    // prior dct3_web_setenv("SIMACCEPT"/"DSPSIML"/"GSMBRIDGE","0") from JS still wins. Set BEFORE
+    // mad2_init (latches dsp_siml_en) and the first tick (latches the SIMACCEPT/GSMBRIDGE gates).
+    setenv("SIMACCEPT", "1", 0);
+    setenv("DSPSIML",   "1", 0);
+    setenv("GSMBRIDGE", "1", 0);
 
     memset(&g_mad2, 0, sizeof g_mad2);
     mad2_init(&g_mad2, g_model);
@@ -1170,11 +1190,11 @@ int dct3_web_tone_hz2(void) { return dct3_tone_hz_at(DCT3_TONE_FREQ2_ADDR); }  /
 // ADC reading so a UI slider/toggle drives the on-screen battery bars / charge state.
 // Full battery ~0x2C0; charger absent = 0. Charger-detect lives at firmware 0x2E8CFC.
 EMSCRIPTEN_KEEPALIVE
-void dct3_web_set_battery(int adc) { g_mad2.adc[2] = (uint16_t)(adc & 0x3FF); }
+void dct3_web_set_battery(int adc) { mad2_set_battery_adc(&g_mad2, (uint16_t)adc); }
 EMSCRIPTEN_KEEPALIVE
 int  dct3_web_get_battery(void)    { return g_mad2.adc[2]; }
 EMSCRIPTEN_KEEPALIVE
-void dct3_web_set_charger(int adc) { g_mad2.adc[5] = (uint16_t)(adc & 0x3FF); }
+void dct3_web_set_charger(int adc) { mad2_set_charger_adc(&g_mad2, (uint16_t)adc); }
 EMSCRIPTEN_KEEPALIVE
 int  dct3_web_get_charger(void)    { return g_mad2.adc[5]; }
 
@@ -1184,11 +1204,25 @@ int  dct3_web_get_charger(void)    { return g_mad2.adc[5]; }
 // dct3_web_sim_apdus() exposes the count of APDUs the SIM model has answered, so the
 // page can confirm the SIM session is live. (default present; see mad2_init.)
 EMSCRIPTEN_KEEPALIVE
-void dct3_web_set_sim(int present) { g_mad2.sim_present = present ? 1 : 0; }
+void dct3_web_set_sim(int present) { mad2_sim_set_present(&g_mad2, present); }
 EMSCRIPTEN_KEEPALIVE
 int  dct3_web_get_sim(void)        { return g_mad2.sim_present; }
 EMSCRIPTEN_KEEPALIVE
 double dct3_web_sim_apdus(void)     { return (double)g_mad2.sim_apdus; }
+
+// Asynchronous network-originated services. These only enqueue host intent in
+// rom6; paging, channel assignment, LAPDm, call control, and SMS delivery
+// are subsequently driven by the DSP's hardware-cycle event scheduler.
+// Return 1 when queued, 0 when the active model/backend cannot accept it or the
+// bounded incoming-service queue is full.
+EMSCRIPTEN_KEEPALIVE
+int dct3_web_incoming_call(const char* calling_number) {
+    return rom6_queue_incoming_call(&g_mad2, calling_number);
+}
+EMSCRIPTEN_KEEPALIVE
+int dct3_web_incoming_sms(const char* originator, const char* text) {
+    return rom6_queue_incoming_sms(&g_mad2, originator, text);
+}
 
 // SIM CHV1 (PIN) configuration + state, mirroring set_sim. The PIN/PUK are passed as
 // integers (e.g. 1234) and stored ASCII, 0xFF-padded to 8 (GSM 11.11). With the PIN

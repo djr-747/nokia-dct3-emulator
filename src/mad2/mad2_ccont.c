@@ -34,6 +34,7 @@ void wdt_kick(Mad2* m, uint8_t value, int cc) {
     // deep sleep) — it must PAUSE the starvation timer, not read as a feed, or we'd false-trip.
     if (value == 0x3F) {                        // disable: pause the starvation window
         m->wdt_disabled = 1;
+        m->wdt_deadline_cyc = 0;
     } else if (value != 0x00) {                 // arm (0x20=32s) / kick (0x31=49s) / any other feed
         m->wdt_disabled = 0;
         m->wdt_kicks++;
@@ -42,6 +43,9 @@ void wdt_kick(Mad2* m, uint8_t value, int cc) {
         // so the timeout is the written byte x the ARM clock — honor whatever value is loaded
         // instead of a hardcoded constant (matches the real reload-from-register behaviour).
         m->wdt_window_cyc = (uint64_t)value * DCT3_ARM_HZ;
+        m->wdt_deadline_cyc = m->rtc_mono + m->wdt_window_cyc;
+    } else {
+        m->wdt_deadline_cyc = 0;
     }
     // value == 0x00 falls through: power-off, latched by the power_off path elsewhere.
 }
@@ -97,7 +101,11 @@ void ccont_byte(Mad2* m, uint8_t b) {
         uint8_t reg = m->ccont_addr & 0x0F;
         m->dbg_ccw_count[reg]++; m->dbg_ccw_last[reg] = b;   // per-reg write tracker
         if (reg == 0x00 && (b & 0x08)) m->adc_channel = (b >> 4) & 0x07;  // reg0: enable A/D + select channel
-        if (reg == 0x0E) { m->cc_int_lines &= (uint8_t)~b; if (b & 0x80) m->rtc_alr_assert_cyc = 0; cc_int_update(m);   // write 1 to release
+        // Reg 0x0E ack: write-1-to-release, EXCEPT bit0 — that is the persistent
+        // CCONT-ready device status (not a latched cause), so an ack-all write must
+        // not drop it; the 3210 startup readiness check re-reads it after the boot
+        // code has already acked the power-on cause bits.
+        if (reg == 0x0E) { m->cc_int_lines &= (uint8_t)~(b & 0xFEu); if (b & 0x80) m->rtc_alr_assert_cyc = 0; cc_int_update(m);
             // log the ISR's INT ack (which line it cleared).
             static int cclogw = -1;
             if (cclogw < 0) cclogw = getenv("CCLOG") ? 1 : 0;

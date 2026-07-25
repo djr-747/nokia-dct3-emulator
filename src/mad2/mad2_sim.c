@@ -1,6 +1,6 @@
 // MAD2 — SIM card: SIMI UART block + ISO-7816 T=0 transport + GSM 11.11 / TS
 // 51.011 EF tree + real-card shadow bridge. Extracted from mad2.c; see
-// mad2_internal.h. Bus-facing entries (sim_read/sim_write/sim_tick) are
+// mad2_internal.h. Bus-facing entries and the SIM deadline service are
 // declared there; everything else is private to this file.
 
 #include "mad2/mad2_internal.h"
@@ -52,21 +52,54 @@ static int sim_log_on(void) { static int v = -1; if (v < 0) v = getenv("SIMLOG")
 
 // --- RX FIFO helpers ---------------------------------------------------------
 static int sim_rx_count(const Mad2* m) {
-    return (int)((uint8_t)(m->sim_rx_tail - m->sim_rx_head));
+    return (int)((uint16_t)(m->sim_rx_tail - m->sim_rx_head));
 }
-static void sim_rx_push(Mad2* m, uint8_t b) {
-    if ((uint8_t)(m->sim_rx_tail - m->sim_rx_head) >= sizeof(m->sim_rx)) return; // full: drop
+// Byte-pacing cadence (cycles/char). SIMPACE env overrides: 0 = instant (legacy),
+// default 13542 ≈ 1.042ms @13MHz = 960 char/s (bitplane's T=0 serial rate).
+static int32_t sim_pace_cyc(Mad2* m) {
+    if (m->sim_rx_pace_cyc < 0) {
+        const char* e = getenv("SIMPACE");
+        m->sim_rx_pace_cyc = e ? (int32_t)strtol(e, 0, 0) : 13542;
+        if (m->sim_rx_pace_cyc < 0) m->sim_rx_pace_cyc = 0;
+    }
+    return m->sim_rx_pace_cyc;
+}
+static int sim_stage_count(const Mad2* m) {
+    return (int)((uint16_t)(m->sim_rx_stage_tail - m->sim_rx_stage_head));
+}
+// Push directly into the VISIBLE RX FIFO the firmware reads.
+static void sim_rx_push_raw(Mad2* m, uint8_t b) {
+    if ((uint16_t)(m->sim_rx_tail - m->sim_rx_head) >= sizeof(m->sim_rx)) return; // full: drop
     m->sim_rx[m->sim_rx_tail % sizeof(m->sim_rx)] = b;
     m->sim_rx_tail++;
+}
+// Response emitters call sim_rx_push: when pacing is enabled the byte is STAGED (drip-fed
+// one-per-cadence by sim_tick); when disabled it lands in the visible FIFO immediately.
+static void sim_rx_push(Mad2* m, uint8_t b) {
+    if (sim_pace_cyc(m) > 0) {
+        if ((uint16_t)(m->sim_rx_stage_tail - m->sim_rx_stage_head) >= sizeof(m->sim_rx_stage)) return;
+        m->sim_rx_stage[m->sim_rx_stage_tail % sizeof(m->sim_rx_stage)] = b;
+        m->sim_rx_stage_tail++;
+    } else {
+        sim_rx_push_raw(m, b);
+    }
 }
 static uint8_t sim_rx_pop(Mad2* m) {
     if (m->sim_rx_head == m->sim_rx_tail) return 0xFF;
     return m->sim_rx[m->sim_rx_head++ % sizeof(m->sim_rx)];
 }
 // Make the firmware notice queued RX bytes: report them via SIMI_RXD_QUE, set the
-// RX-ready UART-int bit, and assert FIQ6. (Idempotent; called whenever bytes are
-// pushed and re-armed from the timer tick while the FIFO is non-empty.)
+// RX-ready UART-int bit, and assert FIQ6. When pacing, the staged response is released
+// byte-by-byte from sim_tick (which raises FIQ6 per byte); here we only arm the first
+// release so no bytes are made visible faster than the serial rate.
 static void sim_rx_signal(Mad2* m) {
+    if (sim_pace_cyc(m) > 0) {
+        if (sim_stage_count(m) > 0 && m->sim_rx_release_next_cyc <= m->rtc_mono)
+            m->sim_rx_release_next_cyc = m->rtc_mono;   // release the first byte on the next tick
+        // still surface any bytes already visible in sim_rx[]
+        if (sim_rx_count(m) > 0) { m->sim_uart_int |= SIM_INT_RXRDY; mad2_raise_fiq(m, 6); }
+        return;
+    }
     if (sim_rx_count(m) > 0) {
         m->sim_uart_int |= SIM_INT_RXRDY;
         mad2_raise_fiq(m, 6);          // FIQ6 = SIM-UART
@@ -104,10 +137,110 @@ static const uint8_t EF_ICCID[10]   = {0x98,0x16,0x10,0x04,0x00,0x30,0x56,0x64,0
 static const uint8_t EF_LP[4]       = {0x01,0xFF,0xFF,0xFF};  // real card EF_LP is 4 bytes
 // EF_ELP (2F05, extended language preference, under MF): real fixture card = "en".
 static const uint8_t EF_ELP[6]      = {0x65,0x6E,0xFF,0xFF,0xFF,0xFF};
-// EF_IMSI (6F07, transparent 9 bytes): len(1) + IMSI TBCD. Test IMSI 001010123456789.
-static const uint8_t EF_IMSI[9]     = {0x08,0x09,0x10,0x10,0x32,0x54,0x76,0x98,0x10};
+// EF_IMSI (6F07, transparent 9 bytes): len(1) + IMSI TBCD. PLMN-by-DSP-type (see
+// mad2_sim_select_plmn): DEFAULT here is the lock-EXEMPT test IMSI 001010123456789 (legacy DSP /
+// guarded boots — byte-identical); the faithful ROM6NEW engine swaps it to the real Telstra IMSI
+// at mad2_init. NON-const so the selector can rewrite it in place; the SimEf table + home_plmn
+// both read this array, so both follow the active PLMN automatically.
+static uint8_t EF_IMSI[9]           = {0x08,0x09,0x10,0x10,0x32,0x54,0x76,0x98,0x10};
 // EF_AD (6FAD, administrative data, 4 bytes): normal operation, OFM off, len(MNC)=2.
 static const uint8_t EF_AD[4]       = {0x00,0xFF,0xFF,0x02};  // real fixture card (normal op, MNC len 2)
+
+// Decode GSM 11.11 EF_IMSI (length byte + mobile-identity TBCD) into decimal
+// digits. Byte 1 contains digit 1 in its high nibble; subsequent digits are
+// low-nibble first. Return 1 only for a structurally valid IMSI.
+static int sim_decode_ef_imsi(const uint8_t* ef, int n, char out[16]) {
+    if (!ef || n < 2 || !out) return 0;
+    int value_bytes = ef[0];
+    if (value_bytes < 1 || value_bytes > 8 || value_bytes + 1 > n) return 0;
+    int odd = (ef[1] >> 3) & 1;
+    int digits = 2 * value_bytes - (odd ? 1 : 2);
+    if (digits < 5 || digits > 15 || (ef[1] >> 4) > 9) return 0;
+    out[0] = (char)('0' + (ef[1] >> 4));
+    for (int i = 1; i < digits; ++i) {
+        // ef[0] is the value length and ef[1] is digit 1 + parity/type;
+        // digit 2 therefore starts in the low nibble of ef[2].
+        int bi = 1 + (i + 1) / 2;
+        uint8_t d = (i & 1) ? (ef[bi] & 0x0F) : (ef[bi] >> 4);
+        if (d > 9) return 0;
+        out[i] = (char)('0' + d);
+    }
+    out[digits] = '\0';
+    return 1;
+}
+
+void mad2_sim_current_imsi(const Mad2* m, char out[16]) {
+    if (!out) return;
+    if (m && m->sim_imsi[0]) {
+        memcpy(out, m->sim_imsi, sizeof m->sim_imsi);
+        out[15] = '\0';
+        return;
+    }
+    if (!sim_decode_ef_imsi(EF_IMSI, sizeof EF_IMSI, out))
+        memcpy(out, "001010123456789", 16);
+}
+
+// Decode the GENUINE home PLMN (MCC/MNC in 3-byte LAI/RAI format) from the SIM's EF_IMSI + EF_AD,
+// so the GSM bring-up (mdi_gsm.c) broadcasts SI matching the actual card. EF_IMSI: byte0 = length,
+// bytes 1.. = TBCD digits (low nibble first, byte1 high nibble = parity). MNC length from EF_AD[3]&0x0F.
+void mad2_sim_home_plmn(uint8_t out[3]) {
+    uint8_t d1 = EF_IMSI[1] >> 4;
+    uint8_t d2 = EF_IMSI[2] & 0x0F, d3 = EF_IMSI[2] >> 4;
+    uint8_t d4 = EF_IMSI[3] & 0x0F, d5 = EF_IMSI[3] >> 4;
+    uint8_t d6 = EF_IMSI[4] & 0x0F;
+    int mnc3 = ((EF_AD[3] & 0x0F) == 3) ? 3 : 2;
+    out[0] = (uint8_t)((d2 << 4) | d1);
+    out[1] = (uint8_t)((((mnc3 == 3) ? d6 : 0x0F) << 4) | d3);
+    out[2] = (uint8_t)((d5 << 4) | d4);
+}
+
+void mad2_sim_current_plmn(const Mad2* m, uint8_t out[3]) {
+    char imsi[16];
+    mad2_sim_current_imsi(m, imsi);
+    size_t n = strlen(imsi);
+    if (n < 5u) {
+        mad2_sim_home_plmn(out);
+        return;
+    }
+    uint8_t d1 = (uint8_t)(imsi[0] - '0');
+    uint8_t d2 = (uint8_t)(imsi[1] - '0');
+    uint8_t d3 = (uint8_t)(imsi[2] - '0');
+    uint8_t d4 = (uint8_t)(imsi[3] - '0');
+    uint8_t d5 = (uint8_t)(imsi[4] - '0');
+    uint8_t d6 = (n > 5u) ? (uint8_t)(imsi[5] - '0') : 0u;
+    if (d1 > 9u || d2 > 9u || d3 > 9u || d4 > 9u || d5 > 9u ||
+        ((m && m->sim_mnc_digits == 3u) && d6 > 9u)) {
+        mad2_sim_home_plmn(out);
+        return;
+    }
+    int mnc3 = m && m->sim_mnc_digits == 3u;
+    out[0] = (uint8_t)((d2 << 4) | d1);
+    out[1] = (uint8_t)(((mnc3 ? d6 : 0x0Fu) << 4) | d3);
+    out[2] = (uint8_t)((d5 << 4) | d4);
+}
+
+// PLMN-by-DSP-engine. The rom6 engine runs the reference-network IMSI (208-01, the swSIM/
+// REFSIM camp identity); every other backend (rom4, c54x, bridge) keeps the lock-EXEMPT test
+// IMSI (001-01). Selected ONCE at mad2_init (the active engine is decided by then). Sets
+// EF_IMSI explicitly BOTH ways so consecutive boots on different engines in the same process
+// stay deterministic. The TBCD bytes decode under the EXISTING home_plmn parser above
+// (verified), so home_plmn / the broadcast SI PLMN follow the card with no parser change.
+// (The Telstra 505-01 identity used by the retired scaffold's live-network experiments is
+// gone with it.)
+void mad2_sim_select_plmn(Mad2* m) {
+    static const uint8_t IMSI_TEST[9]    = {0x08,0x09,0x10,0x10,0x32,0x54,0x76,0x98,0x10}; // 001010123456789
+    static const uint8_t IMSI_REFSIM[9]  = {0x08,0x29,0x80,0x10,0x00,0x00,0x00,0x00,0x10}; // 208010000000001
+    const uint8_t* selected = IMSI_TEST;
+    if (m && mad2_active_dsp(m) == &mad2_dsp_rom6) selected = IMSI_REFSIM;
+    memcpy(EF_IMSI, selected, sizeof EF_IMSI);
+    if (m) {
+        m->sim_mnc_digits = 2;
+        if (!sim_decode_ef_imsi(EF_IMSI, sizeof EF_IMSI, m->sim_imsi))
+            memcpy(m->sim_imsi, "001010123456789", 16);
+    }
+    void mad2_sim_reset_overlays(void);
+    mad2_sim_reset_overlays();   // fresh (blank) writable-EF state per boot
+}
 // EF_PHASE (6FAE, 1 byte): GSM phase. 0=Phase 1, 2=Phase 2, 3=Phase 2+. Phase 2
 // triggers stricter FCP conformance checks in the firmware (CHV1 status parsing,
 // SST service-bit validation). Declaring Phase 1 makes the firmware use the older,
@@ -131,7 +264,7 @@ static const uint8_t EF_SST[15]     = {0xCF,0x30,0xCF,0x0F,0x03,0x00,0xDC,0x03,0
 // (Name matches Nokia's own test-SIM fixture sim_init.sd@0x3511 —)
 static const uint8_t EF_SPN[17]     = {0x00,'A','L','D','I','m','o','b','i','l','e',0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};  // real fixture card SPN
 // EF_LOCI (6F7E, location information, 11 bytes): TMSI invalid, LAI, "not updated".
-static const uint8_t EF_LOCI[11]    = {0xFF,0xFF,0xFF,0xFF,0x05,0xF5,0x10,0xFF,0xFE,0x00,0x03};  // real fixture card LOCI
+static const uint8_t EF_LOCI[11]    = {0xFF,0xFF,0xFF,0xFF,0x05,0xF5,0x10,0xFF,0xFE,0x00,0x01};  // LU status 0x01 "not updated" (was 0x03 LA-not-allowed) — clean-LU start, matches ref SimCard
 // EF_BCCH (6F74) / EF_KC (6F20) / EF_FPLMN (6F7B): plausible empty/neutral.
 static const uint8_t EF_KC[9]       = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0x07};
 static const uint8_t EF_FPLMN[12]   = {0x05,0xF5,0x20,0x05,0xF5,0x30,0x05,0xF5,0x60,0xFF,0xFF,0xFF};  // real fixture card FPLMN
@@ -174,6 +307,7 @@ static const SimEf SIM_EFS[] = {
     {0x6FB7, 0, 0, 0, sizeof EF_ECC,   EF_ECC},      // emergency call codes (transparent, 15 bytes)
     {0x6F31, 0, 0, 0, sizeof EF_HPLMN, EF_HPLMN},    // HPLMN search period (1 byte)
     {0x6F3A, 1, 32, 50, 0,             NULL},        // ADN phonebook (50 x 32-byte records, blank)
+    {0x6F3C, 1, 176, 10, 0,            NULL},        // EF_SMS (DF_TELECOM, 10 x 176-byte records, blank) — writable via overlay
     {0x6F42, 1, 46, 1, 0,              NULL},        // SMSP (1 x 46-byte record, blank)
     {0x6F43, 0, 0, 0, sizeof EF_SMSS,  EF_SMSS},     // SMSS SMS status (2 bytes)
     {0x6F40, 1, 38, 3, 0,              NULL},        // MSISDN (DF_TELECOM, 3 x 38-byte records, blank)
@@ -184,6 +318,61 @@ static const SimEf* sim_find_ef(uint16_t fid) {
     for (int i = 0; i < SIM_EF_COUNT; ++i) if (SIM_EFS[i].fid == fid) return &SIM_EFS[i];
     return NULL;
 }
+
+static uint16_t sim_ef_total(const SimEf* ef) {   // whole-file byte count
+    return ef->type ? (uint16_t)(ef->rec_len * ef->recs) : ef->size;
+}
+
+// --- Writable RAM overlay for UPDATE-able EFs (phonebook / SMSP / LOCI / ...) -----
+// The const EF bodies above are the read-only SEED. On the FIRST UPDATE RECORD/BINARY
+// to an EF a full-size RAM copy is materialised — seeded byte-for-byte from the const
+// body, or 0xFF for a blank (NULL-body) record file, i.e. EXACTLY what READ RECORD/
+// READ BINARY returned for that EF before — the write is applied to the copy, and every
+// later READ for that EF is served from the copy. An EF that is never written keeps NO
+// overlay, so its reads still come straight from the const seed. That is the invariant
+// that keeps `make guard` byte-identical: the guard boots issue no UPDATEs (verified),
+// so no overlay is ever materialised and every read is bit-for-bit the pre-change path.
+// This brings the synthetic SIM to parity with swSIM (disk-backed, UPDATE sticks) so an
+// MMI add-contact / SMS-save can read back what it just wrote and complete. Reset per
+// boot in mad2_sim_reset_overlays() (called from mad2_sim_select_plmn at mad2_init).
+#define SIM_OVERLAY_SLOTS      8
+#define SIM_OVERLAY_MAX_BYTES  2048   // largest writable EF = ADN 6F3A (32*50 = 1600)
+typedef struct {
+    uint16_t fid;                        // 0 = free slot
+    uint16_t size;                       // valid bytes in data[]
+    uint8_t  data[SIM_OVERLAY_MAX_BYTES];
+} SimEfOverlay;
+static SimEfOverlay g_sim_overlay[SIM_OVERLAY_SLOTS];
+
+static SimEfOverlay* sim_overlay_find(uint16_t fid) {
+    if (!fid) return NULL;
+    for (int i = 0; i < SIM_OVERLAY_SLOTS; ++i)
+        if (g_sim_overlay[i].fid == fid) return &g_sim_overlay[i];
+    return NULL;
+}
+
+// Return the writable overlay for `ef`, materialising (seeding) it on first use. NULL if
+// the EF is too big for a slot or no slot is free.
+static SimEfOverlay* sim_overlay_get(const SimEf* ef) {
+    if (!ef) return NULL;
+    SimEfOverlay* ov = sim_overlay_find(ef->fid);
+    if (ov) return ov;
+    uint16_t total = sim_ef_total(ef);
+    if (total == 0 || total > SIM_OVERLAY_MAX_BYTES) return NULL;
+    for (int i = 0; i < SIM_OVERLAY_SLOTS; ++i) {
+        if (g_sim_overlay[i].fid == 0) {
+            ov = &g_sim_overlay[i];
+            ov->fid = ef->fid; ov->size = total;
+            if (ef->body) memcpy(ov->data, ef->body, total);   // seed from const body
+            else          memset(ov->data, 0xFF, total);       // blank record file (NULL body)
+            return ov;
+        }
+    }
+    return NULL;   // slots exhausted
+}
+
+// Drop all persisted SIM writes — called once per boot from mad2_sim_select_plmn.
+void mad2_sim_reset_overlays(void) { memset(g_sim_overlay, 0, sizeof g_sim_overlay); }
 
 // Build the SELECT response (GSM 11.11 §9.2.1 "Response data of SELECT"). We return
 // the legacy GSM (phase 1/2) FCP, which the DCT3 firmware understands:
@@ -355,7 +544,61 @@ static void sim_compute_apdu(Mad2* m, uint8_t* out, int* np, int out_cap,
                m->sim_asm[0], ins, p1, p2, p3, (unsigned)m->sim_asm_len);
         for (uint16_t i = 0; i < m->sim_asm_len && i < 32; ++i) printf(" %02X", m->sim_asm[i]);
         printf("\n");
+        fflush(stdout);   // flush so the last command before a hang is visible in the log
     }
+
+    // swSIM software card (third_party/swicc + third_party/swsim, vendored, BSD-3-Clause).
+    // Route the whole assembled T=0 command through a spec-complete in-process software SIM
+    // instead of the hand-rolled synthetic EF table below — full 2G behaviour (FCP, GET
+    // RESPONSE, PIN, RUN GSM ALGORITHM) from third_party/swsim/gsm.json. In-process +
+    // synchronous, so it stays deterministic (no card/bridge/presence state to vary the
+    // camp work). DEFAULT SIM backend everywhere (native + web, all DSP engines) —
+    // proven registering on rom6 (3310) and rom4 (3210 vs the reference network);
+    // SWSIM=0 forces the synthetic table (A/B), SWSIM=1 stays as an explicit force. (The former
+    // EF_ACM READ RECORD boot loop is fixed — swSIM now draws standby + camps like synthetic;
+    // see third_party/swsim/README.md.) Compiled in only for the boot_trace/gui targets
+    // (-DSWSIM_BUILD links the swICC objects); the wasm/test/guard builds never reference the
+    // symbol, so they stay byte-identical.
+#ifdef SWSIM_BUILD
+    {
+        static int use_swsim = -1;
+        if (use_swsim < 0) {
+            const char* e = getenv("SWSIM");
+#ifdef __EMSCRIPTEN__
+            // Web build: swSIM is the DEFAULT SIM — it is the spec-complete,
+            // disk-backed-persistent card (UPDATE RECORD sticks). The wasm runs the
+            // HLE DSP, not ROM6NEW, so the native ROM6NEW-gated default never fires
+            // here; force it on. SWSIM=0 in Module.ENV still opts out (getenv works
+            // under emscripten when the JS host sets ENV).
+            int def = 1;
+#else
+            // Native: swSIM is the default for every engine (was rom6-only until
+            // 2026-07-24; the rom4 network engine registers with it too). SWSIM=0
+            // opts back into the synthetic EF table for A/B.
+            int def = 1;
+#endif
+            use_swsim = e ? (atoi(e) != 0) : def;
+        }
+        if (use_swsim) {
+            extern int swsim_backend_apdu(const uint8_t *, int, uint8_t *, int,
+                                          uint8_t *, uint8_t *);
+            uint8_t s1 = SW_OK_HI, s2 = SW_OK_LO;
+            int dn = swsim_backend_apdu(m->sim_asm, (int)m->sim_asm_len, out, out_cap, &s1, &s2);
+            // swSIM owns its filesystem state, but the surrounding MAD2 model
+            // still needs to know which EF the card accepted so it can associate
+            // a later READ BINARY response with EF_IMSI.
+            if (ins == 0xA4 && data_len >= 2 &&
+                (s1 == 0x90 || s1 == 0x9F || s1 == 0x61)) {
+                uint16_t fid = (uint16_t)((data[0] << 8) | data[1]);
+                m->sim_sel_file = fid;
+                if (fid == 0x3F00 || fid == 0x7F20 || fid == 0x7F10)
+                    m->sim_sel_df = fid;
+            }
+            *np = dn; *sw1p = s1; *sw2p = s2;
+            return;
+        }
+    }
+#endif
 
     // GSM CLA is 0xA0. Some commands echo the INS as a procedure byte first; the
     // DCT3 driver tolerates the response with or without it, but a clean T=0 reply
@@ -409,8 +652,12 @@ static void sim_compute_apdu(Mad2* m, uint8_t* out, int* np, int out_cap,
             sw1 = 0x98; sw2 = 0x04; break;
         }
         if (ef && ef->type == 0) {
+            const SimEfOverlay* ov = sim_overlay_find(ef->fid);   // persisted writes, if any
             for (int i = 0; i < want && n < out_cap; ++i) {
-                uint8_t b = (ef->body && off + i < ef->size) ? ef->body[off + i] : 0xFF;
+                uint8_t b;
+                if (ov && off + i < ov->size)            b = ov->data[off + i];
+                else if (ef->body && off + i < ef->size) b = ef->body[off + i];
+                else                                     b = 0xFF;
                 out[n++] = b;
             }
             sw1 = SW_OK_HI; sw2 = SW_OK_LO;
@@ -431,10 +678,16 @@ static void sim_compute_apdu(Mad2* m, uint8_t* out, int* np, int out_cap,
             sw1 = 0x98; sw2 = 0x04; break;
         }
         if (ef && ef->type == 1) {
+            const SimEfOverlay* ov = sim_overlay_find(ef->fid);   // persisted writes, if any
             for (int i = 0; i < want && n < out_cap; ++i) {
                 int idx = rec * ef->rec_len + i;
-                uint8_t b = (ef->body && rec < ef->recs && i < ef->rec_len)
-                            ? ef->body[idx % (ef->rec_len * ef->recs)] : 0xFF;
+                uint8_t b;
+                if (ov && rec < ef->recs && i < ef->rec_len && idx < ov->size)
+                    b = ov->data[idx];
+                else if (ef->body && rec < ef->recs && i < ef->rec_len)
+                    b = ef->body[idx % (ef->rec_len * ef->recs)];
+                else
+                    b = 0xFF;
                 out[n++] = b;
             }
             sw1 = SW_OK_HI; sw2 = SW_OK_LO;
@@ -521,10 +774,40 @@ static void sim_compute_apdu(Mad2* m, uint8_t* out, int* np, int out_cap,
     case 0xC2:    // ENVELOPE (SAT) — accept (synthetic has no proactive session)
     case 0xA2:    // SEEK — accept (synthetic: no match data returned)
     case 0x32:    // INCREASE
-    case 0xDC:    // UPDATE RECORD
-    case 0xD6:    // UPDATE BINARY
-        sw1 = SW_OK_HI; sw2 = SW_OK_LO;               // accept writes (no persistence)
+        sw1 = SW_OK_HI; sw2 = SW_OK_LO;               // accept (no persistence needed)
         break;
+    case 0xDC: {  // UPDATE RECORD (P1 = record#, P2 = mode, P3 = length): persist into overlay.
+        // P2 modes: 04 absolute (P1=rec), 02 next, 03 previous, 01 current. The DCT3 MMI
+        // writes ABSOLUTE (P1 = the record number it just READ), so treat P1 as the record.
+        const SimEf* ef = sim_find_ef(m->sim_sel_file);
+        if (ef && ef->type == 1) {
+            int rec = p1 ? p1 - 1 : 0;
+            if (rec < 0 || rec >= ef->recs) { sw1 = 0x94; sw2 = 0x02; break; }  // record not found
+            SimEfOverlay* ov = sim_overlay_get(ef);
+            if (!ov) { sw1 = 0x92; sw2 = 0x40; break; }                          // memory problem (no slot)
+            int base = rec * ef->rec_len;
+            int wl = data_len < ef->rec_len ? data_len : ef->rec_len;            // clamp to record length
+            for (int i = 0; i < wl && base + i < ov->size; ++i) ov->data[base + i] = data[i];
+            sw1 = SW_OK_HI; sw2 = SW_OK_LO;
+        } else {
+            sw1 = SW_OK_HI; sw2 = SW_OK_LO;           // not a record EF: accept (unchanged legacy behaviour)
+        }
+        break;
+    }
+    case 0xD6: {  // UPDATE BINARY (P1:P2 = offset, P3 = length): persist into overlay.
+        const SimEf* ef = sim_find_ef(m->sim_sel_file);
+        uint16_t off = (uint16_t)((p1 << 8) | p2);
+        if (ef && ef->type == 0) {
+            if (off >= sim_ef_total(ef)) { sw1 = 0x67; sw2 = 0x00; break; }      // offset past EOF
+            SimEfOverlay* ov = sim_overlay_get(ef);
+            if (!ov) { sw1 = 0x92; sw2 = 0x40; break; }
+            for (int i = 0; i < (int)data_len && off + i < ov->size; ++i) ov->data[off + i] = data[i];
+            sw1 = SW_OK_HI; sw2 = SW_OK_LO;
+        } else {
+            sw1 = SW_OK_HI; sw2 = SW_OK_LO;           // not a transparent EF: accept (unchanged)
+        }
+        break;
+    }
     case 0x88:    // RUN GSM ALGORITHM (A3/A8): 16-byte RAND in -> SRES(4)+Kc(8) out.
         // The synthetic operator algorithm computes a self-consistent SRES/Kc from our
         // baked Ki. SIMNOAUTH=1 restores the old "no Ki" stub (98 04).
@@ -568,14 +851,36 @@ static void sim_push_resp(Mad2* m, uint8_t ins, const uint8_t* out, int n,
     for (int i = 0; i < n; ++i) sim_rx_push(m, out[i]);
     sim_rx_push(m, sw1);
     sim_rx_push(m, sw2);
+    // Cache what the firmware actually sees, after any bridge-side rewrite.
+    // This is intentionally in the common response path so synthetic, swSIM,
+    // and real-card feeds all drive the same active identity.
+    if (ins == 0xB0 && m->sim_sel_file == 0x6F07 &&
+        m->sim_asm_len >= 5 && m->sim_asm[2] == 0 && m->sim_asm[3] == 0 &&
+        sw1 == 0x90 && sw2 == 0x00 && n >= 9) {
+        char imsi[16];
+        if (sim_decode_ef_imsi(out, n, imsi))
+            memcpy(m->sim_imsi, imsi, sizeof m->sim_imsi);
+    }
+    if (ins == 0xB0 && m->sim_sel_file == 0x6FAD &&
+        m->sim_asm_len >= 5 && m->sim_asm[2] == 0 && m->sim_asm[3] == 0 &&
+        sw1 == 0x90 && sw2 == 0x00 && n >= 4) {
+        uint8_t digits = out[3] & 0x0Fu;
+        if (digits == 2u || digits == 3u) m->sim_mnc_digits = digits;
+    }
     m->sim_asm_len = 0;
     sim_rx_signal(m);
 }
 
 // Synthetic SIM: compute + push (the non-bridge default path).
 static void sim_process_apdu(Mad2* m) {
-    uint8_t out[64]; int n = 0; uint8_t sw1, sw2;
+    uint8_t out[256]; int n = 0; uint8_t sw1, sw2;   // 256: hold a full record (EF_SMS 6F3C = 176B)
     sim_compute_apdu(m, out, &n, (int)sizeof out, &sw1, &sw2);
+    if (sim_log_on()) {   // SIMLOG=1 also logs the RESPONSE (data + SW) — covers swSIM and synthetic
+        printf("[sim]  -> SW%02X%02X len=%d :", sw1, sw2, n);
+        for (int i = 0; i < n && i < 48; ++i) printf(" %02X", out[i]);
+        printf("\n");
+        fflush(stdout);
+    }
     sim_push_resp(m, m->sim_asm[1], out, n, sw1, sw2);
 }
 
@@ -724,7 +1029,7 @@ static void sim_dispatch_apdu(Mad2* m) {
     if (g_simbridge != 1) { sim_process_apdu(m); return; }
 
     // Synthetic reference (advances synth state: selected file, GET RESPONSE buf, ...).
-    uint8_t sout[64]; int sn = 0; uint8_t ssw1, ssw2;
+    uint8_t sout[256]; int sn = 0; uint8_t ssw1, ssw2;   // 256: hold a full record (see sim_process_apdu)
     sim_compute_apdu(m, sout, &sn, (int)sizeof sout, &ssw1, &ssw2);
 
     // Real card via the bridge.
@@ -923,6 +1228,7 @@ void sim_write(Mad2* m, uint8_t off, uint8_t v) {
         // (sim_reset writes bit0 then bit7; we deliver the ATR on the bit7 edge.)
         if ((v & 0x80) && !(prev & 0x80)) {
             m->sim_rx_head = m->sim_rx_tail = 0;   // flush stale RX
+            m->sim_rx_stage_head = m->sim_rx_stage_tail = 0;  // flush staged (paced) RX too
             m->sim_tx_len = 0; m->sim_asm_len = 0; // abandon any partial APDU
             m->sim_atr_pending = 1;                // deliver shortly (paced by the tick)
         }
@@ -942,12 +1248,41 @@ void sim_write(Mad2* m, uint8_t off, uint8_t v) {
     }
 }
 
-// Per-tick SIM housekeeping: deliver a pending ATR, re-arm FIQ6 while RX bytes wait
-// (the firmware masks/clears FIQ6 each ISR; a level-style re-raise keeps draining),
-// edge-detect card insert/remove for FIQ7, and (when SIMWWT enabled) raise the
-// SIMI_UART_INT bit 5 / FIQ6 WWT-timeout when the SIM line has been idle longer
-// than the configured threshold.
-void sim_tick(Mad2* m) {
+static int sim_wwt_idle(const Mad2* m) {
+    return m->sim_wwt_threshold_cyc > 0 && m->sim_present && (m->sim_ctrl & 0x80)
+        && m->sim_reset_count > 0 && m->sim_apdus > 0
+        && sim_rx_count(m) == 0 && m->sim_tx_len == 0
+        && sim_stage_count(m) == 0 && m->sim_asm_len == 0
+        && !m->sim_atr_pending;
+}
+
+uint64_t sim_next_wake(Mad2* m) {
+    if (!sim_wwt_idle(m)) {
+        m->sim_wwt_next_cyc = 0;
+        m->sim_wwt_last_active_cyc = m->rtc_mono;
+    }
+    if (m->sim_atr_pending || m->sim_present != m->sim_present_seen)
+        return m->rtc_mono;
+    if (sim_pace_cyc(m) > 0 && sim_stage_count(m) > 0 &&
+        sim_rx_count(m) == 0)
+        return m->sim_rx_release_next_cyc;
+    if (sim_wwt_idle(m))
+        return m->sim_wwt_next_cyc ? m->sim_wwt_next_cyc : m->rtc_mono;
+    return UINT64_MAX;
+}
+
+void mad2_sim_set_present(Mad2* m, int present) {
+    uint8_t value = present ? 1u : 0u;
+    if (m->sim_present == value) return;
+    m->sim_present = value;
+    m->sim_present_seen = value;
+    mad2_raise_fiq(m, 7);                              // insertion/removal edge
+}
+
+// Service only due SIM events: ATR delivery, paced UART bytes, card-detect edges,
+// and WWT expiry. No instruction-count polling is involved.
+void sim_advance_to(Mad2* m, uint64_t cycles) {
+    (void)cycles;                                      // rtc_mono is the shared clock
     if (m->sim_atr_pending) { m->sim_atr_pending = 0; sim_deliver_atr(m); }
     // Card insert/remove edge -> FIQ7 (card-detect). The firmware re-probes on this.
     if (m->sim_present != m->sim_present_seen) {
@@ -964,6 +1299,22 @@ void sim_tick(Mad2* m) {
     // requires modeling the upstream signal that resets the counter in firmware-
     // native code (a message from the recognition-complete msg handler). See
     // cont(2)/(3) for the kill-chain decode.
+    // Byte-paced RX release (bitplane T=0 model): drip ONE staged byte into the visible FIFO
+    // per cadence, raising FIQ6 each time, so the firmware consumes the SIM response over
+    // successive interrupts rather than all at once. Only advance the clock once the previous
+    // byte has been read (sim_rx drained) so we never outrun the firmware's reader.
+    if (sim_pace_cyc(m) > 0 && sim_stage_count(m) > 0 && sim_rx_count(m) == 0
+        && m->rtc_mono >= m->sim_rx_release_next_cyc) {
+        uint8_t b = m->sim_rx_stage[m->sim_rx_stage_head % sizeof(m->sim_rx_stage)];
+        m->sim_rx_stage_head++;
+        sim_rx_push_raw(m, b);
+        m->sim_uart_int |= SIM_INT_RXRDY;
+        mad2_raise_fiq(m, 6);          // FIQ6 = SIM-UART (one char delivered)
+        m->sim_rx_release_next_cyc = m->rtc_mono + (uint64_t)sim_pace_cyc(m);
+        m->sim_wwt_last_active_cyc = m->rtc_mono;   // byte activity resets the WWT idle anchor
+        m->sim_wwt_next_cyc = m->sim_wwt_threshold_cyc
+            ? m->rtc_mono + m->sim_wwt_threshold_cyc : 0;
+    }
     // Keep FIQ6 asserted while unread RX bytes remain and the line is unmasked-ready.
     if (sim_rx_count(m) > 0 && (m->sim_uart_int & SIM_INT_RXRDY))
         mad2_raise_fiq(m, 6);
@@ -977,19 +1328,21 @@ void sim_tick(Mad2* m) {
     //    WWT firing match firmware expectations; spamming it during early init is what
     //    causes a FIQ6 storm that locks the CPU in FIQ mode before the SIM driver runs)
     //  - line is idle (no RX queued, no TX assembled, no in-flight APDU, no pending ATR)
-    if (m->sim_wwt_threshold_cyc > 0 && m->sim_present && (m->sim_ctrl & 0x80)
-        && m->sim_reset_count > 0 && m->sim_apdus > 0
-        && sim_rx_count(m) == 0 && m->sim_tx_len == 0
-        && m->sim_asm_len == 0 && !m->sim_atr_pending) {
-        if (m->sim_wwt_last_active_cyc == 0) {
+    if (sim_wwt_idle(m)) {
+        if (m->sim_wwt_next_cyc == 0) {
             m->sim_wwt_last_active_cyc = m->rtc_mono;     // first idle since SIM became active
-        } else if (m->rtc_mono - m->sim_wwt_last_active_cyc >= m->sim_wwt_threshold_cyc) {
+            m->sim_wwt_next_cyc = m->rtc_mono + m->sim_wwt_threshold_cyc;
+        } else if (m->rtc_mono >= m->sim_wwt_next_cyc) {
             m->sim_uart_int |= 0x20u;             // bit 5 = WWT timeout
             mad2_raise_fiq(m, 6);         // FIQ6 = SIM-UART
             m->sim_wwt_last_active_cyc = m->rtc_mono;
+            uint64_t elapsed = m->rtc_mono - m->sim_wwt_next_cyc;
+            uint64_t events = 1u + elapsed / m->sim_wwt_threshold_cyc;
+            m->sim_wwt_next_cyc += events * m->sim_wwt_threshold_cyc;
         }
     } else {
         // Pre-active or in-flight: reset the idle anchor; next steady-idle restarts the WWT clock.
         m->sim_wwt_last_active_cyc = m->rtc_mono;
+        m->sim_wwt_next_cyc = 0;
     }
 }

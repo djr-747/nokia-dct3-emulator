@@ -111,5 +111,5 @@ const ModelProfile model_5510 = {
         .match = "NPM-5",            // 5510 product code (0x1FC version header)
         .flash_size = 0x00400000u,   // 4 MB — with NPM-5, unambiguous (serves v3.50 + v3.53)
     },
-    .dsp = &mad2_dsp_default,        // shared/legacy DSP behaviour (verify for 5510)
+    .dsp = &mad2_dsp_rom6,           // ROM-6 faithful engine (src/mad2/dsp/dsp_rom6.c)
 };

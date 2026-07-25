@@ -121,5 +121,5 @@ const ModelProfile model_3330 = {
         .match2 = "NHM-5",
         .flash_size = 0x00400000u,   // 4 MB — with NHM-6/NHM-5 + 4 MB, unambiguous
     },
-    .dsp = &mad2_dsp_default,        // shared/legacy DSP behaviour (verify for 3330)
+    .dsp = &mad2_dsp_rom6,           // ROM-6 faithful engine (src/mad2/dsp/dsp_rom6.c)
 };

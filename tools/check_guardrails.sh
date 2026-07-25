@@ -56,8 +56,13 @@ for g in $GATES; do
             echo "GUARD test: FAIL (see /tmp/guard_test.log)"; FAILED=1
         fi ;;
     3310)
+        # Baseline moved 2026-07-24 (82610e5e -> 395a267e): the native default DSP engine is
+        # now the faithful rom6 engine (was the legacy dsp_default HLE), so the 3310 boots
+        # with the swSIM card + REFSIM identity to the SIM-accepted Set-time prompt — the
+        # same screen the web build has pinned since the engine landed. Deliberate re-bless;
+        # see the "dsp: consolidate ROM-6" commit.
         boot_gate 3310 "firmware/Factory Reset 3310 NR1 v5.79.fls" 250000000 \
-                  82610e5e05036d7764afe419c5a48f1d || FAILED=1 ;;
+                  395a267eaa512440afe902a33936ccaa || FAILED=1 ;;
     3410)
         boot_gate 3410 "firmware/Nokia 3410 NHM-2 v5.46 (assembled).fls" 250000000 \
                   5a284ea4d2cfe72792c2c696c598b51f || FAILED=1 ;;

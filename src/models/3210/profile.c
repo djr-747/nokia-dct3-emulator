@@ -191,14 +191,30 @@ const ModelProfile model_3210 = {
         .match = "NSE-8",
         .flash_size = 0,
     },
-#ifndef __EMSCRIPTEN__
-    .dsp = &mad2_dsp_c54x,            // native: real C54x co-sim available (DSP54_COSIM=1); else HLE fallthrough
-#else
-    .dsp = &mad2_dsp_rom4,            // wasm (no C54x core): ROM-4 HLE responder
-#endif
+    // The available native C54x image is 5110-specific; selecting it here makes
+    // a 3210 run the wrong recovered DSP ROM. Use the revision-correct ROM-4 HLE
+    // backend on every host until a 3210 image exists.
+    .dsp = &mad2_dsp_rom4,
     // External 24C128 (16 KB) I2C EEPROM — NokiX virgin nse-8, baked in (firmware/nse-8.bin).
     .i2c_eeprom_default = EE_NSE8,
     .i2c_eeprom_size    = EE_NSE8_LEN,
+    // FAID / factory-identity provisioning (bitplane's 3210 v6.00 RE; see EepromFaid + the
+    // eeprom_provision service). The NokiX virgin blob ships an erased identity, so the firmware
+    // presents "Security code" on boot and clears service-present (blocking registration). This
+    // writes a coherent IMEI + security code + derived security state and finalizes both identity
+    // checksums so the identity comparison passes and service-present is retained.
+    .eeprom_faid = &(const EepromFaid){
+        .identity_off = 0x000C, .seccode_off = 0x0110, .secstate_off = 0x06C8,
+        .tunesec_cksum_off = 0x011C, .tunesec_sum_end = 0x011E,
+        .config_start = 0x0120, .config_cksum_off = 0x0244,
+        .config_corr0 = 0x0154, .config_corr1 = 0x0155,
+        .imei_prefix = "49015420323751", .security_code = "12345",
+        // The NokiX blob was dumped from a phone with the security-level setting ON
+        // (EEPROM 0x06EE = 0x00 -> "Security code:" prompt every power-up, code 12345
+        // unlocks). Erase it back to the factory default so a provisioned boot lands
+        // on standby directly — pinned by EEPROM bisection vs bitplane's virgin image.
+        .seclevel_off = 0x06EE,
+    },
     // 3210 oddball: its DSP bulk code-upload window is aliased +0x1000 (firmware writes
     // loader1/blocks to MCU 0x11xxx, e.g. loader1 -> 0x11E00 = DSP word 0xF00), while the
     // control/mailbox cells stay at 0x100xx like every other DCT3. The C54x co-sim window
@@ -219,9 +235,13 @@ const ModelProfile model_3210 = {
     // power-on reason" → it sends msg 0x282 to task 18 and powers off (the deterministic 2.2M
     // ccont reg5=0 shutdown at 0x2714CA→0x2B4E16). bit1 is the only cause that sustains a
     // normal power-on (bit2's mode-1 falls back through the same shutdown on the next message
-    // cycle). A cold boot = the user holding PWR, so latch bit1 at reset. With it the phone
-    // powers on normally and reaches CONTACT SERVICE (the separate DSP self-test/readiness gate).
-    .ccont_poweron_int = 0x02,
+    // cycle). A cold boot = the user holding PWR, so latch bit1 at reset. bit0 is the
+    // persistent CCONT-ready status: startup check #6 (status cell [0x11FC66], helper
+    // 0x295EBA → CCONT read 0x2AFB44(0x9001) = reg 0x0E & 1) requires it, else the check
+    // writes 0xFD, the readiness scan at 0x234880 clears verdict bit 6 in [0x11FED1], and
+    // the boot lands on CONTACT SERVICE even with a fully provisioned EEPROM. A healthy
+    // CCONT exposes ready+PWRONX = 0x03 at cold start.
+    .ccont_poweron_int = 0x03,
     // 3210 oddball #4: its CCONT A/D MUX wires VBATT to channel 0, not the MAD2-standard
     // channel 2. RE'd: the boot battery reader 0x2A84B0 reads CCONT A/D channel 0 (5-sample
     // average) and the task-18 analog handler 0x270848 gates it to the VBATT window

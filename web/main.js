@@ -91,6 +91,8 @@
       setSim: mod.cwrap("dct3_web_set_sim", null, ["number"]),
       getSim: mod.cwrap("dct3_web_get_sim", "number", []),
       simApdus: mod.cwrap("dct3_web_sim_apdus", "number", []),
+      incomingCall: mod.cwrap("dct3_web_incoming_call", "number", ["string"]),
+      incomingSms: mod.cwrap("dct3_web_incoming_sms", "number", ["string", "string"]),
       setSimPinEnabled: mod.cwrap("dct3_web_set_sim_pin_enabled", null, ["number"]),
       setSimPin: mod.cwrap("dct3_web_set_sim_pin", null, ["number"]),
       setSimPuk: mod.cwrap("dct3_web_set_sim_puk", null, ["number"]),
@@ -172,7 +174,28 @@
       poweredOff: mod.cwrap("dct3_web_powered_off", "number", []),
       reg: mod.cwrap("dct3_web_reg", "number", ["number"]),
       pc: mod.cwrap("dct3_web_pc", "number", []),
+      setEnv: mod.cwrap("dct3_web_setenv", null, ["string", "string"]),
     };
+
+    // DSP engine trace toggle. The rom4/rom6 engines emit `[rom4]`/`[rom6]` lines to stderr
+    // (→ browser console) gated on the ROM4_LOG / ROM6_LOG env vars, read live each call. Set
+    // them from a `?dsplog=1` URL param or `dct3DspLog(true)` in the console; the setting is
+    // read on the fly, so toggling mid-run works, but turning it on before the first boot
+    // captures the whole boot + registration conversation. `?dsplog=m2d` also enables the raw
+    // MDISND record dump (ROM4_M2DLOG). GSMLOG covers the legacy GSM bridge if that's in use.
+    window.dct3DspLog = function (on) {
+      const v = on === false ? "0" : "1";
+      C.setEnv("ROM4_LOG", v);
+      C.setEnv("ROM6_LOG", v);
+      if (on === "m2d") { C.setEnv("ROM4_M2DLOG", "1"); C.setEnv("ROM6_M2DLOG", "1"); }
+      console.log("[DCT3] DSP engine trace " + (v === "1" ? "ON" : "off") +
+                  " — [rom4]/[rom6] lines appear in this console");
+      return v === "1";
+    };
+    try {
+      const dl = new URLSearchParams(location.search).get("dsplog");
+      if (dl !== null && dl !== "0") window.dct3DspLog(dl === "m2d" ? "m2d" : true);
+    } catch (e) {}
 
     const diagAddrs = document.getElementById("diag-addrs");
     const diagOut = document.getElementById("diag-out");
@@ -2862,6 +2885,39 @@
     if (inPin)  inPin.addEventListener("change", (e) => {
       const v = parseInt(e.target.value, 10); if (!isNaN(v)) C.setSimPin(v);
     });
+
+    // Network-originated services enter rom6's bounded asynchronous queue.
+    // The click only records host intent; the DSP schedules IMSI paging and all
+    // subsequent RF/LAPDm/L3 work from emulated hardware time.
+    const incomingFrom = document.getElementById("incoming-from");
+    const incomingText = document.getElementById("incoming-text");
+    const incomingOut = document.getElementById("out-incoming");
+    function queueIncoming(kind) {
+      const number = ((incomingFrom && incomingFrom.value) || "").replace(/\D/g, "").slice(0, 20);
+      if (!number) {
+        incomingOut.textContent = "Enter a sender number";
+        incomingOut.classList.add("error");
+        return;
+      }
+      if (incomingFrom) incomingFrom.value = number;
+      const text = ((incomingText && incomingText.value) || "").slice(0, 120);
+      if (kind === "sms" && !text.trim()) {
+        incomingOut.textContent = "Enter SMS text";
+        incomingOut.classList.add("error");
+        return;
+      }
+      const ok = kind === "call" ? C.incomingCall(number) : C.incomingSms(number, text);
+      incomingOut.classList.toggle("error", !ok);
+      incomingOut.textContent = ok
+        ? (kind === "call" ? `Call from ${number} queued` : `SMS from ${number} queued`)
+        : "Not queued — needs a ROM-6 model (rom6 engine), or wait for queue space";
+      if (ok) console.log(`[gsm] incoming ${kind} queued from ${number}`);
+    }
+    const incomingCallBtn = document.getElementById("btn-incoming-call");
+    const incomingSmsBtn = document.getElementById("btn-incoming-sms");
+    if (incomingCallBtn) incomingCallBtn.addEventListener("click", () => queueIncoming("call"));
+    if (incomingSmsBtn) incomingSmsBtn.addEventListener("click", () => queueIncoming("sms"));
+
     setInterval(() => {
       if (outSim) outSim.textContent = "(" + C.simApdus() + " APDUs)";
       if (outPin) {

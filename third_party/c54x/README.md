@@ -21,7 +21,7 @@ is NEVER linked into the shipped product.**
 
 - The web/wasm build (`make` → `web/dct3.wasm`) excludes this directory at the
   Makefile level — `APP_SRCS` globs `src/` only. The wasm DSP backend is
-  always the project-original HLE responder (`src/mad2/dsp_default.c`).
+  always the project-original HLE responder (`src/mad2/dsp/dsp_rom4.c`).
 - Native dev binaries (`boot_trace`, `gui`, `test_mad2`, `dsp_replay`) DO link
   the core; as combined works they are GPL-2.0-or-later. They are analysis
   tools, not distributed product.

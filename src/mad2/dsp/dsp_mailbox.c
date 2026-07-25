@@ -1,15 +1,13 @@
-// Default (shared / legacy) DSP behaviour for the MAD2 platform.
-//
-// This is the DSP boot/runtime handshake the 3310 (and the 7110 stub, and the 8850
-// until it gets its own ops) relies on. It was extracted verbatim from mad2.c so the
-// 3310 boot stays byte-identical; mad2_read/mad2_write/mad2_tick now dispatch here via
-// the per-model `DspOps` vtable (models/model.h). A model with a genuinely different
-// DSP boot supplies its own ops and leaves this one untouched.
-//
-// Addresses are all per-model data in m->fw (FwAddrs): dsp_mbox0/1 (boot-ack slots),
-// dsp_cb_req/reply (code-block request/reply halfwords), mdircv_q/head/tail (the
-// DSP->MCU message queue), cobba (Cobba command field), dsp_boot_status/ready (the
-// boot-status poll slot + reply), verdict + dsp_uploaded (self-test scratch).
+// dsp_mailbox — the original shared DCT3 DSP mailbox bodies ("dsp_default" historically):
+// boot mailbox handshake, code-block upload pump, COBBA consume, self-test responder and
+// the legacy ROM-6 keep-alive/RE-workbench knobs, extracted verbatim from mad2.c in the
+// HLE era and kept verbatim here. NOT a DspOps engine any more — the per-revision engines
+// are src/mad2/dsp/dsp_rom4.c (mad2_dsp_rom4) and dsp_rom6.c (mad2_dsp_rom6). Two callers
+// still use these bodies directly:
+//   * the native 5110 C54x co-sim pass-through (third_party/c54x/mad2_dsp_c54x.c), which
+//     serves the boot handshake from here while the real recovered DSP image runs;
+//   * tests/test_mad2.c (code-block pump unit coverage).
+// Callers manage m->dsp_no_keepalive themselves (the c54x sets it; tests leave it off).
 
 #include "mad2/mad2.h"
 #include <stdlib.h>   // getenv
@@ -73,22 +71,8 @@ static const uint16_t ka_early[16] = {
 // DSP-region read. Returns 1 (and sets *out) if it owns this address, else 0.
 // Non-static: the C54x co-sim backend (mad2_dsp_c54x.c) forwards to this faithful
 // legacy mailbox model for the pass-through (non-co-sim) path. See mad2.h.
-int dsp_default_read(Mad2* m, uint32_t addr, int size, uint32_t ram_value, uint32_t* out) {
+int dsp_mailbox_read(Mad2* m, uint32_t addr, int size, uint32_t ram_value, uint32_t* out) {
     (void)size;
-    // MAMEDSP=1 (A/B experiment): replace our faithful mailbox/FIQ0 model with MAME's
-    // nokia_3310.cpp dsp_ram_r HACK — frozen constants on the four slots it special-cases
-    // ("avoid hangs when ARM try to communicate with the DSP"), RAM passthrough otherwise,
-    // and NO FIQ0/IRQ4/upload protocol (see the write/tick branches). Lets us see how far
-    // OUR firmware boots on MAME's stub. NOT faithful — diagnostic only, default OFF.
-    static int mame = -1;
-    if (mame < 0) mame = getenv("MAMEDSP") ? 1 : 0;
-    if (mame) {
-        if (addr >= 0x00010000u && addr <= 0x00010005u) { *out = 0x0001; return 1; }  // ready slots
-        if (addr == 0x000100E0u) { *out = 0x0000; return 1; }                          // Cobba
-        if (addr == 0x000100FEu) { *out = 0x0001; return 1; }                          // Mbox0
-        if (addr == 0x00010100u) { *out = 0x0001; return 1; }                          // Mbox1/MDIRCV
-        return 0;                                                                       // else: RAM passthrough
-    }
     // DSP boot handshake: a slot reads 0 until the DSP acks (consume-once).
     if (addr == m->fw.dsp_mbox0) { *out = m->dsp_ack[0]; m->dsp_ack[0] = 0; return 1; }
     // dsp_mbox1 (0x10100) doubles as the MDIRCV runtime queue base. The legacy
@@ -120,7 +104,7 @@ int dsp_default_read(Mad2* m, uint32_t addr, int size, uint32_t ram_value, uint3
 }
 
 // DSP-region write. Returns 1 if handled (stop further mad2_write processing), else 0.
-int dsp_default_write(Mad2* m, uint32_t addr, int size, uint32_t value) {
+int dsp_mailbox_write(Mad2* m, uint32_t addr, int size, uint32_t value) {
     (void)size;
     // Observe (never intercept — the register has real MMIO handling) the MCU asserting the
     // DSP control register [0x20002] back to its boot value 0x01 — the DSP reset/hold state
@@ -131,10 +115,6 @@ int dsp_default_write(Mad2* m, uint32_t addr, int size, uint32_t value) {
     // — so any later stray read/record would disarm the latch mid-run and stall Cobba.)
     if (addr == 0x00020002u && (value & 0xFFu) == 0x01u)
         m->dsp_running = 0;
-    // MAMEDSP=1: MAME's dsp_ram_w just COMBINE_DATA's (plain store), so let the core
-    // RAM-back every DSP-region write — no upload-ack protocol.
-    { static int mame = -1; if (mame < 0) mame = getenv("MAMEDSP") ? 1 : 0;
-      if (mame) return 0; }
     // DSP boot handshake: writing one slot makes the DSP signal the paired slot
     // ready (echo the token so the MCU's "!= 0" wait passes).
     if (addr == m->fw.dsp_mbox0) { m->dsp_ack[1] = (uint16_t)value ? (uint16_t)value : 1; m->dsp_acks++; return 1; }
@@ -154,11 +134,34 @@ int dsp_default_write(Mad2* m, uint32_t addr, int size, uint32_t value) {
         uint16_t prev = m->dsp_mdisnd_prev;                   // record just enqueued starts here
         uint32_t ring = m->fw.mdisnd_tail - m->fw.mdisnd_q;   // ring byte size (3310 = 0xA4)
         uint32_t off0 = (uint32_t)prev * 2;                   // word0 never wraps (enqueue
-        uint32_t offs = off0 + 2;                             // wraps only PAST each store)
-        if (offs >= ring) offs -= ring;                       // payload may wrap to base
+        uint32_t offs = (off0 + 2u) % ring;
         if (off0 < ring && (value & 0xFFFFu) != prev &&       // a real enqueue, not a re-park
             m->mem[(m->fw.mdisnd_q + off0 + 1) & m->mem_mask] == 0x70 &&
             m->mem[(m->fw.mdisnd_q + offs)     & m->mem_mask] == 0x0D) m->dsp_st_req = 1;
+        // EXPERIMENTAL SIML capture (DSPSIML=1): sniff the local-security {0x70,sub} records
+        // the firmware streams, so the tick can answer the echoes it blocks on. Record layout
+        // (measured): payload[0]=sub, [1]=datalen, [2..]=data. 0x13 MSID setup, 0x16 24-byte
+        // SIML block, 0x17 final validation. See dsp_siml_* / the responder in dsp_mailbox_tick.
+        if (m->dsp_siml_en && off0 < ring && (value & 0xFFFFu) != prev &&
+            m->mem[(m->fw.mdisnd_q + off0 + 1) & m->mem_mask] == 0x70) {
+            uint8_t sub = m->mem[(m->fw.mdisnd_q + offs) & m->mem_mask];
+            if (sub == 0x13) {                       // MSID setup -> want {74,0x34}
+                for (int i = 0; i < 13; ++i)
+                    m->dsp_siml_msid[i] = m->mem[(m->fw.mdisnd_q +
+                        ((offs + 1u + (uint32_t)i) % ring)) & m->mem_mask];
+                m->dsp_siml_want34 = 1;
+            } else if (sub == 0x16) {                // 24-byte SIML block -> want {74,0x35}
+                for (int i = 0; i < 24; ++i)
+                    m->dsp_siml_block[i] = m->mem[(m->fw.mdisnd_q +
+                        ((offs + 2u + (uint32_t)i) % ring)) & m->mem_mask];
+                m->dsp_siml_want35 = 1;
+            } else if (sub == 0x17) {                // final validation -> want {74,0x36} pass=0
+                m->dsp_siml_want36 = 1;
+            }
+            if ((sub == 0x13 || sub == 0x16 || sub == 0x17) && getenv("DSPSIML_LOG"))
+                printf("[siml] MDISND {70,%02X} captured (blkidx=%d) @mono=%llu\n",
+                       sub, m->dsp_siml_blkidx, (unsigned long long)m->rtc_mono);
+        }
         if (getenv("DSPVIS_LOG"))
             printf("[dspvis] MDISND tail %02X->%02X rec={%02X %02X %02X} st_req=%d @mono=%llu\n",
                    prev, (unsigned)(value & 0xFFFF),
@@ -172,8 +175,15 @@ int dsp_default_write(Mad2* m, uint32_t addr, int size, uint32_t value) {
     // DSP code-block reply (dsp_cb_reply): firmware acked an upload. 0x0002 = more to
     // go (model the DSP requesting the next block via IRQ4), 0x0004 = upload complete.
     if (addr == m->fw.dsp_cb_reply) {
-        if ((value & 0xFFFFu) != 0x0004u) m->dsp_cb_delay = 256;  // pump the next request
-        else                              m->dsp_cb_delay = 0;    // boot upload complete
+        if ((value & 0xFFFFu) != 0x0004u) {
+            m->dsp_cb_deadline_cyc = m->rtc_mono + 256u; // asynchronous consume/next-block event
+        } else if (m->dsp_cb_reqblk == 0x14) {           // 0x0004 loader block done -> request main
+            m->dsp_cb_reqblk = 0x01; m->dsp_cb_deadline_cyc = m->rtc_mono + 256u;
+        } else if (m->dsp_cb_reqblk == 0x01) {           // 0x0004 main block done -> request overlay
+            m->dsp_cb_reqblk = 0x02; m->dsp_cb_deadline_cyc = m->rtc_mono + 256u;
+        } else {
+            m->dsp_cb_deadline_cyc = 0;                  // overlay done -> upload complete
+        }
         m->dsp_cb_armed_nz = (value & 0xFFFFu) != 0;  // real block delivery vs [reply]=0 init clear
         return 1;
     }
@@ -181,12 +191,12 @@ int dsp_default_write(Mad2* m, uint32_t addr, int size, uint32_t value) {
 }
 
 // Per-step DSP pump: mailbox acks, IRQ4 generation, self-test + boot-msg injection.
-void dsp_default_tick(Mad2* m) {
-    // MAMEDSP=1: MAME instantiates no DSP core and raises no DSP interrupt — no upload
-    // pump, no FIQ0/IRQ4, no self-test responder, no keep-alive. Pump nothing.
-    { static int mame = -1; if (mame < 0) mame = getenv("MAMEDSP") ? 1 : 0;
-      if (mame) return; }
+void dsp_mailbox_tick(Mad2* m) {
     m->dsp_steps++;   // free-running step counter (this tick runs once per emulated step)
+    // SIMACCEPT RAM patch: a pure MCU-RAM edit, independent of the DSP backend, so it runs even
+    // under cosim (above the quiet gate). Self-gated/one-shot -> no-op unless SIMACCEPT=1, so
+    // guarded/cosim boots stay byte-identical. Lets the SIM-lock test work with DSP54_COSIM=1.
+    mdi_gsm_simaccept(m);
     // Co-sim HLE quiet-gate (set in mad2.c under DSP54_COSIM; DSP54_HLE=1 re-enables): the real
     // C54x supplies every DSP->MCU signal, so the ENTIRE modelled tick below — block-ack pump +
     // IRQ4 raise, Cobba auto-consume, self-test responder, DSPMSG injector, keep-alive FIQ0
@@ -209,11 +219,26 @@ void dsp_default_tick(Mad2* m) {
     // double-links the task list if a spurious IRQ4 races the FIQ4 worker (0x298B20)
     // once the app tasks are live (boot wedges in FIQ mode at 0x2EEBEA). DSPIRQ=1 forces
     // the raise on every ack to reproduce that corruption for RE.
-    if (m->dsp_cb_delay && --m->dsp_cb_delay == 0 && m->mem) {
+    if (m->dsp_cb_deadline_cyc && m->rtc_mono >= m->dsp_cb_deadline_cyc && m->mem) {
+        m->dsp_cb_deadline_cyc = 0;
         uint32_t reply = m->fw.dsp_cb_reply & m->mem_mask;
         uint32_t req   = m->fw.dsp_cb_req   & m->mem_mask;
-        m->mem[reply] = 0x00; m->mem[reply + 1] = 0x00;   // DSP cleared reply: ready for more
-        m->mem[req]   = 0x00; m->mem[req + 1]   = 0x01;   // next code-block request (BE halfword)
+        m->mem[reply] = 0x00; m->mem[reply + 1] = 0x00;   // DSP cleared reply: ready for more (both phases)
+        // Codeblock requests are TWO-PHASE (RE'd 2026-07-16 + Dan):
+        //   Phase 1 (early, pre-run): the MCU firmware itself drives the request word [0x100E2]
+        //     for the verification/bootstrap blocks (writes 0x14 at HPI_CMD_SEND 0x2BAF52, 0x01 at
+        //     0x2E4086) and reads them back in DSP_MSG_PUMP 0x2BB430 (index into table 0x1103B0).
+        //     The DSP's ONLY job here is to consume the reply (above) — do NOT write [0x100E2] or
+        //     we stomp the firmware's own verification sequence and skip the loader block upload.
+        //   Phase 2 (DSP code live): the running DSP requests its blocks via [0x100E2]. Model that
+        //     only once dsp_running is latched, so our request never collides with phase 1.
+        if (m->dsp_running) {
+            // Real ROM6 demand-pages loader -> main -> overlay = 0x14 -> 0x01 -> 0x02
+            // (bridge ground truth 2026-07-17: [0x100E2] 0x14,0x01,0x02). Start the
+            // sequence at the loader; the reply handler advances it (resolves gap 6-1).
+            if (!m->dsp_cb_reqblk) m->dsp_cb_reqblk = 0x14;   // running DSP pages the loader block first
+            m->mem[req] = 0x00; m->mem[req + 1] = m->dsp_cb_reqblk;  // routes via table 0x1103B0
+        }
         // A real DSP cannot read [dsp_uploaded]; it knows only its OWN state ("have I acked a
         // real block yet"). The internal dsp_running latch is set only on a pump cycle armed
         // by a REAL block delivery (nonzero cb_reply write; dsp_cb_armed_nz) — the firmware
@@ -234,15 +259,18 @@ void dsp_default_tick(Mad2* m) {
     // and bails (return 0) while it is non-zero. We don't run the DSP, so the first command
     // would stick at [0x100E0]!=0 forever and every later command would bail — the boot
     // wedges in the Phase-2 DSP poll (idle loop 0x2ADF84) and never clears the segment test.
-    // Model the DSP as consuming the command (clear it after it is written). GATE this on
-    // the DSP code upload being complete ([0x11038C]!=0, set by the DSP message pump): the
-    // Cobba/audio command path is only exercised once the DSP is running. Clearing [0x100E0]
-    // during EARLY boot (before the upload) perturbs the boot path and stops the MMI message
-    // router (0x2E84B6) from running later — so only consume Cobba commands once the DSP is up.
-    // (Faithful to "DSP acks the command once it's running"; responses still come via MDI/queue.)
-    // Gated on the internal dsp_running latch (the DSP's own "code live" state), NOT the
-    // MCU-private [dsp_uploaded] flag — same edge (the firmware's own [dsp_uploaded] write
-    // follows ~100 steps later, and the first Cobba command only ~27k steps after that).
+    // Model the DSP as consuming the command (clear it after it is written) — but NOT on the
+    // DSPIF strobe. RE-confirmed: the DSPIF doorbell [0x30000] bit2 is the SHARED
+    // MCU->DSP interrupt for ALL three HPI producers — the codeblock reply pump (DSP_MSG_PUMP
+    // 0x2BB5BC), the generic HPI sender (HPI_CMD_SEND 0x2BAB58), and the Cobba/audiopath
+    // (0x2BB3DE). The FIRST DSPINT edge of boot is a codeblock reply (~2.79M), ~50k steps before
+    // the first real [0x100E0] Cobba command (~2.84M). So clear-on-strobe is semantically WRONG:
+    // it would ack [0x100E0] on unrelated codeblock-upload doorbells, prematurely un-bailing
+    // COBBA_DISPATCH (0x2BB0CE polls [0x100E0]==0) and advancing state out of order — which
+    // starves the MMI router UI_DISPATCHER 0x2E84B6. The faithful, DSP-observable gate is "the
+    // DSP's own code is live" (it only services the Cobba mailbox once running): our dsp_running
+    // latch (first REAL block ack, dsp_cb_armed_nz), NOT the MCU-private [dsp_uploaded] flag and
+    // NOT the shared [0x30000] edge. The firmware signals "accepted" purely by [0x100E0]==0.
     if (m->mem && m->dsp_running) {
         uint32_t cobba = m->fw.cobba & m->mem_mask;
         if (m->mem[cobba] || m->mem[cobba + 1]) {
@@ -254,6 +282,113 @@ void dsp_default_tick(Mad2* m) {
             m->mem[cobba] = 0; m->mem[cobba + 1] = 0;
         }
     }
+    // EXPERIMENTAL SIML local-security responder (env DSPSIML=1; docs/nhm5-register-gsm-
+    //). Answer the {0x74,0x34/0x35/0x36} echoes the firmware blocks on after
+    // streaming its {0x70,0x13/0x16/0x17} records. One record per empty-queue window; the
+    // firmware's own dispatcher (0x2C1948 -> task-2 0x244554 -> subtype switch 0x2411F8)
+    // routes each. Payload -> internal msg mapping: msg[8+i] = payload[i].
+    //   0x34 MSID reply : handler 0x2879C4 copies msg[11..23] (13B) -> [0x10EB38], sets [0x10EB1B]=1
+    //   0x35 block echo : handler 0x287BE8 validates a 16-bit ones-complement checksum over
+    //                     msg[10..], stores msg[12..35] (24B) -> [0x10EB48+idx*24]; on the
+    //                     terminal block it decodes+matches the SIM-lock record -> emits {70,0x17}
+    //   0x36 pass=0     : handler 0x287A68 sets unlock latch [0x10EB18]=1 + OSE-signals task 2
+    // Priority 0x34 > 0x35 > 0x36; the self-test {0x0D} reply below fires once SIML drains.
+    // DIAGNOSTIC (DSPSIML_FORCE36=1): the real match->{70,0x17} needs a fabricated "unlocked"
+    // decoded SIM-lock block (deep crypto RE). To test the ENDGAME cheaply — does the firmware's
+    // own 0x36 handler (0x287A68: [0x10EB18]=1 + OSE-signal task 2) wake the subscribe cluster? —
+    // emit one {74,0x36} pass=0 ~2s after the self-test reply. 0x287A68 runs identically however
+    // we reach it, so the wake behaviour is validly tested. NOT faithful; endgame probe only.
+    if (m->dsp_siml_en && getenv("DSPSIML_FORCE36") && m->dsp_selftest_replied) {
+        static uint64_t force_at = 0; static int forced = 0;
+        if (!force_at) force_at = m->rtc_mono + 10000000ull;
+        else if (!forced && m->rtc_mono >= force_at) { m->dsp_siml_want36 = 1; forced = 1; }
+    }
+    if (m->dsp_siml_en && m->mem &&
+        (m->dsp_siml_want34 || m->dsp_siml_want35 || m->dsp_siml_want36 ||
+         (m->dsp_st_req && !m->dsp_selftest_replied && !m->dsp_selftest_off))) {
+        uint32_t hp = m->fw.mdircv_head & m->mem_mask, tp = m->fw.mdircv_tail & m->mem_mask;
+        uint16_t head = (uint16_t)((m->mem[hp] << 8) | m->mem[hp + 1]);
+        uint16_t tail = (uint16_t)((m->mem[tp] << 8) | m->mem[tp + 1]);
+        // Ring-aware, multi-record: fire whenever the queue is EMPTY (head == tail), not only
+        // at the 0x80 base — deliver one record per empty window and let the firmware consume
+        // it before the next. Word range is 0x80..0xE2; the consumer reads at `head`.
+        if (head == tail && head >= 0x80 && head <= 0xE2) {
+            uint8_t pl[64] = {0}; int len = 0; uint8_t sub = 0;
+            if (m->dsp_siml_want34) {
+                sub = 0x34; pl[0] = 0x34;                // msg[11..23] = 13 MSID bytes
+                for (int i = 0; i < 13; ++i) pl[3 + i] = m->dsp_siml_msid[i];
+                len = 16; m->dsp_siml_want34 = 0;
+            } else if (m->dsp_siml_want35) {
+                // Two-region reply (RE'd + decode tree
+                // 0x287CF6): Region A = the DECODED unlocked lock record (msg[12..35]) the tree
+                // reads; Region B = an EXACT echo of the {70,0x16} block (msg[36..59]) that the
+                // firmware memcmp's against EEPROM shadow 0x100064. The MCU never verifies
+                // A == decrypt(B) — it only integrity-checks B — so the DSP legitimately supplies
+                // an unlocked Region A while echoing the ciphertext verbatim in Region B.
+                // Region A = wildcard comparison fields (0xFF) + cleared enable/status (0x00) +
+                // band selector 0x98. msg[9]=0x32 skips the checksum; msg[10]=0x01 avoids the
+                // [0x10EB25]==0 RAM dependency. Yields a natural {70,0x17} via emitter 0x2868F8.
+                // NOTE (v4.18 investigation 2026-07-17): the 0x98 band byte is LOAD-BEARING for
+                // v5.79's decode tree 0x287CF6 — jmacato’s canonical record (0x00 at record
+                // offset 9, 0xFF at 0x0C-0F/0x14-15) makes v5.79 reject the block, so {70,0x17}
+                // never fires. Do NOT "reconcile" this to the canonical layout for v5.79.
+                //
+                // v4.18 reconciliation: v4.18's block-echo handler (0x2809E8) runs a
+                // set of PRE-swap "band" gates that v5.79's SAME handler SKIPS. The gate is at
+                // 0x280AEE: `[0x11FE59]` bit6 selects them — v4.18's verdict byte is 0xCC (bit6=1,
+                // band gates RUN); v5.79's is 0x00 (bit6=0, jump straight to the wildcard loop
+                // 0x280BCC). So four record bytes must satisfy v4.18's extra gates WITHOUT
+                // disturbing v5.79 (which only reads the post-swap loop + decode tree). The
+                // handler half-swaps the record at 0x280B92 (msg[12..23]<->msg[24..35], i.e.
+                // region_a[12..23] stays, region_a[0..11] -> msg[24..35]), so map carefully:
+                //   [21]=0x7C  band gate 0x280B5A/B60 (PRE-swap msg[33]=record[21]) needs
+                //              [0x78,0x80). v5.79 skips the gate and its decode tree tolerates
+                //              0x7C (verified). Not read post-swap.
+                //   [6]=0x00, [7]=0x00  band gates 0x280B66..B90 (PRE-swap msg[18]/msg[19]=
+                //              record[6]/record[7]) need low-nibble&0x0E<6 and high-nibble<=5;
+                //              0xFF fails (0x0E>=6). v5.79 skips these gates; its decode tree
+                //              accepts 0x00 here (verified — these are post-swap msg[30]/msg[31],
+                //              not wildcard-format-checked).
+                //   [5]=0x0F   post-band gate 0x280C7A (POST-swap msg[29]=region_a[5]) needs
+                //              bits 4,5 clear ((b>>4)&3==0). v4.18 reaches it because fn
+                //              0x2DE792(30) returns !=1 (country/variant config differs from
+                //              v5.79, which returns 1 and skips the gate). 0xFF has bits4,5 set
+                //              -> v4.18 bails at 0x280C80. 0x0F clears them. CAUTION: this byte
+                //              is ALSO wildcard-format-checked by v5.79's decode tree — a 0xC0-
+                //              range value like 0xCF (bits4,5 clear but high-nibble!=0xF) is a
+                //              MALFORMED wildcard and v5.79 REJECTS it. 0x0F (and 0x00/0x8F) are
+                //              accepted by BOTH (verified). Do NOT use a 0xCx value here.
+                // All four are v5.79-verified non-regressions; v4.18 now stores + emits {70,0x17}
+                // + we answer {74,0x36}.
+                static const uint8_t region_a[24] = {
+                    0xFF,0xFF,0xFF,0xFF,0xFF,0x0F,0x00,0x00, 0x00,0x98,0x00,0x00,
+                    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00, 0x00,0x7C,0x00,0x00 };
+                sub = 0x35; pl[0] = 0x35; pl[1] = 0x32; pl[2] = 0x01; pl[3] = 0x00;
+                for (int i = 0; i < 24; ++i) pl[4  + i] = region_a[i];          // Region A (decoded)
+                for (int i = 0; i < 24; ++i) pl[28 + i] = m->dsp_siml_block[i]; // Region B (echo)
+                len = 52; m->dsp_siml_blkidx++; m->dsp_siml_want35 = 0;
+            } else if (m->dsp_siml_want36) {
+                sub = 0x36; pl[0] = 0x36;                // msg[10] = pass = 0
+                len = 4; m->dsp_siml_want36 = 0;
+            } else {                                     // self-test verdict {74,0x0D,0}
+                sub = 0x0D; pl[0] = 0x0D; pl[1] = 0x00;
+                len = 2; m->dsp_selftest_replied = 1; m->dsp_st_req = 0;
+            }
+            uint16_t words = (uint16_t)(1 + (len + 1) / 2);
+            uint16_t w = head;                           // write/read position (empty ring)
+            if (w + words > 0xE3) w = 0x80;              // record can't straddle wrap: relocate
+            uint32_t q = (m->fw.mdircv_q + (uint32_t)(w - 0x80) * 2) & m->mem_mask;
+            m->mem[q] = (uint8_t)len; m->mem[q + 1] = 0x74;         // word0 = {len, group 0x74}
+            for (int i = 0; i < len; ++i) m->mem[(q + 2 + i) & m->mem_mask] = pl[i];
+            uint16_t nt = (uint16_t)(w + words);
+            m->mem[hp] = (uint8_t)(w >> 8);  m->mem[hp + 1] = (uint8_t)w;   // consumer reads at w
+            m->mem[tp] = (uint8_t)(nt >> 8); m->mem[tp + 1] = (uint8_t)nt;  // producer tail
+            mad2_raise_fiq(m, 0);
+            if (getenv("DSPSIML_LOG"))
+                printf("[siml] -> {74,%02X} len=%d blkidx=%d w=%02X->%02X @mono=%llu\n",
+                       sub, len, m->dsp_siml_blkidx, w, nt, (unsigned long long)m->rtc_mono);
+        }
+    }
     // DSP self-test responder: faithful organic verdict pass (no spike). See mad2.h.
     // The firmware streams the self-test request to the DSP then marks verdict bit2
     // ([0x11FF15] |= 0x04, "DSP self-test pending") and blocks the self-test task on the
@@ -261,13 +396,15 @@ void dsp_default_tick(Mad2* m) {
     // MDIRCV queue + raise FIQ0 -> dispatcher 0x2EE9B6 -> 0x2C2824 (forwards group+payload
     // to the self-test task) -> command-13 0x2414C2 clears bit2 (keeps bit6) -> 0xC8.
     // The MCU does the verdict write itself; we only deliver the mailbox reply. One-shot.
-    // (Skipped when a manual DSPMSG injection is active, or via DSPNOSELFTEST.)
-    if (m->mem && !m->dsp_selftest_off && !m->dsp_selftest_replied && !m->dsp_msg_en) {
+    // (Skipped when a manual DSPMSG injection is active, or via DSPNOSELFTEST. Under DSPSIML
+    // the ring-aware SIML responder above owns the 0x0D delivery, so skip this legacy path.)
+    if (m->mem && !m->dsp_selftest_off && !m->dsp_selftest_replied && !m->dsp_msg_en &&
+        !m->dsp_siml_en) {
         uint32_t hp = m->fw.mdircv_head & m->mem_mask, tp = m->fw.mdircv_tail & m->mem_mask;
         uint16_t head = (uint16_t)((m->mem[hp] << 8) | m->mem[hp + 1]);
         uint16_t tail = (uint16_t)((m->mem[tp] << 8) | m->mem[tp + 1]);
         // Trigger: the observed MDISND {0x70,0x0D} "run self-test" request (dsp_st_req, set in
-        // dsp_default_write) — the record the MCU enqueues right AFTER parking on the pending
+        // dsp_mailbox_write) — the record the MCU enqueues right AFTER parking on the pending
         // bit, so it fires at the right moment with no MCU-private RAM read.
         if (m->dsp_st_req && head == 0x80 && tail == 0x80) {  // pending + queue empty
             uint32_t q = m->fw.mdircv_q & m->mem_mask;
@@ -292,8 +429,9 @@ void dsp_default_tick(Mad2* m) {
         uint16_t head = (uint16_t)((m->mem[hp] << 8) | m->mem[hp + 1]);
         uint16_t tail = (uint16_t)((m->mem[tp] << 8) | m->mem[tp + 1]);
         if (head == 0x80 && tail == 0x80) {                 // queue initialised, empty
-            if (m->dsp_msg_ctr == 0) m->dsp_msg_ctr = m->dsp_msg_delay;
-            else if (--m->dsp_msg_ctr == 0) {
+            if (m->dsp_msg_deadline_cyc == 0)
+                m->dsp_msg_deadline_cyc = m->rtc_mono + m->dsp_msg_delay;
+            if (m->rtc_mono >= m->dsp_msg_deadline_cyc) {
                 uint32_t q = m->fw.mdircv_q & m->mem_mask;
                 m->mem[q]     = m->dsp_msg_len;             // word0 high byte = body length
                 m->mem[q + 1] = m->dsp_msg_type;            // word0 low byte  = DSP msg type
@@ -303,6 +441,7 @@ void dsp_default_tick(Mad2* m) {
                 m->mem[tp] = (uint8_t)(nt >> 8); m->mem[tp + 1] = (uint8_t)nt;
                 mad2_raise_fiq(m, 0);                      // DSP signals MDIRCV via FIQ0
                 m->dsp_injected = 1;
+                m->dsp_msg_deadline_cyc = 0;
             }
         }
     }
@@ -370,7 +509,6 @@ void dsp_default_tick(Mad2* m) {
         static int      ka_init = 0;
         static int      ka_off  = 0;
         static int      ka_log  = 0;
-        static uint64_t ka_start = 5000000u;  // DSPKA_START: start step budget (~4.95M watchdog arm)
         static uint32_t ka_cyc  = 25000000u;  // ~5 s @ 4.93 MHz — realistic idle DSP report rate.
                                               // The 0xE4 DSP-liveness watchdog (soft-timer slot 36)
                                               // fires every ~97M steps (~19-21 s) and trips reason-0x68
@@ -455,20 +593,20 @@ void dsp_default_tick(Mad2* m) {
             ka_pre = ka_early_from;
             const char* c = getenv("DSPKA_CYC");
             if (c && *c) { long v = strtol(c, 0, 0); if (v > 0) ka_cyc = (uint32_t)v; }
-            const char* st = getenv("DSPKA_START");   // start step budget (default 5M ≈ watchdog arm)
-            if (st && *st) { long v = strtol(st, 0, 0); if (v >= 0) ka_start = (uint64_t)v; }
             const char* g = getenv("DSPKA_GROUP");
             if (g && *g) ka_group = (uint8_t)strtol(g, 0, 0);
             const char* id = getenv("DSPKA_ID");
             if (id && *id) ka_id = (uint8_t)strtol(id, 0, 0);
         }
-        // START on the fixed step budget (dsp_steps >= ka_start, ~4.95M = just after the
-        // 0xE4 watchdog arm). This replaces the old read of task14_state==0xFF — the
-        // readiness state machine's arm point — which never reaches 0xFF in some configs
-        // and is MCU-private RAM the DSP could not observe. Emitting earlier would perturb
-        // the firmware's own boot use of the ring, so the budget must clear the arm point.
-        if (!ka_off && m->dsp_steps >= ka_start
-            && (m->dsp_hb_last == 0 || m->rtc_mono - m->dsp_hb_last >= ka_cyc)) {
+        // Arm from a protocol transition the DSP actually observes: its self-test
+        // completion has been delivered (or explicitly bypassed/test-injected).
+        // Instruction count is not a clock and no longer controls this transition.
+        int protocol_ready = m->dsp_running &&
+            (m->dsp_selftest_replied || m->dsp_selftest_off ||
+             (m->dsp_msg_en && m->dsp_injected));
+        if (!protocol_ready) m->dsp_hb_next_cyc = 0;
+        if (!ka_off && protocol_ready
+            && (!m->dsp_hb_next_cyc || m->rtc_mono >= m->dsp_hb_next_cyc)) {
             uint32_t hp = m->fw.mdircv_head & m->mem_mask;
             uint32_t tp = m->fw.mdircv_tail & m->mem_mask;
             uint16_t head = (uint16_t)((m->mem[hp] << 8) | m->mem[hp + 1]);
@@ -495,6 +633,7 @@ void dsp_default_tick(Mad2* m) {
                         m->mem[tp] = (uint8_t)(nt >> 8); m->mem[tp + 1] = (uint8_t)nt;
                         mad2_raise_fiq(m, 0);                           // FIQ0: DSP signalled MDIRCV
                         m->dsp_hb_last = m->rtc_mono;
+                        m->dsp_hb_next_cyc = m->rtc_mono + ka_cyc;
                         m->dsp_hb_pulses++;
                         if (ka_log)
                             printf("[dsp-ka] replay early %d/16  %04X (grp=0x%02X id=0x%02X) @mono=%llu  t14=%u\n",
@@ -515,6 +654,7 @@ void dsp_default_tick(Mad2* m) {
                         m->mem[tp] = (uint8_t)(nt >> 8); m->mem[tp + 1] = (uint8_t)nt;
                         mad2_raise_fiq(m, 0);                           // FIQ0: DSP signalled MDIRCV
                         m->dsp_hb_last = m->rtc_mono;
+                        m->dsp_hb_next_cyc = m->rtc_mono + ka_cyc;
                         m->dsp_hb_pulses++;
                         if (ka_log)
                             printf("[dsp-ka] replay rec %d/%d  FF%02X 03%02X @mono=%llu  task14_state=%u\n",
@@ -553,6 +693,7 @@ void dsp_default_tick(Mad2* m) {
                     m->mem[tp] = (uint8_t)(nt >> 8); m->mem[tp + 1] = (uint8_t)nt;
                     mad2_raise_fiq(m, 0);                     // FIQ0: DSP signalled MDIRCV
                     m->dsp_hb_last = m->rtc_mono;
+                    m->dsp_hb_next_cyc = m->rtc_mono + ka_cyc;
                     m->dsp_hb_pulses++;
                     if (ka_log && (m->dsp_hb_pulses < 8 || (m->dsp_hb_pulses & 0x3F) == 0))
                         printf("[dsp-ka] emit #%llu group=0x%02X @mono=%llu  task14_state=%u\n",
@@ -563,25 +704,74 @@ void dsp_default_tick(Mad2* m) {
             }
         }
     }
+    // ── DSP-radio responder — folded under the master GSMBRIDGE (jmacato (github.com/jmacato) §9.1) ────────────────
+    // Part of the one-knob GSM bring-up: enabled whenever GSMBRIDGE=1 (opt out with
+    // GSMBRIDGE_DSPRADIO=0; type-51 sub-piece with GSMBRIDGE_T51=0). GSMLOG traces it.
+    //   (1) short-MDI accept: the MCU sends short DSP commands via HPI_CMD_SEND (0x2BAB46) — gate
+    //   [0x100DC]==0, write the cmd, trigger ([0x030000]=4, [0x020008]=2). Real silicon's DSP CLEARS
+    //   [0x100DC] on accept; our HLE DSP never did, so it sticks (measured 0x0008 @22.99M) and every
+    //   later non-blocking send fails the ==0 gate. Clear it so the command stream is never wedged.
+    //   (2) type-51 (0x33) DSP boot config block (Noks posts these at boot, group 0x22).
+    { static int en = -1, t51 = -1;
+      if (en < 0) { int gsm = getenv("GSMBRIDGE") ? 1 : 0;
+                    en  = gsm && (getenv("GSMBRIDGE_DSPRADIO") ? atoi(getenv("GSMBRIDGE_DSPRADIO")) != 0 : 1);
+                    t51 = gsm && (getenv("GSMBRIDGE_T51")     ? atoi(getenv("GSMBRIDGE_T51"))     != 0 : 1); }
+      if (en && m->mem) {
+          uint32_t w = 0x000100DCu & m->mem_mask;
+          uint16_t cmd = (uint16_t)((m->mem[w] << 8) | m->mem[w + 1]);
+          if (cmd) {
+              m->mem[w] = 0; m->mem[w + 1] = 0;   // DSP accepted the short command -> clear
+              if (getenv("GSMLOG"))
+                  printf("[dspradio] short-MDI %04X accepted+cleared @mono=%llu\n",
+                         cmd, (unsigned long long)m->rtc_mono);
+          }
+          static int t51_done = 0;
+          if (t51 && !t51_done && m->dsp_selftest_replied) {
+              uint32_t hp = m->fw.mdircv_head & m->mem_mask, tp = m->fw.mdircv_tail & m->mem_mask;
+              uint16_t head = (uint16_t)((m->mem[hp] << 8) | m->mem[hp + 1]);
+              uint16_t tail = (uint16_t)((m->mem[tp] << 8) | m->mem[tp + 1]);
+              if (head == tail && head >= 0x80 && head <= 0xC0) {
+                  static const uint8_t t51[28] = {
+                      0x22,0x06,0x54,0x5E,0x7E,0x3E,0x61,0x19,0x49,0xA8,0xEC,0x14,0x16,0xC2,
+                      0x59,0x9A,0x59,0x9A,0x00,0xA0,0xFC,0x01,0x03,0x32,0x32,0x32,0x22,0x1E };
+                  int len = (int)sizeof t51;
+                  uint16_t words = (uint16_t)(1 + (len + 1) / 2);
+                  uint16_t p = head;
+                  uint32_t q = (m->fw.mdircv_q + (uint32_t)(p - 0x80) * 2) & m->mem_mask;
+                  m->mem[q] = (uint8_t)len; m->mem[q + 1] = 0x33;          // word0 = {len, type 0x33}
+                  for (int i = 0; i < len; ++i) m->mem[(q + 2 + i) & m->mem_mask] = t51[i];
+                  uint16_t nt = (uint16_t)(p + words);
+                  m->mem[hp] = (uint8_t)(p >> 8);  m->mem[hp + 1] = (uint8_t)p;
+                  m->mem[tp] = (uint8_t)(nt >> 8); m->mem[tp + 1] = (uint8_t)nt;
+                  mad2_raise_fiq(m, 0);
+                  t51_done = 1;
+                  if (getenv("GSMLOG"))
+                      printf("[dspradio] type-51 (0x33) config block posted @mono=%llu\n",
+                             (unsigned long long)m->rtc_mono);
+              }
+          }
+      }
+    }
+    // GSM cell-search bridge (§9 Phase A): synthesize the DSP's radio responses so the RR
+    // cell-selection FSM advances. Self-gated by GSMBRIDGE=1 (default OFF = no effect); all
+    // logic + state lives in src/mad2/mdi_gsm.c. Runs after the keep-alive so it observes the
+    // same drained-ring state, and never perturbs a guarded boot.
 }
 
-// HLE COBBA tone reader (shared by every HLE DSP backend; see DspOps.hle_tone). The MCU
-// programs oscillator frequencies (1/4-Hz units) + amplitude into the HPI mailbox window;
-// with no real DSP to play them, we report the active tone so emu_audio synthesizes it into
-// the PCM stream. Registers are model-invariant (the HPI base .cobba = 0x100E0 everywhere).
-int dsp_hle_tone(Mad2* m, int* f1_hz, int* f2_hz) {
-    if (!m->mem) return 0;
-    uint32_t amp_a = DCT3_TONE_AMP  & m->mem_mask;
-    if (((m->mem[amp_a] << 8) | m->mem[(amp_a + 1) & m->mem_mask]) == 0) return 0;  // amplitude gate
-    uint32_t o1 = DCT3_TONE_OSC1 & m->mem_mask, o2 = DCT3_TONE_OSC2 & m->mem_mask;
-    int f1 = (int)(((m->mem[o1] << 8) | m->mem[(o1 + 1) & m->mem_mask])) >> 2;       // reg is 1/4 Hz
-    if (f1 <= 0) return 0;
-    int f2 = (int)(((m->mem[o2] << 8) | m->mem[(o2 + 1) & m->mem_mask])) >> 2;
-    *f1_hz = f1;
-    *f2_hz = (f2 > 0) ? f2 : 0;
-    return 1;
+uint64_t dsp_mailbox_next_wake(Mad2* m) {
+    uint64_t next = mdi_gsm_next_wake(m);
+    if (m->dsp_cb_deadline_cyc && m->dsp_cb_deadline_cyc < next)
+        next = m->dsp_cb_deadline_cyc;
+    if (m->dsp_msg_deadline_cyc && m->dsp_msg_deadline_cyc < next)
+        next = m->dsp_msg_deadline_cyc;
+    if (m->dsp_hb_next_cyc && m->dsp_hb_next_cyc < next)
+        next = m->dsp_hb_next_cyc;
+    return next;
 }
 
-const DspOps mad2_dsp_default = {
-    "default", dsp_default_read, dsp_default_write, dsp_default_tick, dsp_hle_tone,
-};
+void dsp_mailbox_advance_to(Mad2* m, uint64_t cycles) {
+    mdi_gsm_advance_to(m, cycles);
+}
+
+// (No DspOps here any more: mad2_dsp_rom4 is the network-capable ROM-4 engine in
+// dsp/dsp_rom4.c. These bodies remain for the two direct callers named above.)

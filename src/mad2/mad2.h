@@ -14,6 +14,8 @@
 #include <stdint.h>
 
 #include "models/model.h"   // ModelProfile, FwAddrs, LCD_MAX_*
+#include "mad2/dsp/dsp_rom6.h"   // Rom6Dsp (clean-room ref DSP state), mad2_dsp_rom6
+#include "mad2/dsp/dsp_rom4.h"   // Rom4Dsp (ROM-4 network engine state), mad2_dsp_rom4
 
 typedef struct Mad2 {
     int verbose;                // log decoded CCONT/LCD transactions
@@ -25,6 +27,11 @@ typedef struct Mad2 {
     // Optional per-instance DSP backend override (e.g. the remote-DSP bridge, selected
     // at runtime via DSP_BRIDGE). NULL = use the model's default DSP ops.
     const struct DspOps* dsp_override;
+    // Faithful ROM-6 DSP engine state machine — held BY VALUE so the core
+    // memset builds/destroys it per boot. Only the DSP module interprets it; MAD2 just
+    // stores the bytes. P0: engine delegates to legacy so this is unused until P1.
+    Rom6Dsp   rom6;    // ROM-6 faithful engine state (by value, per-boot memset)
+    Rom4Dsp   rom4;    // ROM-4 network engine state (by value, per-boot memset)
     FwAddrs  fw;
 
     // Flash chip (Intel/Sharp command set). The array is the core's RAM backing
@@ -76,11 +83,10 @@ typedef struct Mad2 {
     uint8_t  cc_int_lines;      // reg 0x0E pending (firmware clears via write-1)
     uint8_t  cc_int_mask;       // reg 0x0F (0=passed, 1=masked); reset = all masked
     uint8_t  charger_present;   // debounced charger presence, for the INT3 edge
-    uint64_t vbatt_rise_last_cyc; // rtc_mono of last adc[2] increment while charging (model
-                                  // a slowly-rising battery voltage so the firmware exits
-                                  // the "battery full" state-machine path on plug-in)
+    uint64_t vbatt_rise_next_cyc; // next asynchronous battery-voltage rise event (0 = disarmed)
     uint32_t rtc_last_min;      // last RTC minute index seen, for the RTC-MIN (INT5) edge
     uint64_t rtc_min_next;      // cycle-cached next-minute target (per-tick compare; recomputed at edge)
+    uint64_t rtc_sec_next;      // next-second target for the RTC-SEC (INT4) edge (bitplane fires per-second)
     uint64_t rtc_min_edges;     // count of RTC-MIN (INT5) interrupts raised (diagnostic)
     uint64_t rtc_writes;        // count of firmware writes to RTC regs 0x07-0x0A (diagnostic)
     uint32_t rtc_wr_pc;         // PC of the last RTC-reg write (diagnostic; find the writer)
@@ -271,7 +277,7 @@ typedef struct Mad2 {
     uint8_t  fiq_mask;          // 0x0A  (1=masked, 0=passed)
     uint8_t  irq_mask;          // 0x0B
     uint8_t  int_ctrl;          // 0x0C  (global enable)
-    uint32_t fiq3_delay;        // steps until MBUS TxD-empty kickoff FIQ3 asserts (one-shot)
+    uint64_t fiq3_deadline_cyc; // rtc_mono deadline for MBUS timer kickoff FIQ3 (0 = inactive)
 
     // --- Watchdog (CCONT WDT) ------------------------------------------------
     // The DCT3 watchdog lives in the CCONT power chip. The firmware kicks it on
@@ -287,6 +293,7 @@ typedef struct Mad2 {
     uint8_t  wdt_cc;            // CCONT reg 0x05 watchdog value (mirror of the CCONT-side kick)
     uint64_t wdt_kicks;         // count of watchdog kicks (firmware fed the dog)
     uint64_t wdt_last_kick_cyc; // rtc_mono snapshot at the last kick (for starvation timing)
+    uint64_t wdt_deadline_cyc;  // explicit starvation deadline (0 = watchdog inactive)
     uint64_t wdt_starved;       // diagnostic: windows elapsed with no kick
     uint8_t  wdt_reset_armed;   // WDTRESET env: actually reset/halt on time-out (default 0 = passive)
     uint8_t  wdt_tripped;       // latched: the watchdog time-out fired (clean diagnostic)
@@ -317,7 +324,7 @@ typedef struct Mad2 {
     uint32_t t1_hz;             // Timer1/CTSI tick rate (default DCT3_T0_HZ=33055; T1HZ env A/B knob, MAME=1057)
     uint32_t fiq8_hz;           // FIQ8 ct_timer (centisecond) rate (default 100; T8HZ env A/B knob)
     uint8_t  intctrl_gate;      // honor the 0x2000C master FIQ disable in delivery (faithful default ON; INTCTRL_GATE=0 reverts)
-    uint64_t fiq8_last_cs;      // last centisecond index the FIQ8 ct_timer fired at (edge detect)
+    uint64_t fiq8_next_cyc;     // explicit next ct_timer/FIQ8 deadline (0 = disabled/masked)
     uint64_t fiq8_ticks;        // count of FIQ8 ct_timer interrupts raised (centisecond tick)
 
     // MBUS UART transmit engine (0x18 control / 0x19 status / 0x1A data). The
@@ -328,9 +335,9 @@ typedef struct Mad2 {
     // of the firmware's scratch writes.
     uint8_t  mbus_ctrl;         // 0x18 shadow (bit5 = TX enable/start, bit6 = RX enable)
     uint8_t  mbus_txe;          // TX byte shifted out -> status bit4 (TX register empty)
-    uint32_t mbus_tx_delay;     // steps until the loaded TX byte finishes shifting
+    uint64_t mbus_tx_deadline_cyc; // rtc_mono deadline for loaded TX byte (0 = inactive)
     // TX byte capture (host serial bridge): the 0x1A write latches the byte here; when
-    // mbus_tx_delay expires (the byte has "shifted out") it is pushed to mbus_tx_out so a
+    // mbus_tx_deadline_cyc expires (the byte has "shifted out") it is pushed to mbus_tx_out so a
     // host bridge can forward the phone's MBUS transmissions to a real service tool. Inert
     // unless a bridge drains the ring — at normal boot nothing reads it (byte-identical).
     uint8_t  mbus_tx_byte;      // 0x1A latched byte, shifting out
@@ -366,7 +373,8 @@ typedef struct Mad2 {
     // pinned to a specific MAD timer register; modelled as a free-running periodic
     // FIQ off the CPU cycle count.)
     uint32_t fiq4_period;       // cycles per scheduler tick (0 = disabled)
-    uint32_t fiq4_lasttick;     // last tick index seen (edge detect)
+    uint32_t fiq4_lasttick;     // number/index of the most recently delivered synthetic tick
+    uint64_t fiq4_next_cyc;     // explicit rtc_mono deadline (0 = heartbeat disabled)
 
     // DSP code-block upload handshake (boot). The MCU uploads DSP code blocks from
     // its own list; per block it copies the data into shared RAM, writes the reply
@@ -375,9 +383,11 @@ typedef struct Mad2 {
     // [0x100E2] and raise IRQ4. We don't run the DSP, so we model that ack: on a
     // "more" reply, after a short delay, clear [0x100E4], set a [0x100E2] request,
     // and raise IRQ4 so the firmware uploads its next block — until it writes "done".
-    uint32_t dsp_cb_delay;      // steps until the modelled DSP requests the next block
+    uint64_t dsp_cb_deadline_cyc; // rtc_mono deadline for the next code-block request (0 = inactive)
+    uint8_t  dsp_cb_reqblk;     // codeblock index the DSP requests at [0x100E2] (routes via table
+                                // 0x1103B0). Phase-2 demand sequence: loader 0x14 -> main 0x01 -> overlay 0x02
     uint64_t dsp_cb_acks;       // count of code-block acks issued
-    uint64_t dsp_steps;         // free-running per-step tick counter (dsp_default_tick runs
+    uint64_t dsp_steps;         // free-running per-step tick counter (the DSP tick runs
                                 // once per emulated step). Used to time the keep-alive start
                                 // off a fixed step budget instead of peeking MCU-private RAM.
 
@@ -394,14 +404,15 @@ typedef struct Mad2 {
     uint8_t  dsp_msg_len;       // body length (high byte of word0)
     uint8_t  dsp_msg_body[32];  // body bytes
     uint32_t dsp_msg_delay;     // cycles after queue-init before injecting (0 = default)
-    uint32_t dsp_msg_ctr;       // countdown to inject
+    uint64_t dsp_msg_deadline_cyc; // explicit injection deadline once the queue becomes ready
     uint8_t  dsp_injected;      // one-shot guard
 
     // DSP heartbeat test (DSP-watchdog hypothesis verification). Periodic IRQ4/FIQ0
     // pulse from the DSP side; gated by DSPHEARTBEAT_CYC env knob. See
-    // src/mad2/dsp_default.c for the resolver. dsp_hb_last is monotonic cycle of the
+    // src/mad2/dsp/dsp_rom4.c for the resolver. dsp_hb_last is monotonic cycle of the
     // most recent pulse; dsp_hb_pulses is a count for diagnostics.
     uint64_t dsp_hb_last;
+    uint64_t dsp_hb_next_cyc;  // explicit next idle-MDI event deadline (0 = not armed)
     uint64_t dsp_hb_pulses;
 
     // per-offset access counters for the 256-byte MMIO window. Set
@@ -431,6 +442,29 @@ typedef struct Mad2 {
     // auto-consume) use the internal dsp_running latch (set at the first REAL block-ack pump
     // cycle, cleared when the MCU re-parks the boot-status word — a warm reboot re-arms it).
     uint8_t  dsp_st_req;             // MDISND {0x70,0x0D} self-test request observed
+    // --- EXPERIMENTAL SIML local-security responder (env DSPSIML=1) ---------------------
+    // The firmware streams MDISND {0x70, sub} local-security records during boot: 0x13 MSID
+    // setup, 0x14 FAID, 0x15 IMEI, 0x16 24-byte SIML block, then 0x0D self-test. The real
+    // DSP replies {0x74, 0x34/0x35/0x0D} and, once the SIM-lock records decode+match, the
+    // firmware emits {0x70,0x17} (final validation) -> we answer {0x74,0x36} pass=0, which
+    // sets the unlock latch [0x10EB18]=1 and OSE-signals task 2. Our default responder
+    // answers ONLY 0x0D (fakes the self-test verdict) and never the SIML echoes, so the
+    // firmware's SIM-lock state machine stalls after 0x16. This models the missing echoes.
+    // Faithful default OFF on native; ON in the web build (dct3_web_boot sets DSPSIML=1) with a
+    // one-time UNFAITHFUL warning. DSPSIML=0 forces off. Cosim-safe (behind the HLE quiet-gate).
+    uint8_t  dsp_siml_en;            // DSPSIML: run the HLE SIML responder (web-default on)
+    uint8_t  dsp_siml_want34;        // pending: deliver {0x74,0x34} MSID reply
+    uint8_t  dsp_siml_want35;        // pending: deliver {0x74,0x35} SIML block echo
+    uint8_t  dsp_siml_want36;        // pending: deliver {0x74,0x36} final validation pass=0
+    uint8_t  dsp_siml_blkidx;        // 0x16 block index seen so far (0..9)
+    uint8_t  dsp_siml_block[24];     // captured 24-byte 0x16 block payload (to echo in 0x35)
+    uint8_t  dsp_siml_msid[13];      // captured MSID bytes from the 0x13 setup record
+    uint8_t  simaccept_done;        // SIMACCEPT one-shot: table patched this boot. Per-instance
+                                     // (NOT file-static) so mad2_init's memset re-arms it on every
+                                     // cold/warm reboot — the firmware re-inits the reject-all table.
+    uint64_t simaccept_next_cyc;    // earliest rtc_mono for the next SIMACCEPT table rescan (0 =
+                                     // scan on the next pump) — the reject-all record appears
+                                     // asynchronously, so un-found retries are paced, not per-step
     uint8_t  dsp_running;            // internal "DSP code running" latch (first real block acked)
     uint8_t  dsp_cb_armed_nz;        // current pump cycle was armed by a REAL block delivery
                                      // (nonzero cb_reply write), not the firmware's [cb_reply]=0
@@ -618,7 +652,7 @@ typedef struct Mad2 {
 
     // DSP COBBA tone-player registers (RAM shadow of the HPI mailbox window). The MCU
     // writes the oscillator frequencies + amplitude here for the DSP to play; when there is
-    // no cosim DSP, the HLE DSP backend (dsp_hle_tone in dsp_default.c) reads them and
+    // no cosim DSP, the HLE DSP backend (dsp_hle_tone in dsp/dsp_tone.c) reads them and
     // reports the tone for emu_audio to synthesize into the PCM stream.
     // MODEL-INVARIANT: the HPI window base is fixed across DCT3 (`.cobba` = 0x100E0 on
     // every profile), so these offsets are constants, not per-model. Freq regs are in
@@ -672,8 +706,18 @@ typedef struct Mad2 {
     uint8_t  sim_txd_fl;         // 0x3E TX FIFO flush/level (0x04 = sending, 0x00 = flush)
     // RX FIFO: bytes the card has emitted, waiting for the firmware to read via
     // SIMI_RXD (0x37); SIMI_RXD_QUE (0x3C) reports the count.
-    uint8_t  sim_rx[64];
-    uint8_t  sim_rx_head, sim_rx_tail;   // ring indices (count = tail-head)
+    uint8_t  sim_rx[256];   // SIMI RX FIFO — must hold a full record response at once (sim_push_resp
+                            // pushes proc+data+SW in one call): EF_SMS 6F3C records are 176 bytes,
+                            // so 64 truncated them and the firmware looped re-reading. uint8_t head/
+                            // tail wrap cleanly at 256.
+    uint16_t sim_rx_head, sim_rx_tail;   // monotonic ring indices (count = tail-head)
+    // Byte-paced RX (bitplane-aligned): responses are STAGED here and drip-fed one byte
+    // per ~1.042ms (960 char/s T=0) into sim_rx[] by sim_tick, so the firmware processes
+    // the SIM response over successive FIQ6s (matching real hardware) instead of instantly.
+    uint8_t  sim_rx_stage[256];          // staging FIFO (full response awaiting per-byte release)
+    uint16_t sim_rx_stage_head, sim_rx_stage_tail;
+    uint64_t sim_rx_release_next_cyc;    // rtc_mono at which the next staged byte releases
+    int32_t  sim_rx_pace_cyc;            // -1=uninit; 0=instant (legacy); >0=per-byte cadence (cycles)
     // TX assembly: bytes the firmware writes to SIMI_TXD (0x36) accumulate here;
     // a flush (SIMI_TXD_FL -> 0) hands the buffer to the T=0 APDU engine.
     uint8_t  sim_tx[280];
@@ -693,6 +737,12 @@ typedef struct Mad2 {
     // /GET RESPONSE operate on the selection). 0 = none/MF.
     uint16_t sim_sel_file;      // last SELECTed EF/DF file id
     uint16_t sim_sel_df;        // current DF (0x7F20 = GSM, 0x3F00 = MF)
+    // Active subscriber identity. Seeded from the synthetic/default EF_IMSI at
+    // reset, then replaced by the bytes actually returned by EF_IMSI READ BINARY
+    // (swSIM or a bridged card). Consumers such as the RF paging scheduler must
+    // use this value rather than baking a test IMSI into a DSP backend.
+    char     sim_imsi[16];       // decimal IMSI, NUL terminated (up to 15 digits)
+    uint8_t  sim_mnc_digits;     // active EF_AD MNC length (2 or 3; defaults to 2)
     uint8_t  sim_gr_buf[64];    // GET RESPONSE buffer (FCP / SELECT response)
     uint8_t  sim_gr_len;        // bytes pending for a GET RESPONSE (0xC0)
     uint8_t  sim_reset_count;   // diagnostic: number of card resets (ATR deliveries)
@@ -714,6 +764,7 @@ typedef struct Mad2 {
     // = disabled (faithful to "no WWT modeled", which is the regression-test baseline).
     uint64_t sim_wwt_threshold_cyc;   // cycles between WWT fires (0 = disabled)
     uint64_t sim_wwt_last_active_cyc; // rtc_mono at last RX/TX activity
+    uint64_t sim_wwt_next_cyc;        // explicit WWT expiry deadline (0 = idle timer disarmed)
 
     // --- CHV1 (PIN) state (GSM 11.11 / 3GPP TS 51.011 §9.2.x) ----------------
     // CHV1 is the SIM card holder verification (the "Enter PIN" code). When enabled
@@ -741,6 +792,14 @@ typedef struct Mad2 {
 // and calls model_resolve() to apply signatures over m->fw.
 void mad2_init(Mad2* m, const ModelProfile* prof);
 
+// The DSP ops actually driving this device: the runtime override (DSP_BRIDGE remote
+// bridge) when active, else the profile's engine (mad2_dsp_rom4 / mad2_dsp_rom6, or
+// the native 5110's mad2_dsp_c54x cosim). Gate engine-dependent behaviour on THIS,
+// never on m->model->dsp alone — the same selection mad2_read/write/tick dispatch on.
+static inline const struct DspOps* mad2_active_dsp(const Mad2* m) {
+    return m->dsp_override ? m->dsp_override : (m->model ? m->model->dsp : 0);
+}
+
 // Matches dct3_io_read_fn / dct3_io_write_fn (ctx = Mad2*).
 uint32_t mad2_read(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t ram_value);
 void     mad2_write(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t value);
@@ -748,10 +807,35 @@ void     mad2_write(void* ctx, uint32_t pc, uint32_t addr, int size, uint32_t va
 // Shared default DSP behaviour (the faithful 3310/legacy mailbox+FIQ0 model), exposed
 // so the per-model C54x co-sim backend (third_party/c54x/mad2_dsp_c54x.c, native-only)
 // can forward to it for the pass-through path while the real DSP runs alongside. These
-// are the bodies behind `mad2_dsp_default` (see models/model.h DspOps + dsp_default.c).
-int  dsp_default_read (Mad2* m, uint32_t addr, int size, uint32_t ram_value, uint32_t* out);
-int  dsp_default_write(Mad2* m, uint32_t addr, int size, uint32_t value);
-void dsp_default_tick (Mad2* m);
+// are the shared DCT3 mailbox bodies (src/mad2/dsp/dsp_rom4.c — the ROM-4 engine, the
+// native 5110 c54x pass-through, and tests all call them).
+int  dsp_mailbox_read (Mad2* m, uint32_t addr, int size, uint32_t ram_value, uint32_t* out);
+int  dsp_mailbox_write(Mad2* m, uint32_t addr, int size, uint32_t value);
+void dsp_mailbox_tick (Mad2* m);
+uint64_t dsp_mailbox_next_wake(Mad2* m);
+void dsp_mailbox_advance_to(Mad2* m, uint64_t cycles);
+
+// GSM cell-search bridge (src/mad2/mdi_gsm.c). Synthesizes the DSP's radio responses so the
+// RR cell-selection FSM advances (§9 Phase A). Called from dsp_mailbox_tick; entirely gated
+// by env GSMBRIDGE=1 (default OFF -> no effect -> byte-identical boots). Never pokes FSM state.
+void mdi_gsm_tick(Mad2* m);
+uint64_t mdi_gsm_next_wake(Mad2* m);
+void mdi_gsm_advance_to(Mad2* m, uint64_t cycles);
+// SIMACCEPT RAM patch only (pure MCU-RAM edit, DSP-backend-independent) — safe to call above the
+// DSP-HLE quiet gate so it runs under DSP54_COSIM. Self-gated/one-shot; no-op unless SIMACCEPT=1.
+void mdi_gsm_simaccept(Mad2* m);
+// Decode the selected synthetic/default home PLMN. Kept for callers which do
+// not own a Mad2 instance.
+void mad2_sim_home_plmn(uint8_t out[3]);
+// Decode the active home PLMN from the subscriber identity actually returned
+// by EF_IMSI and the MNC length returned by EF_AD.
+void mad2_sim_current_plmn(const Mad2* m, uint8_t out[3]);
+// Return the active subscriber identity learned from EF_IMSI. The result is
+// always NUL terminated; before the first card read it is the selected default.
+void mad2_sim_current_imsi(const Mad2* m, char out[16]);
+// Select the SIM's EF_IMSI by active DSP type: legacy -> test PLMN 001-01 (lock-exempt, guard
+// byte-identical); ROM6NEW faithful engine -> real Telstra IMSI 505-01. Call after dsp_override is set.
+void mad2_sim_select_plmn(Mad2* m);
 
 // --- Interrupt fabric (CTSI) -------------------------------------------------
 // Peripherals raise/ack their interrupt LINE through these instead of poking
@@ -785,6 +869,14 @@ void ext_eeprom_save(Mad2* m, const char* path);
 
 // Advance the timers from the CPU cycle count and latch timer IRQs.
 void mad2_timers_tick(Mad2* m, uint32_t cycles);
+// Earliest monotonic hardware-cycle deadline currently armed by any MAD2
+// peripheral or asynchronous DSP backend. UINT64_MAX means no timed event.
+uint64_t mad2_next_event_cycle(Mad2* m);
+// Host-side power inputs are edges, not polled globals. These setters update
+// the ADC surface and arm the corresponding CCONT/battery events immediately.
+void mad2_set_battery_adc(Mad2* m, uint16_t adc);
+void mad2_set_charger_adc(Mad2* m, uint16_t adc);
+void mad2_sim_set_present(Mad2* m, int present);
 // Lowest unmasked pending IRQ/FIQ number (0..7), or -1 if none.
 int  mad2_irq_poll(const Mad2* m);
 int  mad2_fiq_poll(const Mad2* m);
