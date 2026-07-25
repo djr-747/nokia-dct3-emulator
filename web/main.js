@@ -2045,7 +2045,12 @@
       pressKey(e.deltaY < 0 ? "wheelup" : "wheeldown", true);
     }, { passive: false });
 
-    document.getElementById("btn-reboot").addEventListener("click", boot);
+    // Null-guarded like every other control below: this runner is also loaded by pages
+    // that ship a reduced config panel (web/next/), and an unguarded lookup here throws
+    // out of the whole init block — no boot(), no frame loop, i.e. a dead page rather
+    // than one missing button.
+    const rebootBtn = document.getElementById("btn-reboot");
+    if (rebootBtn) rebootBtn.addEventListener("click", boot);
     const saveBtn = document.getElementById("btn-save-eeprom");
     if (saveBtn) saveBtn.addEventListener("click", () => {
       const r = saveNvram(true);
@@ -2055,7 +2060,8 @@
       saveBtn.textContent = msg;
       setTimeout(() => (saveBtn.textContent = "Save EEPROM"), 1200);
     });
-    document.getElementById("btn-reset-eeprom").addEventListener("click", () => {
+    const resetEeBtn = document.getElementById("btn-reset-eeprom");
+    if (resetEeBtn) resetEeBtn.addEventListener("click", () => {
       if (confirm("Wipe saved EEPROM/NVRAM (settings, clock, contacts) and reload the original image?"))
         window.dct3ResetEeprom();
     });
