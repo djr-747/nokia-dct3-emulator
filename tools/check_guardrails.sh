@@ -64,8 +64,13 @@ for g in $GATES; do
         boot_gate 3310 "firmware/Factory Reset 3310 NR1 v5.79.fls" 250000000 \
                   395a267eaa512440afe902a33936ccaa || FAILED=1 ;;
     3410)
+        # Re-blessed 2026-07-25: the 3410 now REGISTERS. Two rom6 fixes landed — the 0x55
+        # blind-band-search responder (it previously stalled forever at the mailbox), and a
+        # structural RACH-matcher locator that resolves on v5.46 where the old byte signature
+        # did not. Screen went from unregistered standby to registered standby with an
+        # operator name; old hash was 5a284ea4d2cfe72792c2c696c598b51f.
         boot_gate 3410 "firmware/Nokia 3410 NHM-2 v5.46 (assembled).fls" 250000000 \
-                  5a284ea4d2cfe72792c2c696c598b51f || FAILED=1 ;;
+                  63700ff1c69b4ef5b36d8500e8135fb3 || FAILED=1 ;;
     5110)
         # The cosim oracle script classifies the screen; we additionally pin the
         # exact Security-code hash so ANY pixel drift fails, not just CONTACT

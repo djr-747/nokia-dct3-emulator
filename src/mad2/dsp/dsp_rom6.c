@@ -98,6 +98,9 @@ static uint32_t rom6_last_bcch_fn(uint32_t fn, uint32_t tc) {
 // ===========================================================================================
 #define ROM6_BSIC        0x00u
 #define ROM6_DEFAULT_RSSI 0xD0u   // strong served carrier (signed-dBm byte; gate (int8)lvl+104>=0)
+// The carrier this engine models, reported when a blind (untargeted) band search asks the DSP what
+// it can hear and no carrier has been captured yet. Same cell as mdi_gsm.c SERVING_ARFCN.
+#define ROM6_SEARCH_ARFCN 586u    // 0x024A
 // LAI 05 F5 10 00 01 (MCC 505 / MNC 01 / LAC 1) is inlined in the SI2/SI3/SI4 bodies below.
 static const uint8_t ROM6_CCCH_OFFSETS[9] = { 6, 12, 16, 22, 26, 32, 36, 42, 46 };
 
@@ -174,74 +177,12 @@ static void rom6_enqueue_after(struct Mad2* m, uint64_t delay,
     rom6_enqueue_at(m, rom6_now(&m->rom6) + delay, op, payload, len);
 }
 
-static uint16_t rom6_read_be16(const struct Mad2* m, uint32_t addr) {
-    return (uint16_t)(((uint16_t)m->mem[addr & m->mem_mask] << 8) |
-                      m->mem[(addr + 1u) & m->mem_mask]);
-}
-
-static uint32_t rom6_read_be32(const struct Mad2* m, uint32_t addr) {
-    return ((uint32_t)m->mem[addr & m->mem_mask] << 24) |
-           ((uint32_t)m->mem[(addr + 1u) & m->mem_mask] << 16) |
-           ((uint32_t)m->mem[(addr + 2u) & m->mem_mask] << 8) |
-           m->mem[(addr + 3u) & m->mem_mask];
-}
-
-// Noks resolves the firmware's RACH matcher table from this Thumb routine and
-// publishes the transmitted request reference when the IA event matures. Keep
-// the same version-independent signature path; never bake a v5.79 RAM address.
-static uint32_t rom6_find_rach_reference_table(struct Mad2* m) {
-    static const uint8_t prefix[] = {
-        0xB5,0xF0,0x78,0x43,0x08,0xD9,0x06,0x09,
-        0x0E,0x0D,0x78,0x82,0x09,0x51,0x07,0x5B,
-        0x0E,0x9B,0x43,0x19,0x06,0x09,0x0E,0x0E,
-        0x06,0xD1,0x0E,0xC9,0x06,0x09,0x0E,0x09,
-        0x46,0x8C };
-    uint32_t first = m->model->mem.flash_base;
-    uint32_t last = first + m->model->mem.flash_size;
-    for (uint32_t addr = first; addr + sizeof prefix + 2u <= last; ++addr) {
-        unsigned i = 0;
-        for (; i < sizeof prefix; ++i)
-            if (m->mem[(addr + i) & m->mem_mask] != prefix[i]) break;
-        if (i != sizeof prefix) continue;
-        uint32_t ldrAddr = addr + (uint32_t)sizeof prefix;
-        uint16_t ldr = rom6_read_be16(m, ldrAddr);
-        if ((ldr & 0xF800u) != 0x4800u || ((ldr >> 8) & 7u) != 7u) continue;
-        uint32_t literal = ((ldrAddr + 4u) & ~3u) + (uint32_t)(ldr & 0xFFu) * 4u;
-        if (literal < first || literal + 4u > last) continue;
-        uint32_t table = rom6_read_be32(m, literal);
-        if (table >= 0x00100000u && table + 0x18u <= 0x00180000u) return table;
-    }
-    return 0;
-}
-
-static void rom6_publish_rach_reference(struct Mad2* m) {
-    Rom6Dsp* r = &m->rom6;
-    if (!r->rachReferenceTable)
-        r->rachReferenceTable = rom6_find_rach_reference_table(m);
-    if (!r->rachReferenceTable) return;
-    uint32_t table = r->rachReferenceTable;
-    uint32_t fn = r->rachRequestFn % 42432u;
-    memset(&m->mem[table & m->mem_mask], 0, 0x18);
-    m->mem[table & m->mem_mask] = 1;
-    m->mem[(table + 1u) & m->mem_mask] = r->rachReference;
-    m->mem[(table + 2u) & m->mem_mask] = (uint8_t)((fn / 1326u) % 32u);
-    m->mem[(table + 3u) & m->mem_mask] = (uint8_t)(fn % 51u);
-    m->mem[(table + 4u) & m->mem_mask] = (uint8_t)(fn % 26u);
-    if (getenv("ROM6_LOG"))
-        fprintf(stderr, "[rom6] RACH reference published @0x%06X RA=%02X T1'=%u T3=%u T2=%u\n",
-                table, r->rachReference, m->mem[(table + 2u) & m->mem_mask],
-                m->mem[(table + 3u) & m->mem_mask], m->mem[(table + 4u) & m->mem_mask]);
-}
-
 // PumpDelayedMdiRcv: matured delayed records move into the FIFO in due order.
 static void rom6_pump_delayed(struct Mad2* m, uint64_t cycles) {
     Rom6Dsp* r = &m->rom6;
     for (unsigned i = 0; i < ROM6_DELAYED_N; ++i) {
         Rom6MdiRec* rec = &r->delayed[i];
         if (rec->used && cycles >= rec->due) {
-            if (rec->op == 0x80 && rec->len >= 13 &&
-                rec->bytes[0] == 0x60 && rec->bytes[12] == 0x3F)
-                rom6_publish_rach_reference(m);
             rom6_enqueue(m, rec->op, rec->bytes, rec->len);
             rec->used = 0;
         }
@@ -395,6 +336,42 @@ static uint8_t rom6_b_paging_fill(uint8_t* L2) {
     L2[0] = 0x15; L2[1] = 0x06; L2[2] = 0x21; L2[3] = 0x00; L2[4] = 0x01; L2[5] = 0xF0;
     for (int i = 6; i < 23; ++i) L2[i] = 0x2B;
     return 23;
+}
+
+// RA_INFO (d2m 0x84) — the DSP's report of the random-access burst it has just transmitted:
+// payload = [RA][fn>>16][fn>>8][fn], i.e. the CHANNEL REQUEST octet plus the ABSOLUTE GSM frame
+// number the burst went out on. Same wire shape as the ROM-4 engine's RA_INFO
+// (dsp/dsp_rom4.c, bitplane's census "d2m 0x84 RA_INFO").
+//
+// This is the message that makes the firmware record its own outstanding request reference — it
+// is what retired the old MCU-RAM poke. Verified on
+// 3310 v5.79, statically end to end:
+//
+//   TASK_4_MDI_RECEIVER 0x2EDB04 -> d2m jump table 0x2EDB48 idx (op-0x83)
+//     op 0x84 -> 0x2EDBC4 -> bl 0x2C3C9C: gated on [0x110FE0] (GU2_DSP_MEAS_OPER_GATE) == 1,
+//        forwards the broker buffer to task 10 via TASK_SEND_TYPED, else HEAP_FREEs it
+//   task 10 (0x22E650) -> bl 0x22FB7E -> RA_INFO handler 0x2DB904:
+//        fn  = (buf[5]<<16)|(buf[6]<<8)|buf[7]      <- payload[1..3], absolute frame
+//        RA  = buf[4]                               <- payload[0]
+//        builds a 12-byte broker message id 0x803 with
+//        [5]=(fn/1326)&0x1F (T1'), [6]=fn%51 (T3), [7]=fn%26 (T2), [8]=RA
+//        and TASK_SEND_TYPEDs it to task 13 (RR)
+//   RR (task 13, entry 0x251228) writer at 0x2A67FE:
+//        idx = (state[2]+1) % 3; e = 0x111584 + idx*8
+//        e[0]=1 (valid) e[1]=RA e[2]=T1' e[3]=T3 e[4]=T2 e[5]=0 (matched)
+//   the RR matcher 0x27AF80 later walks those 3 entries against the received Immediate
+//   Assignment's Request Reference IE and sets e[5]=1 on a full match.
+//
+// So the firmware derives T1'/T3/T2 itself from the frame WE report here; the IA built by
+// rom6_b_imm_assign() must therefore quote the SAME frame number (it does — both use
+// rachRequestFn), or the matcher rejects the grant and RR re-RACHes.
+static uint8_t rom6_b_ra_info(uint8_t* pl, uint8_t ra, uint32_t fn) {
+    pl[0] = ra;
+    pl[1] = (uint8_t)(fn >> 16);
+    pl[2] = (uint8_t)(fn >> 8);
+    pl[3] = (uint8_t)fn;
+    for (int i = 4; i < 8; ++i) pl[i] = 0x00;       // ROM-4 pads the report to 8 octets
+    return 8;
 }
 
 // ImmediateAssignment (23B L2): 2D 06 3F 00 41 [(tsc<<5)|(arfcn>>8)] [arfcn] [RA]
@@ -1493,7 +1470,19 @@ static void rom6_handle_mdi(struct Mad2* m, uint8_t op, const uint8_t* buf, unsi
         // MDISND 0x0C is the already-observed handset RACH event. `reqfn` is
         // the request-reference label the later IA must echo; it is not a
         // second host deadline. Schedule the network response from this event,
-        // exactly as Noks does, and publish the matcher table when it matures.
+        // exactly as Noks does.
+        //
+        // First report the transmitted burst back uplink-side: d2m 0x84 RA_INFO {RA, absolute
+        // FN}. That is the ONLY thing the firmware needs to record its own outstanding request
+        // reference — its own task-10 -> task-13 chain converts our frame number into the
+        // {T1',T3,T2} tuple its RR matcher compares the Immediate Assignment against (full
+        // trace in rom6_b_ra_info above). Reporting the burst instead of forging the MCU's
+        // record of it is what let the MCU-RAM poke be deleted.
+        {
+            uint8_t pl[8];
+            uint8_t len = rom6_b_ra_info(pl, ra, reqfn);
+            rom6_enqueue(m, 0x84, pl, len);
+        }
         rom6_enq_imm_assign_at(m, ra, reqfn, rom6_now(r));
         if (log) fprintf(stderr,
                          "[rom6] RACH observed RA=0x%02X reqFN=%u @cycle=%llu step=%llu\n",
@@ -1517,6 +1506,40 @@ static void rom6_handle_mdi(struct Mad2* m, uint8_t op, const uint8_t* buf, unsi
                                    : (r->servingArfcn ? r->servingArfcn : r->servingArfcn);
         uint8_t pl[16]; uint8_t len = rom6_b_nbrtim(pl, carrier, rom6_current_fn(r));
         rom6_enqueue_after(m, rom6_cpf(), 0x88, pl, len);   // Cps/217 == cpf
+        break;
+    }
+    case 0x55: {                                    // blind band search -> 0x8B ALL_RSSI_RESULTS
+        // 0x55 is the *untargeted* counterpart of 0x56. The MCU's cell-selection sub-FSM picks
+        // between the two by walking its 3x9-byte candidate-carrier count table: any group non-empty
+        // -> targeted search (0x56, a 160-byte SEARCH_LIST of known carriers); ALL groups empty ->
+        // blind band search (0x55). The 3310 v5.79 ships that table with one populated group, so it
+        // only ever emits 0x56; the 3410 v5.46 and 5210 v5.40 ship it all-zero and open with 0x55.
+        // Same code, different data — which is why a 0x56-only responder walls those two models.
+        // Payload is 2 bytes {band index, attempts} (both observed emitting {03 05}); it is NOT an
+        // ARFCN, so there is nothing carrier-specific to honour — the DSP is being asked "sweep the
+        // band and tell me everything you can hear".
+        //
+        // The answer is a full power scan: 0x8B ALL_RSSI_RESULTS (reference EnqueueAllRssiResults,
+        // reused verbatim via rom6_b_rssi8b — the same 162-byte body the 0x4B MORE_RSSI path emits).
+        // Of the handlers the FSM can reach while parked on soft-timer 36, 0x80/0x8A are gated on a
+        // flag that is still zero here and 0x87/0x89 loop back into the wait, so 0x8B is the only
+        // reply that advances it unconditionally. Once it lands the MCU has >=1 candidate carrier,
+        // its count table goes non-zero, the selector flips to the targeted arm and the model
+        // rejoins the 0x56 -> 0x02 -> SCH/BCCH camp path the 3310 already walks.
+        //
+        // The reported carrier is the cell the rest of this engine models (mdi_gsm.c SERVING_ARFCN
+        // 586 / PLMN from the active SIM) so the blind sweep hands back the very cell the following
+        // 0x56/0x02 exchange will configure; every other slot reports 0x80 = nothing heard.
+        uint16_t arfcn = r->servingArfcn ? r->servingArfcn
+                       : (r->measurementArfcn ? r->measurementArfcn : ROM6_SEARCH_ARFCN);
+        r->measurementArfcn = arfcn;                // RssiArfcn() coherence for the follow-up 0x0F/0x46
+        uint8_t pl[ROM6_RCVMAX];
+        uint8_t len = rom6_b_rssi8b(pl, arfcn);
+        rom6_enqueue(m, 0x8B, pl, len);
+        if (log) fprintf(stderr,
+                         "[rom6] 0x55 blind band search band=%u tries=%u -> 0x8B ALL_RSSI ARFCN=%u @step=%llu\n",
+                         plen > 0 ? buf[0] : 0u, plen > 1 ? buf[1] : 0u, arfcn,
+                         (unsigned long long)m->dsp_steps);
         break;
     }
     case 0x57:                                      // serving -> SCH
@@ -1586,8 +1609,14 @@ static void rom6_on_host_interrupt(struct Mad2* m) {
                 len = rom6_b_rssi8b(pl, arfcn);
                 rom6_enqueue(m, 0x8B, pl, len);
             }
-            pl[0] = 0;
-            rom6_enqueue(m, 0x84, pl, 1);
+            // 0x84 with no random-access burst to report: an all-zero RA_INFO, exactly as the
+            // ROM-4 engine emits outside its RANDOM_ACCESS phase. It MUST still be a full
+            // 8-octet report — the firmware's RA_INFO handler (0x2DB904, see rom6_b_ra_info)
+            // unconditionally reads payload[0..3], and the MCU allocates its broker buffer from
+            // the record's own length byte, so a short record makes it read past that buffer.
+            // RA 0 / frame 0 simply never matches a real Immediate Assignment.
+            len = rom6_b_ra_info(pl, 0x00, 0u);
+            rom6_enqueue(m, 0x84, pl, len);
         }
     }
     rom6_pump_mdircv(m);

@@ -82,7 +82,6 @@ typedef struct Rom6Dsp {
     uint64_t nextRachTxCycle;    // scheduled handset RACH transmit event
     uint32_t rachRequestFn;      // reduced FN carried by the 0x0C request
     uint8_t  rachReference;      // RA value carried by the 0x0C request
-    uint32_t rachReferenceTable; // signature-resolved firmware matcher table
 
     // --- Dedicated channel (STAGE 2 — SDCCH capture + 51-frame downlink/block-req cadence) ---
     uint16_t dedicatedArfcn;     // dedicated (SDCCH) ARFCN captured from 0x02 logch 0x80
