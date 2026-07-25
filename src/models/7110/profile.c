@@ -163,5 +163,13 @@ const ModelProfile model_7110 = {
     // (bind mad2_dsp_c54x + DSP54_COSIM=1 to study the real DSP)
     // 7110-SPECIFIC ROM-4 responder (src/models/7110/dsp_7110.c): same revision as the
     // 5110/6110/3210 (mad2_dsp_rom4) but its own DSP self-test reply model — the phones differ.
-    .dsp = &mad2_dsp_rom6,           // ROM-6 faithful engine (src/mad2/dsp/dsp_rom6.c)
+    // ROM-4, NOT ROM-6 — the 7110 is the hybrid the revision table warns about: a 4 MB
+    // MAD2-era handset carrying the 1998-99 ROM-4 DSP (fingerprint: 36% vs the 5110, 0.3%
+    // vs the 3310 —). DSP generation and ASIC/flash class are
+    // independent axes; binding by era gets this one wrong. Confirmed at runtime: it emits
+    // m2d 0x1A SEARCH_LIST (the ROM-4 carrier search), which rom6 has no case for, so it
+    // stalled before any search. The ROM-6 binding was introduced by the engine
+    // consolidation (which retired the 7110's own responder) and contradicted the comment
+    // above it; the bug was first recorded 2026-06-17.
+    .dsp = &mad2_dsp_rom4,           // ROM-4 faithful engine (src/mad2/dsp/dsp_rom4.c)
 };
