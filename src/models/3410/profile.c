@@ -137,8 +137,7 @@ const ModelProfile model_3410 = {
         // boot_trace's TRACE=sim `sim_gate-0x1D` math + its hardcoded-0x11FD1B bypass are
         // 3310-specific (offset is 0x3A here, halfword) — treat as 3310-only. (§7.16.)
         .verdict = 0x0017FE3Du, .sim_gate = 0x0017FBD0u, .dsp_uploaded = 0x0012BA10u,
-        .get_string = 0, .w_get_string = 0, .faid_cksum = 0, .faid_cksum_val = 0,
-        .dsp_boot_status = 0, .dsp_boot_ready = 0,
+        .get_string = 0, .w_get_string = 0, .dsp_boot_status = 0, .dsp_boot_ready = 0,
         .reboot_fn = 0, .reboot_reason = 0, .reboot_save = 0,
         .fatal_handler = 0, .assert_log = 0, .reason_setter = 0, .malloc_fail = 0,
         .task14_state = 0, .task14_status = 0,
@@ -150,7 +149,7 @@ const ModelProfile model_3410 = {
     .sigs = MAD2_SIGS,
     .n_sigs = MAD2_N_SIGS,
     .boot = {
-        .skip_seclock_default = 1,   // mirror 3310 web default
+        // mirror 3310 web default
     },
     .ident = {
         .match = "NHM-2",            // 3410 product code (in the PPM header of the dump)

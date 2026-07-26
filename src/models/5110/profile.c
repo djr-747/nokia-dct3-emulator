@@ -118,7 +118,6 @@ const ModelProfile model_5110 = {
         // get_string (PPM nokstr resolver) — gen_sig-ported from 3310 0x2BBFAC (96%) /
         // 0x2BBCB8 (wide). Enables the GETSTR tracer (maps on-screen strings -> caller).
         .get_string = 0x00277B98u, .w_get_string = 0x0027790Eu,
-        .faid_cksum = 0, .faid_cksum_val = 0,
         // DSP boot handshake: firmware's DSP-readiness step parks the HPI status word
         // 0x10004 at 0xFFFF and polls it for the DSP's ready/version reply; the ROM-4 HLE
         // responder (mad2_dsp_rom4) returns dsp_boot_ready so the firmware proceeds to
@@ -139,8 +138,7 @@ const ModelProfile model_5110 = {
     .sigs = MAD2_SIGS,            // shared DCT3 RTOS sigs still resolve over the 5110 flash
     .n_sigs = MAD2_N_SIGS,        // (enables the post-mortem labelling)
     .boot = {
-        .skip_seclock_default = 0,
-    },
+        },
     .ident = {
         // String-only match: the harness calls model_detect with a fixed 0x400000 length
         // (boot_trace.c), so a 1 MB flash_size would never equal it. "NSE-1" is unique to

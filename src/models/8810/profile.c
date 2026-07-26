@@ -88,7 +88,6 @@ const ModelProfile model_8810 = {
         .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         // get_string 0x2C4A3E / w_get_string 0x2C47D6 — EXACT gen_sig matches from the 5110.
         .get_string = 0x002C4A3Eu, .w_get_string = 0x002C47D6u,
-        .faid_cksum = 0, .faid_cksum_val = 0,
         .dsp_boot_status = 0x00010004u, .dsp_boot_ready = 4,       // ROM-4 DSP reports version 4
         .dsp_boot_status2 = 0x00010006u,
         .reboot_fn = 0, .reboot_reason = 0, .reboot_save = 0,
@@ -98,8 +97,7 @@ const ModelProfile model_8810 = {
     .sigs = MAD2_SIGS,
     .n_sigs = MAD2_N_SIGS,
     .boot = {
-        .skip_seclock_default = 0,
-    },
+        },
     .ident = {
         .match = "NSE-6",
         .flash_size = 0,

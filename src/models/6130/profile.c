@@ -80,7 +80,6 @@ const ModelProfile model_6130 = {
         // get_string 0x294ADA (96% fuzzy) / w_get_string 0x294872 (EXACT) — gen_sig-ported
         // from the 5110's 0x277B98/0x27790E.
         .get_string = 0x00294ADAu, .w_get_string = 0x00294872u,
-        .faid_cksum = 0, .faid_cksum_val = 0,
         .dsp_boot_status = 0x00010004u, .dsp_boot_ready = 4,       // ROM-4 DSP reports version 4
         .dsp_boot_status2 = 0x00010006u,
         .reboot_fn = 0, .reboot_reason = 0, .reboot_save = 0,
@@ -90,8 +89,7 @@ const ModelProfile model_6130 = {
     .sigs = MAD2_SIGS,
     .n_sigs = MAD2_N_SIGS,
     .boot = {
-        .skip_seclock_default = 0,
-    },
+        },
     .ident = {
         .match = "NSK-3",
         .flash_size = 0,

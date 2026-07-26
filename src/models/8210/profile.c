@@ -77,8 +77,7 @@ const ModelProfile model_8210 = {
         // reply + FIQ0 only while [verdict]&0x04 — without this it read m->mem[0], never
         // replied -> bit2 stayed pending -> CONTACT SERVICE.
         .verdict = 0x0013FDE1u, .sim_gate = 0, .dsp_uploaded = 0x00135774u,
-        .get_string = 0, .w_get_string = 0, .faid_cksum = 0, .faid_cksum_val = 0,
-        // DSP boot handshake (ported from 8850 v5.31 — same build): the startup launcher
+        .get_string = 0, .w_get_string = 0, // DSP boot handshake (ported from 8850 v5.31 — same build): the startup launcher
         // 0x2CAC80 parks HPI mailbox slot [0x10004] at 0xFFFF and polls it (fn 0x2CAD46)
         // for a DSP ready/version reply of 5 or 6. Returning dsp_boot_ready lets the boot
         // upload the DSP code blocks (handshaked via dsp_mbox0/1), which writes dsp_cb_reply
@@ -93,8 +92,7 @@ const ModelProfile model_8210 = {
     .sigs = MAD2_SIGS,
     .n_sigs = MAD2_N_SIGS,
     .boot = {
-        .skip_seclock_default = 0,
-    },
+        },
     .ident = {
         .match = "NSM-3",            // 8210 product code (0x1FC header). NOTE: prefix of
         .flash_size = 0,             // "NSM-3D" (8250) — register 8250 BEFORE 8210. String-

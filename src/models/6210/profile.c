@@ -116,8 +116,7 @@ const ModelProfile model_6210 = {
         // bit2-clearing ack — its cmd-13/self-test-complete handler is the open RE item. Until
         // then the 6210 still rests at CONTACT SERVICE, one gate further along than before.
         .verdict = 0x0017FD99u, .sim_gate = 0, .dsp_uploaded = 0x0016FFE4u,
-        .get_string = 0, .w_get_string = 0, .faid_cksum = 0, .faid_cksum_val = 0,
-        .dsp_boot_status = 0, .dsp_boot_ready = 0,
+        .get_string = 0, .w_get_string = 0, .dsp_boot_status = 0, .dsp_boot_ready = 0,
         // Reset/reboot path — all six resolve via the shared MAD2_SIGS for v5.56 (VERIFIED
         // 2026-06-20: sig-resolved AND disasm-confirmed). Pinned here as documented fallbacks
         // (matching the 3310 profile) so the values are explicit if a future build shifts a sig.
@@ -133,8 +132,7 @@ const ModelProfile model_6210 = {
     .sigs = MAD2_SIGS,
     .n_sigs = MAD2_N_SIGS,
     .boot = {
-        .skip_seclock_default = 1,
-    },
+        },
     .ident = {
         .match = "NPE-3",
         .flash_size = 0x00400000u,

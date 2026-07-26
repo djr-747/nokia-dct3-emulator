@@ -84,8 +84,6 @@ typedef struct {
     // Shell-side helpers (string tracer + security lock).
     uint32_t get_string;     // get_string()                 (3310 v6.39 = 0x2BBFAC)
     uint32_t w_get_string;   // wide get_string()            (3310 v6.39 = 0x2BBCB8)
-    uint32_t faid_cksum;     // stored FAID integrity sum    (FuBu v6.39 = 0x111B8A)
-    uint16_t faid_cksum_val; // expected FAID sum            (FuBu v6.39 = 0x03B7)
     // Security-code oracle (firmware's own cipher; used by the web "reset code 12345"
     // hook + seccode reader). encrypt(r0,r1=ascii,r2=out) writes the 4-byte ciphertext;
     // verify(r0=ascii)->1 if accepted; store = RAM addr of the stored code verify reads.
@@ -414,7 +412,6 @@ typedef struct {
 
 // --- Boot / HLE knobs ---------------------------------------------------------
 typedef struct {
-    uint8_t skip_seclock_default;  // FAID "pass" default (3310 web = 1)
     // (pin_verdict_default REMOVED 2026-07-15 — no image needs the verdict pin;
     // the DSP responder passes the self-test organically on every model.)
 } BootConfig;

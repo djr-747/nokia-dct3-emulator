@@ -119,7 +119,6 @@
       lcdBanks: mod.cwrap("dct3_web_lcd_banks", "number", []),
       kpFamily: mod.cwrap("dct3_web_kp_family", "number", []),
       power: mod.cwrap("dct3_web_power", null, ["number"]),
-      setSkipSeclock: mod.cwrap("dct3_web_set_skip_seclock", null, ["number"]),
       seccodeReset: mod.cwrap("dct3_web_seccode_reset", "number", []),
       t0ticks: mod.cwrap("dct3_web_t0_ticks", "number", []),
       t1edges: mod.cwrap("dct3_web_t1_edges", "number", []),
@@ -700,7 +699,6 @@
         "  firmware:   " + fwn + "\n" +
         "  fw-id:      " + curFwId + (customFw ? "  [user-loaded]" : "  [baked]") + "\n" +
         "  SIM:        " + ((C.getSim && C.getSim()) ? "inserted" : "absent") + "   PIN: " + ck("chk-pin") + "\n" +
-        "  FAID Pass:  " + ck("chk-skip-seclock") + "\n" +
         "  EEPROM:     " + ee + "\n";
     }
     window.dct3Config = cfgSummary;
@@ -753,7 +751,6 @@
         config: {
           sim:    (C.getSim ? !!C.getSim() : ck('chk-sim')),
           pin:    ck('chk-pin'),
-          faid:   ck('chk-skip-seclock'),
           // bypass/spike: REMOVED 2026-07-15 (organic boot needs neither; old
           // bundles carrying them are accepted and the keys ignored).
           // Auto-recover is intentionally NOT bundled: it's a viewer-side policy choice
@@ -811,8 +808,6 @@
       const setChk = (id, v) => { const el = document.getElementById(id); if (el && typeof v === 'boolean') el.checked = v; };
       setChk('chk-sim', cfg.sim);
       setChk('chk-pin', cfg.pin);
-      setChk('chk-skip-seclock', cfg.faid);
-      if (typeof cfg.faid    === 'boolean' && C.setSkipSeclock) C.setSkipSeclock(cfg.faid ? 1 : 0);
       // Auto-recover (cfg.recover) intentionally NOT applied — viewer's checkbox wins.
       // Cold reboot for a clean step=0 start. boot() re-applies SIM/PIN from the
       // checkboxes we just updated and calls resetReplayLog (which cancels any
@@ -2622,8 +2617,6 @@
     });
     // "Skip security code": neutralise the FuBu v6.39 disp77 FAID lock (checksum
     // completeness —). Takes effect on next reboot.
-    const chkSeclock = document.getElementById("chk-skip-seclock");
-    if (chkSeclock) chkSeclock.addEventListener("change", (e) => C.setSkipSeclock(e.target.checked ? 1 : 0));
     // Auto-recover crash master gate (mad2 reset-reason recovery; see mad2.c case 0x01).
     // Takes effect immediately — no reboot needed. The next firmware self-reset will
     // either recover-in-place (on) or warm-reboot (off).

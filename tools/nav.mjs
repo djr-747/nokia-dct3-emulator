@@ -47,7 +47,9 @@ let capPc = 0, capHist = {}, capLastHits = 0;   // --cap 0xPC: histogram r0 at a
 let battAdc = null, chargerAdc = null;   // --batt / --charger: override vbatt adc[2] / charger adc[5]
 // Boot config toggles (null = leave web default). --sim/--faid 0|1. (--bypass and
 // --spike were REMOVED 2026-07-15 — boot is organic; both accepted and ignored.)
-// Defaults in main.c: sim=0 (absent), skip_seclock/FAID=1.
+// Defaults in main.c: sim=0 (absent). (--faid is accepted and IGNORED since the
+// skip_seclock FAID shim was removed 2026-07-26 — the security block is resolved
+// by real EEPROM provisioning, not by poking the check's operand.)
 let cfgSim = null, cfgFaid = null, clockEvery = 0;
 // Phase 6 Instrument 1 (alloc/free leak-tracker). LEAKTRACE=1 arms the leak-tracker
 // at boot (records every outstanding heap block by allocating caller_LR); HEAPCURVE=1
@@ -128,7 +130,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--sim') cfgSim = +argv[++i];        // 1=SIM inserted, 0=absent
   else if (a === '--bypass') { ++i; console.log('nav: --bypass removed (organic boot) — ignored'); }
   else if (a === '--spike')  { ++i; console.log('nav: --spike removed (organic boot) — ignored'); }
-  else if (a === '--faid') cfgFaid = +argv[++i];      // 1=FAID/seclock bypass on
+  else if (a === '--faid') { ++i; }                   // accepted + IGNORED (shim removed)
   else if (a === '--recover') cfgRecover = +argv[++i]; // 1=auto-recover firmware resets, 0=warm-reboot (headless default 0)
   else if (a === '--idle') idle = +argv[++i];   // post-replay idle-watch frames (delayed crash)
   else if (a === '--ramout') { const t = argv[++i].split('@'); ramout = resolve(process.cwd(), t[0]); if (t[1]) ramoutStep = +t[1]; }   // FILE[@step]: dump 16MB RAM (disfw --ram)
@@ -326,7 +328,6 @@ const C = {
   setSim:     M.cwrap('dct3_web_set_sim', null, ['number']),
   setBattery: M.cwrap('dct3_web_set_battery', null, ['number']),   // --batt: vbatt adc[2]
   setCharger: M.cwrap('dct3_web_set_charger', null, ['number']),   // --charger: adc[5]
-  setSeclock: M.cwrap('dct3_web_set_skip_seclock', null, ['number']),
   // frozen-on-crash PC trail.
   pcringCrashed: M.cwrap('dct3_web_pcring_crashed', 'number', []),
   pcringW:       M.cwrap('dct3_web_pcring_w', 'number', []),
@@ -579,7 +580,6 @@ FLASH_HI = (C.flashHi && C.flashHi() >>> 0) || 0x400000;   // model-aware code c
 if (cfgSim    !== null) C.setSim(cfgSim);
 if (battAdc    !== null && C.setBattery) C.setBattery(battAdc);
 if (chargerAdc !== null && C.setCharger) C.setCharger(chargerAdc);
-if (cfgFaid   !== null) C.setSeclock(cfgFaid);
 // Auto-recover OFF by default for headless — see the cfgRecover declaration above.
 if (C.setRecover) C.setRecover(cfgRecover);
 // Phase 6: arm the leak-tracker / used-bytes curve at boot if requested.
@@ -813,8 +813,7 @@ if (arm !== null) {
     resetTotalSeen     = C.resetTotal();      // = 0 after C.boot()
     resetRecoveredSeen = C.resetRecovered();  // = 0
     if (cfgSim    !== null) C.setSim(cfgSim);
-    if (cfgFaid   !== null) C.setSeclock(cfgFaid);
-    if (C.setRecover) C.setRecover(cfgRecover);
+        if (C.setRecover) C.setRecover(cfgRecover);
     if (eeprom) { overlayEeprom(eeprom); }
     C.dbgWatch(0, 0x2D84F4);   // slot 0 = KEY_DOWN dispatch (raw watch this phase)
     C.dbgWatch(1, 0x2997B0);   // slot 1 = TASK_SEND_IRQ (cascade)

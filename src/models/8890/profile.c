@@ -65,8 +65,7 @@ const ModelProfile model_8890 = {
         // dsp_uploaded = 0x134E64: DSP-block-done flag the IRQ4 ISR 0x2C6218 (exact sig match
         // of 8850 0x2CB418) sets to 1 (at 0x2C6250, when reply reg [0x100E4]==0).
         .verdict = 0x0013FDE1u, .sim_gate = 0, .dsp_uploaded = 0x00134E64u,
-        .get_string = 0, .w_get_string = 0, .faid_cksum = 0, .faid_cksum_val = 0,
-        .dsp_boot_status = 0, .dsp_boot_ready = 0,  // DSP-boot upload handshake differs from 8210/8850 — RE pending
+        .get_string = 0, .w_get_string = 0, .dsp_boot_status = 0, .dsp_boot_ready = 0,  // DSP-boot upload handshake differs from 8210/8850 — RE pending
         .reboot_fn = 0, .reboot_reason = 0, .reboot_save = 0,
         .fatal_handler = 0, .assert_log = 0, .reason_setter = 0, .malloc_fail = 0,
         .task14_state = 0, .task14_status = 0,
@@ -74,8 +73,7 @@ const ModelProfile model_8890 = {
     .sigs = MAD2_SIGS,
     .n_sigs = MAD2_N_SIGS,
     .boot = {
-        .skip_seclock_default = 0,
-    },
+        },
     .ident = {
         .match = "NSB-6",            // 8890 product code (0x1FC header) — unique to the 8890.
         .flash_size = 0,

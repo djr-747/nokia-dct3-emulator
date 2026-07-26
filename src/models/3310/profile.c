@@ -88,8 +88,8 @@ const ModelProfile model_3310 = {
         // Shell-side helpers.
         .get_string    = 0x002BBFACu,   // v6.39
         .w_get_string  = 0x002BBCB8u,   // v6.39
-        .faid_cksum    = 0x00111B8Au,   // FuBu v6.39
-        .faid_cksum_val = 0x03B7u,      // FuBu v6.39
+        // FuBu v6.39
+        // FuBu v6.39
         // Reset/reboot path — sig-first; fallbacks pinned to 3310 v5.79.
         // and the REBOOT_PAT signature (mad2_sigs.c).
         .reboot_fn     = 0x002EEBAEu,
@@ -108,7 +108,7 @@ const ModelProfile model_3310 = {
     .sigs2 = MAD2_SIGS_3310,      // NHM-5 verdict + dsp_uploaded self-heal (per-build RAM cells)
     .n_sigs2 = MAD2_N_SIGS_3310,
     .boot = {
-        .skip_seclock_default = 1,   // web default ("FAID Pass" on)
+        // web default ("FAID Pass" on)
     },
     .ident = {
         .match = "NHM-5",            // 3310 product code (present in the dump)

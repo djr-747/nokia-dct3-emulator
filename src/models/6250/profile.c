@@ -113,8 +113,7 @@ const ModelProfile model_6250 = {
         // ack pump raises IRQ4 → firmware sets [0x16E474]=1 (gate-1) → responder posts the
         // group-0x74 sub-13 ack → handler clears verdict bit2 (gate-2) → standby.
         .verdict = 0x0017FD15u, .sim_gate = 0, .dsp_uploaded = 0x0016E474u,
-        .get_string = 0, .w_get_string = 0, .faid_cksum = 0, .faid_cksum_val = 0,
-        .dsp_boot_status = 0, .dsp_boot_ready = 0,
+        .get_string = 0, .w_get_string = 0, .dsp_boot_status = 0, .dsp_boot_ready = 0,
         // Reset/reboot path: unlike the 6210 (v5.56-pinned constants), no v5.00 values are
         // RE'd yet — leave 0 and let the shared MAD2_SIGS resolve them (sigdump shows misses).
         .reboot_fn = 0, .reboot_reason = 0, .reboot_save = 0,
@@ -125,8 +124,7 @@ const ModelProfile model_6250 = {
     .sigs = MAD2_SIGS,
     .n_sigs = MAD2_N_SIGS,
     .boot = {
-        .skip_seclock_default = 1,
-    },
+        },
     .ident = {
         .match = "NHM-3",
         .flash_size = 0x00400000u,

@@ -225,7 +225,6 @@
 
         // Optional — UI features that depend on these self-disable.
         setKeyHold:     optWrap("dct3_web_set_key_hold", null, ["number"]),
-        setSkipSeclock: optWrap("dct3_web_set_skip_seclock", null, ["number"]),
         setRecover:     optWrap("dct3_web_set_recover", null, ["number"]),
         setCharger:     optWrap("dct3_web_set_charger", null, ["number"]),
         setSim:         optWrap("dct3_web_set_sim", null, ["number"]),
@@ -315,12 +314,9 @@
       try { setter(value ? 1 : 0); }
       catch (e) { showError("toggle", e); }
     }
-    var chkSkip       = document.getElementById("chk-skip-seclock");
     var chkRecover    = document.getElementById("chk-recover");
     var chkCharger    = document.getElementById("chk-charger");
     var chkSim        = document.getElementById("chk-sim");
-    if (chkSkip)    { applyToggle(C.setSkipSeclock, chkSkip.checked);
-                      chkSkip.addEventListener("change", function () { applyToggle(C.setSkipSeclock, chkSkip.checked); }); }
     if (chkRecover) { applyToggle(C.setRecover, chkRecover.checked);
                       chkRecover.addEventListener("change", function () { applyToggle(C.setRecover, chkRecover.checked); }); }
     if (chkCharger) { applyToggle(C.setCharger, chkCharger.checked);
@@ -350,8 +346,6 @@
     // state actually matches what the model sees. Without this the
     // phone boots SIM-present even when the box is unchecked, sending
     // it down the SIM-rejected timeout path that diverges from /web/.
-    // (g_skip_seclock is static and survives boot, so its UI toggle
-    //  doesn't need re-application.)
     // -------------------------------------------------------------
     function reapplyPostBoot() {
       flushPCM();                     // clear stale audio from the previous model/boot

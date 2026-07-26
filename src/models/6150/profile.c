@@ -79,7 +79,6 @@ const ModelProfile model_6150 = {
         .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         // get_string 0x2A98D4 / w_get_string 0x2A9662 — EXACT gen_sig matches from the 5110.
         .get_string = 0x002A98D4u, .w_get_string = 0x002A9662u,
-        .faid_cksum = 0, .faid_cksum_val = 0,
         .dsp_boot_status = 0x00010004u, .dsp_boot_ready = 4,       // ROM-4 DSP reports version 4
         .dsp_boot_status2 = 0x00010006u,
         .reboot_fn = 0, .reboot_reason = 0, .reboot_save = 0,
@@ -89,8 +88,7 @@ const ModelProfile model_6150 = {
     .sigs = MAD2_SIGS,
     .n_sigs = MAD2_N_SIGS,
     .boot = {
-        .skip_seclock_default = 0,
-    },
+        },
     .ident = {
         .match = "NSM-1",
         .flash_size = 0,

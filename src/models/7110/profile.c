@@ -135,15 +135,13 @@ const ModelProfile model_7110 = {
         // responder clears by posting the group-0x74 sub-13 self-test-complete ack (handler 0x30E0EA
         // `and #0xFB`), exactly like the sibling models' cmd-13. See src/models/7110/dsp_7110.c.
         .sim_gate = 0, .dsp_uploaded = 0x00167030u,
-        .get_string = 0, .w_get_string = 0, .faid_cksum = 0, .faid_cksum_val = 0,
-    },
+        .get_string = 0, .w_get_string = 0, },
     .sigs = MAD2_SIGS,      // shared MAD2 RTOS signatures — resolves the reboot/fatal
     .n_sigs = MAD2_N_SIGS,  // chain so mad2 EARLY-intercepts firmware self-resets
                             // (without this, a reset is only caught at the [0x20001]
                             // reset-request write, after the fw runs its full reboot path)
     .boot = {
-        .skip_seclock_default = 0,
-    },
+        },
     .ident = {
         .match = "NSE-5",
         .flash_size = 0,

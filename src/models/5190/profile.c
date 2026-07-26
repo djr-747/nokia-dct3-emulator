@@ -100,7 +100,6 @@ const ModelProfile model_5190 = {
         .mdisnd_tail  = 0x000100A4u,    // verified by the 2026-07-15 per-model RAMWATCH sweep
         // get_string 0x297612 / w_get_string 0x2973B2 — EXACT gen_sig matches from the 5110.
         .get_string = 0x00297612u, .w_get_string = 0x002973B2u,
-        .faid_cksum = 0, .faid_cksum_val = 0,
         // 5110-family DSP boot handshake: ROM-4 version reply on both HPI status words.
         .dsp_boot_status = 0x00010004u, .dsp_boot_ready = 4,
         .dsp_boot_status2 = 0x00010006u,
@@ -111,8 +110,7 @@ const ModelProfile model_5190 = {
     .sigs = MAD2_SIGS,
     .n_sigs = MAD2_N_SIGS,
     .boot = {
-        .skip_seclock_default = 0,
-    },
+        },
     .ident = {
         .match = "NSB-1",
         .flash_size = 0,

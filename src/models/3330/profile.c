@@ -99,8 +99,7 @@ const ModelProfile model_3330 = {
         // from the 3310 v5.57 line and NEVER matched these builds — that mis-aim is why
         // the upload latch/verdict chain "RE" stalled at Contact Service.
         .verdict = 0, .sim_gate = 0, .dsp_uploaded = 0,
-        .get_string = 0, .w_get_string = 0, .faid_cksum = 0, .faid_cksum_val = 0,
-        .dsp_boot_status = 0, .dsp_boot_ready = 0,
+        .get_string = 0, .w_get_string = 0, .dsp_boot_status = 0, .dsp_boot_ready = 0,
         .reboot_fn = 0, .reboot_reason = 0, .reboot_save = 0,
         .fatal_handler = 0, .assert_log = 0, .reason_setter = 0, .malloc_fail = 0,
         .task14_state = 0, .task14_status = 0,
@@ -110,7 +109,7 @@ const ModelProfile model_3330 = {
     .sigs2 = MAD2_SIGS_3310,      // NHM-line verdict + dsp_uploaded self-heal (per-build RAM cells)
     .n_sigs2 = MAD2_N_SIGS_3310,
     .boot = {
-        .skip_seclock_default = 1,   // mirror 3310 web default
+        // mirror 3310 web default
     },
     .ident = {
         .match  = "NHM-6",           // 3330 product code (0x1FC version header)

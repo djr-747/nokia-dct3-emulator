@@ -125,8 +125,7 @@ const ModelProfile model_5210 = {
         // pending. RAMWATCH (before this fix): 00->40->C0->C4 @1.96M then 0x84 STALL
         // (bit6 cleared, bit2 never cleared) -> CONTACT SERVICE.
         .verdict = 0x0017FDE5u, .sim_gate = 0, .dsp_uploaded = 0x0013B528u,
-        .get_string = 0, .w_get_string = 0, .faid_cksum = 0, .faid_cksum_val = 0,
-        // NOTE: the 8850's DSP-boot fields (dsp_boot_status=0x10004 / dsp_boot_ready=6)
+        .get_string = 0, .w_get_string = 0, // NOTE: the 8850's DSP-boot fields (dsp_boot_status=0x10004 / dsp_boot_ready=6)
         // do NOT port to the 5210 — A/B tested (no effect on the verdict path). The 8850
         // polls an HPI mailbox boot-version slot [0x10004] (real MCU literal @0x337444),
         // whereas the 5210 MCU code has NO word-aligned [0x10004] literal in its code pool
@@ -151,7 +150,7 @@ const ModelProfile model_5210 = {
     .sigs2 = MAD2_SIGS_5210,
     .n_sigs2 = MAD2_N_SIGS_5210,
     .boot = {
-        .skip_seclock_default = 1,   // mirror 3310/3410 web default
+        // mirror 3310/3410 web default
     },
     .ident = {
         .match = "NSM-5",            // 5210 product code (0x1FC version header)

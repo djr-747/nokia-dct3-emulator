@@ -96,8 +96,7 @@ const ModelProfile model_5510 = {
         // boot-critical ones (dsp_uploaded, verdict) must be RE'd per-build (3310 values
         // do NOT transfer — the early RAM-init clobbers them; see 3410 bring-up §8.3).
         .verdict = 0, .sim_gate = 0, .dsp_uploaded = 0,
-        .get_string = 0, .w_get_string = 0, .faid_cksum = 0, .faid_cksum_val = 0,
-        .dsp_boot_status = 0, .dsp_boot_ready = 0,
+        .get_string = 0, .w_get_string = 0, .dsp_boot_status = 0, .dsp_boot_ready = 0,
         .reboot_fn = 0, .reboot_reason = 0, .reboot_save = 0,
         .fatal_handler = 0, .assert_log = 0, .reason_setter = 0, .malloc_fail = 0,
         .task14_state = 0, .task14_status = 0,
@@ -105,7 +104,7 @@ const ModelProfile model_5510 = {
     .sigs = MAD2_SIGS,
     .n_sigs = MAD2_N_SIGS,
     .boot = {
-        .skip_seclock_default = 1,   // mirror 3310 web default
+        // mirror 3310 web default
     },
     .ident = {
         .match = "NPM-5",            // 5510 product code (0x1FC version header)

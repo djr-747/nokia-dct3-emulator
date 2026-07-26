@@ -68,8 +68,7 @@ const ModelProfile model_8855 = {
         // 0x33D578 (98% fuzzy of 8850 0x2CB418) sets to 1 (at 0x33D5B0, when [0x100E4]==0).
         // The 8855's DSP upload completes natively (DSP acks ~3589) so no dsp_boot_status override.
         .verdict = 0x0017FDE5u, .sim_gate = 0, .dsp_uploaded = 0x0013A210u,
-        .get_string = 0, .w_get_string = 0, .faid_cksum = 0, .faid_cksum_val = 0,
-        .dsp_boot_status = 0, .dsp_boot_ready = 0,
+        .get_string = 0, .w_get_string = 0, .dsp_boot_status = 0, .dsp_boot_ready = 0,
         .reboot_fn = 0, .reboot_reason = 0, .reboot_save = 0,
         .fatal_handler = 0, .assert_log = 0, .reason_setter = 0, .malloc_fail = 0,
         .task14_state = 0, .task14_status = 0,
@@ -77,8 +76,7 @@ const ModelProfile model_8855 = {
     .sigs = MAD2_SIGS,
     .n_sigs = MAD2_N_SIGS,
     .boot = {
-        .skip_seclock_default = 0,
-    },
+        },
     .ident = {
         .match = "NSM-4",            // 8855 product code (0x1FC header)
         .flash_size = 0x00400000u,   // 4 MB

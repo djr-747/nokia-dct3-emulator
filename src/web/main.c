@@ -43,20 +43,6 @@ void ARMRaiseFIQ(struct ARMCore* cpu);
 // (~24M steps to standby — the web boot just takes its realistic time). The
 // verdict/sim_gate profile addresses remain for telemetry only.
 
-// "Skip security code" (FuBu v6.39 disp77 anti-theft lock) — checksum-completeness.
-// disp77 arms because the FuBu FAID runtime integrity check (0x2E8C66) finds a
-// mismatch: it sums a 16-byte FAID block and compares to the stored u16 at
-// [0x111B8A]; on the "security block reset" image the computed value (0x03B7) !=
-// the stored value (0x0310), so it reports LOCKED and the MMI dispatches disp77
-// (held, then re-armed each boot-sweep). The faithful fix is to make the check
-// CONSISTENT — store the computed sum so the check passes legitimately. Poking
-// [0x111B8A] = 0x03B7 does that: the check returns not-locked and the FAID state
-// is internally consistent, so the phone boots past the lock with no reboot-spin.
-// (Merely skipping/forcing the screen leaves FAID inconsistent and spins at
-// 0x2EEBEC — verified.) Gated by g_skip_seclock,
-// default OFF. The FAID sum address + expected value are per-image, carried in the
-// model profile (g_mad2.fw.faid_cksum / .faid_cksum_val).
-
 // Power key: held at boot so the power-on-reason gate (~2M insns) reads it and
 // derives "powered on by key" -> boot. A real press is momentary, so once the
 // reason is latched and the power-up has settled, auto-release it (raise the
@@ -132,7 +118,6 @@ static int       g_gs_len = 0;
 static uint32_t  g_gs_ret = 0, g_gs_lr = 0, g_gs_in = 0; static int g_gs_wide = 0;
 static uint32_t  g_gs_stk[8];        // real BL-return-addrs from the stack (call chain)
 static uint32_t  g_gs_last = 0;      // dedup: last (id<<8 ^ caller)
-static int       g_skip_seclock = 1;  // "FAID Pass": recompute FAID so disp77 never arms; default ON
 static const ModelProfile* g_model = NULL;   // selected phone profile (autodetected at boot)
 static int       g_pwr_released = 0;  // one-shot auto-release guard
 static int       g_pwr_auto = 1;      // auto-release power key after boot
@@ -793,15 +778,6 @@ static void web_step_once(struct ARMCore* cpu) {
                 g_ccwr_val[i] = (uint32_t)cpu->gprs[1] & 0xFFu;
                 g_ccwr_w++;
             }
-        }
-        // "Skip security code" (default OFF): make the FuBu v6.39 FAID integrity
-        // check pass legitimately so the disp77 anti-theft lock never arms (see the
-        // FAID note above). Hold the stored sum at the computed value while on.
-        // (No-op on images without a known FAID address — faid_cksum == 0.)
-        if (g_skip_seclock && g_mad2.fw.faid_cksum) {
-            uint32_t fa = g_mad2.fw.faid_cksum & DCT3_RAM_MASK;
-            g_core->ram[fa]                       = (g_mad2.fw.faid_cksum_val >> 8) & 0xFF;
-            g_core->ram[(fa + 1) & DCT3_RAM_MASK] = g_mad2.fw.faid_cksum_val & 0xFF;
         }
         if (g_pwr_auto && !g_pwr_released && g_step >= PWR_RELEASE_STEP) {
             g_mad2.kbd_special_cols = 0;       // release the held power key
@@ -1747,12 +1723,6 @@ EMSCRIPTEN_KEEPALIVE
 int dct3_web_trace_fiq(int i)             { return (i < 0 || (uint32_t)i >= g_trace_w) ? 0 : g_trace[i & (TRACE_N - 1)].fiq_pending; }
 EMSCRIPTEN_KEEPALIVE
 int dct3_web_trace_irq(int i)             { return (i < 0 || (uint32_t)i >= g_trace_w) ? 0 : g_trace[i & (TRACE_N - 1)].irq_pending; }
-
-// "Skip security code": when on, suppress the FuBu v6.39 disp77 "Enter security
-// code" lock by redirecting its dispatch to the idle screen (see web_step_once).
-// Default OFF -> the lock shows exactly as it would on real hardware.
-EMSCRIPTEN_KEEPALIVE
-void dct3_web_set_skip_seclock(int on) { g_skip_seclock = on ? 1 : 0; }
 
 // Current ARM PC (gprs[15], = instruction+pipeline offset). For localizing a spin/hang
 // by sampling it repeatedly between run chunks.

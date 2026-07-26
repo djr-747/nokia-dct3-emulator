@@ -72,8 +72,7 @@ const ModelProfile model_8250 = {
         // mad2-default 0x10002 boot slot — DSP acks already fire — so no dsp_boot_status
         // override is needed, unlike the 8210/8850 v5.31 which park 0x10004.)
         .verdict = 0x0013FDD9u, .sim_gate = 0, .dsp_uploaded = 0x0012F33Cu,
-        .get_string = 0, .w_get_string = 0, .faid_cksum = 0, .faid_cksum_val = 0,
-        .dsp_boot_status = 0, .dsp_boot_ready = 0,
+        .get_string = 0, .w_get_string = 0, .dsp_boot_status = 0, .dsp_boot_ready = 0,
         .reboot_fn = 0, .reboot_reason = 0, .reboot_save = 0,
         .fatal_handler = 0, .assert_log = 0, .reason_setter = 0, .malloc_fail = 0,
         .task14_state = 0, .task14_status = 0,
@@ -81,8 +80,7 @@ const ModelProfile model_8250 = {
     .sigs = MAD2_SIGS,
     .n_sigs = MAD2_N_SIGS,
     .boot = {
-        .skip_seclock_default = 0,
-    },
+        },
     .ident = {
         .match = "NSM-3D",           // 8250 product code (0x1FC header) — more specific
         .flash_size = 0,             // than 8210's "NSM-3"; MUST be registered first.

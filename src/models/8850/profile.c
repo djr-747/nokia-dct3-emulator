@@ -90,8 +90,7 @@ const ModelProfile model_8850 = {
         // pending (C4) until the readiness task gave up @9.42M -> CONTACT SERVICE. RAMWATCH:
         // 00->40->C0->C4 @~2.57M (real boot step). sim_gate still 0 = unresolved.
         .verdict = 0x0013FDE1u, .sim_gate = 0, .dsp_uploaded = 0x00135664u,
-        .get_string = 0, .w_get_string = 0, .faid_cksum = 0, .faid_cksum_val = 0,
-        // DSP boot handshake: the startup launcher's DSP-readiness step (fn 0x2CAD60)
+        .get_string = 0, .w_get_string = 0, // DSP boot handshake: the startup launcher's DSP-readiness step (fn 0x2CAD60)
         // posts a command to the HPI mailbox 0x100F6, pulses the DSP (0x20002 bit0),
         // parks 0x10004 at 0xFFFF and polls it for the DSP's ready/version reply. A
         // reply of 5 or 6 (fn 0x2CAE26) makes the firmware upload the 115 DSP code
@@ -103,8 +102,7 @@ const ModelProfile model_8850 = {
     .sigs = MAD2_SIGS,            // shared MAD2 RTOS sigs locate reboot_fn/fatal_handler/
     .n_sigs = MAD2_N_SIGS,        // reboot_reason etc. at runtime (enables RESET_EARLY/recovery)
     .boot = {
-        .skip_seclock_default = 0,
-    },
+        },
     .ident = {
         .match = "NSM-2",
         .flash_size = 0,

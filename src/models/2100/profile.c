@@ -135,8 +135,7 @@ const ModelProfile model_2100 = {
         // "12345" at the verify call site so the firmware's own accept path runs.
         .seccode_encrypt = 0x002FE780u, .seccode_verify = 0x002FE992u, .seccode_store = 0x0010FE78u,
         .verdict = 0x0013FDB3u, .sim_gate = 0, .dsp_uploaded = 0x0010EC50u,
-        .get_string = 0, .w_get_string = 0, .faid_cksum = 0, .faid_cksum_val = 0,
-        .dsp_boot_status = 0, .dsp_boot_ready = 0,
+        .get_string = 0, .w_get_string = 0, .dsp_boot_status = 0, .dsp_boot_ready = 0,
         .reboot_fn = 0, .reboot_reason = 0, .reboot_save = 0,
         .fatal_handler = 0, .assert_log = 0, .reason_setter = 0, .malloc_fail = 0,
         .task14_state = 0, .task14_status = 0,
@@ -147,7 +146,7 @@ const ModelProfile model_2100 = {
     .sigs = MAD2_SIGS,
     .n_sigs = MAD2_N_SIGS,
     .boot = {
-        .skip_seclock_default = 1,   // mirror 3310/3410/5210 web default
+        // mirror 3310/3410/5210 web default
     },
     .ident = {
         .match = "NAM-2",            // 2100 product code (0x1FC version header)

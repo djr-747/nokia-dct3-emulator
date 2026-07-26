@@ -86,7 +86,6 @@ const ModelProfile model_5130 = {
         // get_string 0x27C2DC (96% fuzzy) / w_get_string 0x27C05E (EXACT) — gen_sig-ported
         // from the 5110's 0x277B98/0x27790E.
         .get_string = 0x0027C2DCu, .w_get_string = 0x0027C05Eu,
-        .faid_cksum = 0, .faid_cksum_val = 0,
         // 5110-family DSP boot handshake: ROM-4 version reply on both HPI status words.
         .dsp_boot_status = 0x00010004u, .dsp_boot_ready = 4,
         .dsp_boot_status2 = 0x00010006u,
@@ -97,8 +96,7 @@ const ModelProfile model_5130 = {
     .sigs = MAD2_SIGS,
     .n_sigs = MAD2_N_SIGS,
     .boot = {
-        .skip_seclock_default = 0,
-    },
+        },
     .ident = {
         .match = "NSK-1",
         .flash_size = 0,
