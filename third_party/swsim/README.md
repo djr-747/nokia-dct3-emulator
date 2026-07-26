@@ -86,6 +86,29 @@ This is a **source snapshot**, not a submodule (recovered/re-vendored from the p
    comes from `gsm.json` (override with `SWSIM_FS=<path>`). SAT/proactive is left OFF
    (`app_default_enable = false`) so the card never pushes a proactive command.
 
+   It also carries the **card-persistence API** the browser build uses to keep a
+   visitor's SIM (contacts, messages, LOCI/Kc/FPLMN) across page loads:
+
+   - `swsim_backend_snapshot(&buf, &len)` — `swicc_disk_save()` the LIVE mounted disk
+     to the staging path, then hand the bytes back. Pure read of the FS: it never
+     touches the T=0 FSM or the current selection, so it is safe at any point in a run.
+   - `swsim_backend_restore(buf, len)` — stage the bytes and re-enter `swsim_init()`
+     with `path_json = NULL`, which makes it **load** the `.swiccfs` instead of parsing
+     `gsm.json`. Must run before the firmware's first APDU. Any failure leaves the card
+     un-inited so `swsim_ensure()` rebuilds it from the JSON — a corrupt or stale
+     snapshot costs the saved data, never the boot.
+   - `swsim_backend_write_ef(df, fid, data, len)` — SELECT-path + UPDATE BINARY on the
+     live card. The host uses it to re-apply EF_SPN (`7F20`/`6F46`) after a restore:
+     the operator name is a page setting, so it must beat the snapshot's copy.
+   - `swsim_backend_writes()` — successful `DC`/`D6`/`32` count, so the host only
+     auto-saves when the card actually changed this run.
+
+   The snapshot format is swICC's own FS image, **not** a hand-rolled diff: it
+   round-trips through the loader `swsim_init` already uses, and its 16-byte magic
+   encodes format + machine endianness, so a foreign blob is rejected by the library.
+   Staging path is `SWSIM_FS_PATH` (`/tmp/dct3_swsim.swiccfs`) — MEMFS on the web, so
+   the bytes only leave via the returned pointer.
+
 7. **`gsm.json` — the card fixture.** The SIM filesystem + identity the camp targets
    (Telstra 505-01 IMSI, EFs). Consumed once at `swsim_init`.
 

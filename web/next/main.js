@@ -298,6 +298,14 @@
         i2cEepromPtr:    optWrap("dct3_web_i2c_eeprom_ptr", "number"),
         i2cEepromSize:   optWrap("dct3_web_i2c_eeprom_size", "number"),
         i2cEepromWrites: optWrap("dct3_web_i2c_eeprom_writes", "number"),
+        // swSIM card persistence. Not a memory window like the two above — the
+        // software SIM's filesystem lives inside swICC, so it is serialised on
+        // demand into swICC's own FS format and mounted back the same way.
+        simWrites:       optWrap("dct3_web_sim_writes", "number"),
+        simSnapshot:     optWrap("dct3_web_sim_snapshot", "number"),
+        simSnapshotLen:  optWrap("dct3_web_sim_snapshot_len", "number"),
+        simRestore:      optWrap("dct3_web_sim_restore", "number", ["number", "number"]),
+        simWriteEf:      optWrap("dct3_web_sim_write_ef", "number", ["number", "number", "number", "number"]),
       };
     } catch (e) {
       setStatus("Emulator API mismatch.");
@@ -544,12 +552,70 @@
       if (typeof console !== "undefined") console.log("[dct3] restored", u8.length, "B I2C EEPROM (" + i2cKey() + ")");
       return true;
     }
-    // Persist BOTH regions; each self-gates on presence + write activity.
-    function saveNvram(force) { var r = saveEeprom(force); saveI2cEeprom(force); return r; }
+    // ---- swSIM card ------------------------------------------------------
+    // ONE key for the whole site, deliberately NOT namespaced per firmware like
+    // the two EEPROM regions above: a SIM is a card you carry between handsets,
+    // so the contacts and messages saved on it follow the visitor when they
+    // switch models. (The phone's own memory stays per-firmware, as it should.)
+    // The blob is swICC's own FS format — magic-tagged, so a stale or foreign
+    // snapshot is rejected by the loader rather than silently mounted, and a
+    // rejection costs the saved card but never the boot.
+    var SIM_KEY = "dct3_swsim_v1";
+    var simLastWrites = -1;
+    function saveSimCard(force) {
+      if (nvramSuppress) return "off";
+      if (!force && !nvramPersist) return "off";
+      if (!C.simSnapshot || !C.simWrites) return "off";
+      if (!force && C.simWrites() === 0) return "nochange";
+      var ptr = C.simSnapshot(), len = C.simSnapshotLen ? C.simSnapshotLen() : 0;
+      if (!ptr || len <= 0) return "off";                  // card never came up
+      var copy = new Uint8Array(mod.HEAPU8.subarray(ptr, ptr + len));
+      nvramCache[SIM_KEY] = copy;
+      nvIdbPut(SIM_KEY, copy);
+      simLastWrites = C.simWrites();
+      return "saved";
+    }
+    function loadSimCard() {
+      if (!nvramPersist || !C.simRestore) return false;
+      var u8 = nvramCache[SIM_KEY];
+      if (!u8 || u8.length < 16) return false;
+      var p = mod._malloc(u8.length), ok = 0;
+      try { mod.HEAPU8.set(u8, p); ok = C.simRestore(p, u8.length); }
+      finally { mod._free(p); }
+      if (!ok) {                                           // unmountable -> drop it
+        delete nvramCache[SIM_KEY]; nvIdbDel(SIM_KEY);
+        if (typeof console !== "undefined") console.warn("[dct3] saved SIM rejected — factory card");
+        return false;
+      }
+      // The operator name is a page SETTING (patched into gsm.json before boot),
+      // not card data — so it has to override the SPN carried by the snapshot,
+      // or dct3SetOperatorName() would silently do nothing for a returning visitor.
+      applySpnToCard();
+      if (typeof console !== "undefined") console.log("[dct3] restored", u8.length, "B SIM card");
+      return true;
+    }
+    // Write EF_SPN (7F20/6F46) straight onto the live card from the current knob.
+    function applySpnToCard() {
+      // opName is a `var` declared further down; if a boot ever runs before that
+      // line executes, leave the restored SPN alone rather than blanking it.
+      if (!C.simWriteEf || typeof spnHex !== "function" || typeof opName !== "string") return;
+      var hex = spnHex(opName), n = hex.length / 2;
+      var p = mod._malloc(n);
+      try {
+        for (var i = 0; i < n; i++) mod.HEAPU8[p + i] = parseInt(hex.substr(i * 2, 2), 16);
+        C.simWriteEf(0x7F20, 0x6F46, p, n);
+      } finally { mod._free(p); }
+    }
+
+    // Persist ALL THREE regions; each self-gates on presence + write activity.
+    function saveNvram(force) {
+      var r = saveEeprom(force); saveI2cEeprom(force); saveSimCard(force); return r;
+    }
 
     setInterval(function () {
       if (C.eepromWrites && C.eepromWrites() !== eeLastWrites) saveEeprom();
       if (C.i2cEepromWrites && C.i2cEepromWrites() !== i2cLastWrites) saveI2cEeprom();
+      if (C.simWrites && C.simWrites() !== simLastWrites) saveSimCard();
     }, 3000);
     document.addEventListener("visibilitychange", function () { if (document.hidden) saveNvram(); });
     window.addEventListener("beforeunload", function () { saveNvram(); });
@@ -557,9 +623,9 @@
     window.dct3SaveEeprom  = function () { return saveNvram(true); };
     window.dct3ResetEeprom = function () {
       nvramSuppress = true;         // the reload's unload-save must not re-persist the wipe
-      delete nvramCache[eeKey()]; delete nvramCache[i2cKey()];
+      delete nvramCache[eeKey()]; delete nvramCache[i2cKey()]; delete nvramCache[SIM_KEY];
       var reload = function () { location.reload(); };
-      Promise.all([nvIdbDel(eeKey()), nvIdbDel(i2cKey())]).then(reload, reload);
+      Promise.all([nvIdbDel(eeKey()), nvIdbDel(i2cKey()), nvIdbDel(SIM_KEY)]).then(reload, reload);
     };
 
     // Devtools: persistence opt-out + wipe.
@@ -591,8 +657,13 @@
       curFwId = fwIdentity();
       loadEeprom();
       loadI2cEeprom();
+      // The card is mounted AFTER boot but before the run loop hands the firmware
+      // its first APDU — boot() itself never talks to the SIM (swSIM is built
+      // lazily), so this is the one safe window to swap the filesystem underneath.
+      loadSimCard();
       eeLastWrites  = (C.eepromWrites    && C.eepromWrites())    || 0;
       i2cLastWrites = (C.i2cEepromWrites && C.i2cEepromWrites()) || 0;
+      simLastWrites = (C.simWrites       && C.simWrites())       || 0;
       reapplyPostBoot();
       applyModel();
       halted = false;

@@ -12,6 +12,13 @@
 //                       [--settle <frames>] [--per <frames>] -- <key> <key> ...
 // Keys: 0-9  *  #  menu  up  down  c(=Names/Clear)  pwr(=power tap)  off(=power hold)
 //       wait (just run+render, no key)
+//       sms / call — NOT keys: queue an MT SMS / MT call on the ROM-6 network engine
+//                    (--from <digits>, --text <body>), then run the frames as usual.
+// --env K=V (repeatable, before boot): SIMLOG=1 for every SIM APDU + T=0 framing,
+//                    ROM6_LOG=1 for the engine's L1/LAPDm/CC/SMS narration.
+// Example (receive an SMS at standby and read it):
+//   node tools/nav.mjs "flash/My 3310 NR1 v5.79.fls" --sim 1 --settle 3000 \
+//        --env SIMLOG=1 -- 1 2 3 4 menu 0 1 0 1 2 0 0 1 menu wait@800 sms wait@400 menu
 // Example (enter security code then open the menu):
 //   node tools/nav.mjs "flash/My 3310 NR1 v5.79.fls" -- 6 2 6 2 8 menu
 //
@@ -39,6 +46,17 @@ function doRamDump(tag) {
   console.log(`RAM dumped (16MB) to ${ramout} at step ${(C.step() / 1e6).toFixed(1)}M (${tag}) — disfw --ram compatible`);
 }
 let sendlogMon = false;   // --sendlog: monitor MMI-poster (fw.mmi_send) messages + dump the ring
+// --env K=V (repeatable), applied before C.boot() so mad2_init sees them. The two that
+// matter for network work: SIMLOG=1 (every SIM APDU + SW) and ROM6_LOG=1 (the ROM-6
+// engine's L1/LAPDm/CC/SMS narration). Both print to stdout/stderr, so they interleave
+// with nav's own per-screen lines and give a single ordered log.
+let envSets = [];
+// Originator/body for the `call` / `sms` pseudo-keys (see the key loop).
+let mtFrom = '447700900123', mtText = 'Test message from nav';
+// --simload/--simsave: the headless equivalent of the browser's IndexedDB card slot.
+// Round-trips the swSIM filesystem (contacts, messages, LOCI/Kc/FPLMN) through a file,
+// so "does the SIM survive a reload" is testable without a browser.
+let simLoad = null, simSave = null;
 let stubPcs = [];   // --stub: handler entry PCs to force-return (task isolation)
 let wrwatchAddr = 0;   // --wrwatch: RAM addr to aggregate writer PCs for
 let ramwatch = [], ramPrev = [], ramChanges = [];   // --ramwatch: sample RAM cells each frame, log changes
@@ -135,6 +153,11 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--idle') idle = +argv[++i];   // post-replay idle-watch frames (delayed crash)
   else if (a === '--ramout') { const t = argv[++i].split('@'); ramout = resolve(process.cwd(), t[0]); if (t[1]) ramoutStep = +t[1]; }   // FILE[@step]: dump 16MB RAM (disfw --ram)
   else if (a === '--sendlog') sendlogMon = true;   // arm the MMI-poster (fw.mmi_send) monitor + dump the ring
+  else if (a === '--env') envSets.push(String(argv[++i]));       // K=V, repeatable — set BEFORE boot (SIMLOG=1, ROM6_LOG=1, ...)
+  else if (a === '--simload') simLoad = resolve(process.cwd(), argv[++i]);   // mount a saved swSIM card before the run
+  else if (a === '--simsave') simSave = resolve(process.cwd(), argv[++i]);   // write the card out at end-of-run
+  else if (a === '--from') mtFrom = String(argv[++i]);           // originator for the `call` / `sms` pseudo-keys
+  else if (a === '--text') mtText = String(argv[++i]);           // body for the `sms` pseudo-key
   else if (a === '--clockevery') clockEvery = +argv[++i];  // render+log a clock snapshot every N idle frames (60≈1 emulated min)
   // ── Responsiveness probe flags (Phase 5) ──
   else if (a === '--check-wave0') checkWave0 = true;       // run Wave-0 self-checks + exit (Task 1)
@@ -326,6 +349,16 @@ const C = {
   ccMask:    M.cwrap('dct3_web_ccont_mask', 'number', []),
   ccLines:   M.cwrap('dct3_web_ccont_lines', 'number', []),
   setSim:     M.cwrap('dct3_web_set_sim', null, ['number']),
+  setEnv:     M.cwrap('dct3_web_setenv', null, ['string','string']),   // --env K=V (SIMLOG / ROM6_LOG / ...)
+  // Network-side events (ROM-6 engine): queue an MT call / MT SMS that the emulated
+  // network pages to the camped phone. Driven by the `call` / `sms` pseudo-keys.
+  incomingCall: M.cwrap('dct3_web_incoming_call', 'number', ['string']),
+  incomingSms:  M.cwrap('dct3_web_incoming_sms', 'number', ['string','string']),
+  // swSIM card persistence (--simsave / --simload): the same three calls the page uses.
+  simWrites:      M.cwrap('dct3_web_sim_writes', 'number', []),
+  simSnapshot:    M.cwrap('dct3_web_sim_snapshot', 'number', []),
+  simSnapshotLen: M.cwrap('dct3_web_sim_snapshot_len', 'number', []),
+  simRestore:     M.cwrap('dct3_web_sim_restore', 'number', ['number','number']),
   setBattery: M.cwrap('dct3_web_set_battery', null, ['number']),   // --batt: vbatt adc[2]
   setCharger: M.cwrap('dct3_web_set_charger', null, ['number']),   // --charger: adc[5]
   // frozen-on-crash PC trail.
@@ -573,8 +606,35 @@ let watchPrev = watch.map(() => 0);
 
 // Load fw (and optional EEPROM overlay) like the browser.
 { const b = new Uint8Array(readFileSync(fw)); try { M.FS.unlink('/fw.fls'); } catch (e) {} M.FS.writeFile('/fw.fls', b); }
+// --env: set BEFORE boot — mad2_init latches several of these (SWSIM/SIMACCEPT/DSPSIML).
+for (const kv of envSets) {
+  const eq = kv.indexOf('=');
+  const k = eq < 0 ? kv : kv.slice(0, eq), v = eq < 0 ? '1' : kv.slice(eq + 1);
+  if (C.setEnv) { C.setEnv(k, v); console.log(`env ${k}=${v}`); }
+}
 C.boot();
 FLASH_HI = (C.flashHi && C.flashHi() >>> 0) || 0x400000;   // model-aware code ceiling
+// --simload: mount the saved card BEFORE the firmware issues its first APDU. boot()
+// itself never touches the card (swSIM is built lazily, on the first APDU), so right
+// here is the window — the same ordering the page uses.
+if (simLoad && C.simRestore) {
+  const blob = new Uint8Array(readFileSync(simLoad));
+  const p = M._malloc(blob.length);
+  M.HEAPU8.set(blob, p);
+  const ok = C.simRestore(p, blob.length);
+  M._free(p);
+  console.log(`simload: ${simLoad} (${blob.length} B) -> ${ok ? 'card mounted' : 'REJECTED (factory card instead)'}`);
+}
+// --simsave: snapshot at end-of-run, however the run ends.
+function saveSimCard(tag) {
+  if (!simSave || !C.simSnapshot) return;
+  const ptr = C.simSnapshot() >>> 0, len = C.simSnapshotLen() | 0;
+  if (!ptr || len <= 0) { console.log(`simsave: nothing to save (card never came up) [${tag}]`); return; }
+  writeFileSync(simSave, Buffer.from(M.HEAPU8.subarray(ptr, ptr + len)));
+  console.log(`simsave: ${simSave} (${len} B, ${C.simWrites ? C.simWrites() : '?'} card writes this run) [${tag}]`);
+  simSave = null;                       // one save per run, even if exit fires twice
+}
+process.on('exit', () => saveSimCard('end-of-run'));
 // Apply boot-config toggles (after boot, before the settle run — they're re-applied
 // each frame by the run loop, except set_sim which sets the model flag directly).
 if (cfgSim    !== null) C.setSim(cfgSim);
@@ -1203,6 +1263,15 @@ for (const tok of keys) {
   if (k === 'wait') step(label, null, f);
   else if (k === 'reboot') { C.warmReset(); step(label, null, f); }   // force a warm reboot (keep flash+EEPROM)
   else if (k === 'pwr') { step(label, () => { C.power(1); }, f); C.power(0); }
+  // Network-side pseudo-keys: no keypress — queue an MT call / MT SMS on the ROM-6
+  // engine and then run the frames, so the screen after the gap shows what the phone
+  // did with it. Originator/body come from --from / --text.
+  else if (k === 'sms')  { const ok = C.incomingSms  ? C.incomingSms(mtFrom, mtText) : 0;
+                           console.log(`  ↳ queue MT SMS from ${mtFrom} "${mtText}" → ${ok ? 'accepted' : 'REJECTED (not the ROM-6 engine, or queue full)'}`);
+                           step(label, null, f); }
+  else if (k === 'call') { const ok = C.incomingCall ? C.incomingCall(mtFrom) : 0;
+                           console.log(`  ↳ queue MT CALL from ${mtFrom} → ${ok ? 'accepted' : 'REJECTED (not the ROM-6 engine, or queue full)'}`);
+                           step(label, null, f); }
   else if (k === 'rollup')   { step(label, () => C.roll(1), f); }   // 7110 roller/slide test: bit7=1
   else if (k === 'rolldn')   { step(label, () => C.roll(0), f); }   // bit7=0
   else if (k === 'off') step(label, () => { C.power(1); }, f * 3);   // hold for shutdown

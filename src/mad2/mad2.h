@@ -730,7 +730,9 @@ typedef struct Mad2 {
     // the TX-empty path, not from any RX byte. We accumulate the chunks into a full
     // APDU and, once the command (+ its case-3 data) is complete, push the response
     // (case-2 data + SW, or SW only for case-3 with the FCP held for GET RESPONSE).
-    uint8_t  sim_t0_state;      // reserved T=0 phase flag (0 = idle); reset on card reset
+    uint8_t  sim_t0_state;      // case-3 data phase: 1 = the ACK procedure byte for the
+                                // in-flight command has been emitted (it is sent ONCE per
+                                // command, not per TX chunk). 0 = idle; reset on card reset.
     uint8_t  sim_asm[280];      // running APDU assembly across TX chunks
     uint16_t sim_asm_len;       // bytes assembled so far
     // The currently SELECTed file: GSM is stateful (SELECT then READ BINARY/RECORD

@@ -868,6 +868,7 @@ static void sim_push_resp(Mad2* m, uint8_t ins, const uint8_t* out, int n,
         if (digits == 2u || digits == 3u) m->sim_mnc_digits = digits;
     }
     m->sim_asm_len = 0;
+    m->sim_t0_state = 0;          // command retired -> re-arm the case-3 procedure byte
     sim_rx_signal(m);
 }
 
@@ -1075,6 +1076,13 @@ static void sim_dispatch_apdu(Mad2* m) {
 // (2) raise TX-empty so the firmware advances, (3) once the whole command (+ case-3
 // data) is in, process it and push the real response (data + SW) to the RX FIFO.
 static void sim_run_apdu(Mad2* m) {
+    // T=0 framing trace (SIMLOG). `stage` is the killer column: it is the undrained
+    // byte-paced RX backlog, so a value that CLIMBS across the chunks of one data phase
+    // means the card is talking during a phase where the firmware is only listening for
+    // the SW — the response then lands behind stale bytes and the link desyncs.
+    if (sim_log_on())
+        printf("[sim.t0] flush chunk=%u asm=%u rx=%u stage=%u\n", (unsigned)m->sim_tx_len,
+               (unsigned)m->sim_asm_len, (unsigned)sim_rx_count(m), (unsigned)sim_stage_count(m));
     // Append this chunk to the assembly buffer.
     for (uint16_t i = 0; i < m->sim_tx_len; ++i)
         if (m->sim_asm_len < sizeof m->sim_asm) m->sim_asm[m->sim_asm_len++] = m->sim_tx[i];
@@ -1112,15 +1120,30 @@ static void sim_run_apdu(Mad2* m) {
     uint8_t ins = m->sim_asm[1];
     uint8_t p3  = m->sim_asm[4];
     if (sim_ins_has_indata(ins)) {
-        // case-3 (SELECT/VERIFY/...): the card requests the P3 data with a T=0
-        // procedure byte (= INS, "ACK send the next byte"); the firmware's byte SM
-        // classifies that as SM status 11, which is what makes it transmit the next
-        // data byte. So after the header (and after each non-final data byte) we send
-        // ONE procedure byte. When all P3 data bytes are in, we send the response (SW).
+        // case-3 (SELECT/VERIFY/UPDATE RECORD/...): the card requests the P3 data with a
+        // T=0 procedure byte (= INS); the firmware's byte SM classifies that as SM
+        // status 11, which is what starts the data phase. Per ISO-7816-3 §10.3.3 that
+        // ACK means "send ALL remaining P3 bytes" — so it is emitted EXACTLY ONCE per
+        // command, on the first flush that leaves the command short. The firmware then
+        // streams the data phase at its own pace (TX-FIFO low-water interrupt), and
+        // expects nothing more from the card until the SW.
+        //
+        // Emitting one per TX chunk (the old behaviour) was invisible while every
+        // exercised case-3 command had a data phase that fitted one flush (SELECT P3=2,
+        // VERIFY P3=8). EF_SMS 6F3C UPDATE RECORD is 176 bytes = 12 chunks of 15, so it
+        // queued 11 SURPLUS 0xDC bytes in the byte-paced RX stage (~1.042 ms/byte, far
+        // slower than the firmware shovels chunks). The real 90 00 landed behind that
+        // backlog, the firmware read a stale 0xDC as SW1, never saw the SW, retransmitted
+        // the whole data phase, desynced into PPS re-negotiation and finally dropped the
+        // card — presenting as "Insert SIM card" right after an incoming SMS. A 30-byte
+        // ADN write (phonebook save) hit the same bug with 2 surplus bytes.
         uint16_t need = (uint16_t)(5 + p3);
         if (m->sim_asm_len < need) {
-            sim_rx_push(m, ins);               // procedure byte = ACK -> SM status 11
-            sim_rx_signal(m);
+            if (!m->sim_t0_state) {            // procedure byte = ACK -> SM status 11
+                m->sim_t0_state = 1;
+                sim_rx_push(m, ins);
+                sim_rx_signal(m);
+            }
             return;
         }
         sim_dispatch_apdu(m);                  // all data received -> SW response

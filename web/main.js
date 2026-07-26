@@ -91,6 +91,12 @@
       setSim: mod.cwrap("dct3_web_set_sim", null, ["number"]),
       getSim: mod.cwrap("dct3_web_get_sim", "number", []),
       simApdus: mod.cwrap("dct3_web_sim_apdus", "number", []),
+      // swSIM card persistence — the SIM's own filesystem, serialised through swICC's
+      // FS format rather than snapshotted from a memory window like the EEPROMs.
+      simWrites: mod.cwrap("dct3_web_sim_writes", "number", []),
+      simSnapshot: mod.cwrap("dct3_web_sim_snapshot", "number", []),
+      simSnapshotLen: mod.cwrap("dct3_web_sim_snapshot_len", "number", []),
+      simRestore: mod.cwrap("dct3_web_sim_restore", "number", ["number", "number"]),
       incomingCall: mod.cwrap("dct3_web_incoming_call", "number", ["string"]),
       incomingSms: mod.cwrap("dct3_web_incoming_sms", "number", ["string", "string"]),
       setSimPinEnabled: mod.cwrap("dct3_web_set_sim_pin_enabled", null, ["number"]),
@@ -487,8 +493,52 @@
         return true;
       } catch (e) { console.warn("[DCT3] I2C EEPROM load failed:", e); return false; }
     }
-    // Persist BOTH NVRAM regions (flash partition + external I2C); each self-gates on presence.
-    function saveNvram(force) { const r = saveEeprom(force); saveI2cEeprom(force); return r; }
+    // --- swSIM card persistence ----------------------------------------------------
+    // Keyed once for the origin, NOT per image like the NVRAM regions above: a SIM is a
+    // card you move between handsets, so its contacts and messages should follow you
+    // when you switch firmware here. The blob is swICC's own FS format (magic-tagged),
+    // so a stale or foreign snapshot is refused by the loader instead of half-mounted —
+    // and a refusal costs the saved card, never the boot.
+    const SIM_KEY = "dct3_swsim_v1";
+    let simLastWrites = -1;
+    function saveSimCard(force) {
+      if (eepromSuppressSave) return "off";
+      if (!force && !eepromPersist) return "off";
+      if (!C.simSnapshot || !C.simWrites) return "off";
+      if (!force && C.simWrites() === 0) return "nochange";   // card untouched this run
+      try {
+        const ptr = C.simSnapshot(), len = C.simSnapshotLen();
+        if (!ptr || len <= 0) return "off";                   // card never came up
+        localStorage.setItem(SIM_KEY, b64enc(mod.HEAPU8.subarray(ptr, ptr + len)));
+        simLastWrites = C.simWrites();
+        return "saved";
+      } catch (e) { console.warn("[DCT3] SIM save failed:", e); return "error"; }
+    }
+    function loadSimCard() {
+      if (!eepromPersist || !C.simRestore) return false;
+      try {
+        const b64 = localStorage.getItem(SIM_KEY);
+        if (!b64) return false;
+        const u8 = b64dec(b64);
+        if (u8.length < 16) return false;                     // shorter than the FS magic
+        const p = mod._malloc(u8.length);
+        let ok = 0;
+        try { mod.HEAPU8.set(u8, p); ok = C.simRestore(p, u8.length); }
+        finally { mod._free(p); }
+        if (!ok) {
+          console.warn("[DCT3] saved SIM rejected — booting a factory card");
+          try { localStorage.removeItem(SIM_KEY); } catch (e) {}
+          return false;
+        }
+        console.log("[DCT3] restored", u8.length, "B SIM card");
+        return true;
+      } catch (e) { return false; }
+    }
+
+    // Persist ALL THREE regions (flash partition + external I2C + SIM); each self-gates.
+    function saveNvram(force) {
+      const r = saveEeprom(force); saveI2cEeprom(force); saveSimCard(force); return r;
+    }
 
     function boot() {
       const rc = C.boot();
@@ -514,8 +564,13 @@
       // External I2C EEPROM always overlays from localStorage (no user-file path), on top of the
       // baked default the C side eager-loaded — except on a recovery boot. No-op without one.
       if (!skipOverlay) loadI2cEeprom();
+      // The saved SIM mounts AFTER boot but before the run loop hands the firmware its
+      // first APDU — boot() never talks to the card (swSIM builds lazily), so this is
+      // the one safe window. A recovery boot skips it, same as the EEPROM overlays.
+      if (!skipOverlay) loadSimCard();
       eeLastWrites = C.eepromWrites();
       i2cLastWrites = C.i2cEepromWrites();
+      simLastWrites = C.simWrites ? C.simWrites() : 0;
       // mad2_init resets the SIM to its defaults (present, PIN 1234) on every boot, so
       // re-apply whatever the SIM panel shows — otherwise the "SIM inserted" checkbox
       // (and PIN settings) silently disagree with the model after a (re)boot.
@@ -539,13 +594,14 @@
     setInterval(() => {
       if (C.eepromWrites() !== eeLastWrites) saveEeprom();
       if (C.i2cEepromWrites() !== i2cLastWrites) saveI2cEeprom();
+      if (C.simWrites && C.simWrites() !== simLastWrites) saveSimCard();
     }, 3000);
     document.addEventListener("visibilitychange", () => { if (document.hidden) saveNvram(); });
     window.addEventListener("beforeunload", () => saveNvram());   // no event-as-force
     window.dct3ResetEeprom = function () {
       eepromSuppressSave = true;    // stop the reload's unload-save from clobbering the wipe
       try { localStorage.removeItem(eeKey()); localStorage.removeItem(EE_KEY_LEGACY);
-            localStorage.removeItem(i2cKey()); } catch (e) {}
+            localStorage.removeItem(i2cKey()); localStorage.removeItem(SIM_KEY); } catch (e) {}
       location.reload();
     };
     window.dct3SaveEeprom = function () { return saveNvram(true); };   // console helper

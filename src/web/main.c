@@ -434,6 +434,14 @@ int dct3_web_boot(void) {
 
     memset(&g_mad2, 0, sizeof g_mad2);
     mad2_init(&g_mad2, g_model);
+#ifdef SWSIM_BUILD
+    // The software SIM is the one piece of device state that is NOT inside g_mad2, so the
+    // memset above does not reach it: swSIM builds the card once per process and keeps it
+    // across reboots — faithfully, since a reboot does not eject the card. Give it a
+    // per-boot hook anyway, because our ROM-4 engine cannot yet register a card that
+    // already holds valid location info. INTERIM; see swsim_clear_loci().
+    { extern void swsim_backend_new_boot(void); swsim_backend_new_boot(); }
+#endif
     g_mad2.sim_present = 0;          // web default: SIM not inserted (UI toggle reflects this)
     g_mad2.verbose = 0;
     g_mad2.mem = g_core->ram;
@@ -1801,6 +1809,65 @@ uint32_t dct3_web_i2c_eeprom_size(void)  { return (g_model && g_model->i2c_eepro
                                                   ? g_model->i2c_eeprom_size : 0u; }
 EMSCRIPTEN_KEEPALIVE
 uint32_t dct3_web_i2c_eeprom_writes(void){ return g_mad2.i2c_eeprom_writes; }
+
+// swSIM card persistence — the THIRD persisted region, alongside the two EEPROMs above,
+// and the only one that is not a window into emulator memory: the software SIM's whole
+// filesystem lives inside swICC, so it is serialised on demand into swICC's own FS format
+// rather than snapshotted from a pointer. Same auto-save contract as the EEPROMs
+// (dct3_web_sim_writes() only moves when the card was really written), but ONE key for
+// the whole site rather than one per firmware: a SIM is a card you carry between
+// handsets, so the contacts and messages saved on it follow the visitor across models.
+//
+// Ordering: restore must land after dct3_web_boot() (which does not touch the card) and
+// before the run loop hands the firmware its first APDU.
+EMSCRIPTEN_KEEPALIVE
+uint32_t dct3_web_sim_writes(void) {
+#ifdef SWSIM_BUILD
+    extern unsigned swsim_backend_writes(void);
+    return swsim_backend_writes();
+#else
+    return 0;
+#endif
+}
+// Serialise the live card; returns the blob pointer (0 if there is nothing to save).
+// The length comes back via dct3_web_sim_snapshot_len(), filled by the same call.
+static int g_sim_snap_len = 0;
+EMSCRIPTEN_KEEPALIVE
+uint8_t* dct3_web_sim_snapshot(void) {
+    g_sim_snap_len = 0;
+#ifdef SWSIM_BUILD
+    extern int swsim_backend_snapshot(uint8_t**, int*);
+    uint8_t* buf = 0; int len = 0;
+    if (swsim_backend_snapshot(&buf, &len) > 0) { g_sim_snap_len = len; return buf; }
+#endif
+    return 0;
+}
+EMSCRIPTEN_KEEPALIVE
+int dct3_web_sim_snapshot_len(void) { return g_sim_snap_len; }
+// Mount a saved card. Returns 1 on success; 0 leaves the card to be built fresh from
+// gsm.json, so a corrupt/stale blob costs the saved data but never the boot.
+EMSCRIPTEN_KEEPALIVE
+int dct3_web_sim_restore(const uint8_t* buf, int len) {
+#ifdef SWSIM_BUILD
+    extern int swsim_backend_restore(const uint8_t*, int);
+    return swsim_backend_restore(buf, len);
+#else
+    (void)buf; (void)len; return 0;
+#endif
+}
+// Write a transparent EF (from offset 0) on the live card. The page uses this to re-apply
+// EF_SPN (7F20/6F46) after a restore: the operator name is a page SETTING patched into
+// gsm.json before boot, so it must override the name carried by the restored snapshot —
+// otherwise dct3SetOperatorName() would silently do nothing for a returning visitor.
+EMSCRIPTEN_KEEPALIVE
+int dct3_web_sim_write_ef(int df, int fid, const uint8_t* data, int len) {
+#ifdef SWSIM_BUILD
+    extern int swsim_backend_write_ef(uint16_t, uint16_t, const uint8_t*, int);
+    return swsim_backend_write_ef((uint16_t)df, (uint16_t)fid, data, len);
+#else
+    (void)df; (void)fid; (void)data; (void)len; return 0;
+#endif
+}
 
 // Total flash program ops + last command address — for diagnosing the commit
 // path (deferred-commit vs a dropped write) from a probe/console.
