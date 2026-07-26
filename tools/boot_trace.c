@@ -2064,7 +2064,15 @@ gui_run_start:   // in-process warm-reboot target (PWR held 30s); GUI build only
         printf("\n=== LCD framebuffer (%llu data bytes) ===\n",
                (unsigned long long)h.mad2.lcd_data_writes);
         mad2_render_ascii(&h.mad2);
-        if (mad2_save_pgm(&h.mad2, "build/lcd.pgm") == 0) printf("(saved build/lcd.pgm)\n");
+        // LCDOUT=<path> redirects the screen dump. The default build/lcd.pgm is a SHARED
+        // path: two runs in the same working tree (e.g. a GUI session in one terminal and a
+        // headless boot in another) silently overwrite each other's screen, and whoever
+        // reads the file afterwards attributes the wrong screen to their own run. Cost us a
+        // bogus "the 5110 registers" reading on 2026-07-26. Set LCDOUT per run when boots
+        // may overlap; tools/eeprom/secsweep.sh sidesteps it with a per-boot cwd instead.
+        const char* lcd_out = getenv("LCDOUT");
+        if (!lcd_out || !*lcd_out) lcd_out = "build/lcd.pgm";
+        if (mad2_save_pgm(&h.mad2, lcd_out) == 0) printf("(saved %s)\n", lcd_out);
     } else {
         printf("\n(no LCD data written yet)\n");
     }

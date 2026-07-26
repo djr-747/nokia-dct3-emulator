@@ -731,6 +731,7 @@
     var OFF_LIT = [0xcf, 0xe9, 0x84, 0xff];  // background, backlight ON
     var shellBg = null, shellBgLit = null, shellPixel = null;   // per-shell palette (null ⇒ default)
     var shellRoot = null, shellLcdEl = null, shellLitState = -1; // active shell DOM + last panel bg
+    var shellDef = null;                                        // active shell unit (screenshot geometry)
     var rgbStr = function (c) { return "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")"; };
 
     // Resize the canvas backing store + ImageData to the active model's geometry.
@@ -1112,6 +1113,7 @@
       sizeGridLcd();
       if (shellHost) { shellHost.innerHTML = ""; shellHost.style.width = ""; shellHost.style.height = ""; }
       shellRoot = null;
+      shellDef = null;
     }
     function buildShell(def) {
       shellHost.innerHTML = "";                   // detaches #lcd if it lived here — re-added below
@@ -1192,6 +1194,7 @@
 
       shellHost.appendChild(root);
       shellRoot = root;
+      shellDef = def;                             // geometry source for dct3Screenshot()
       document.body.classList.add("shell-mode");
     }
     // Pick shell vs grid for the active model + size the canvas. Call after each boot
@@ -1232,6 +1235,129 @@
         }
       }
       catch (e) { showError("buildShell", e); teardownShell(); }
+    }
+
+    // -------------------------------------------------------------
+    // Screenshot. Composites what the visitor is looking at into a PNG,
+    // entirely in-page: the shell photo (already decoded in the DOM, so no
+    // refetch and no canvas taint — it is same-origin either way), the lit
+    // glass panel, and the live LCD canvas at its true pixel grid. Shell-less
+    // models fall back to the bare screen, upscaled.
+    //
+    // Deliberately local-only: no external library, no network, no upload —
+    // the image is handed straight to the browser's download/share sheet and
+    // never leaves the device. Host pages get the API surface
+    // (window.dct3Screenshot) plus window.DCT3_SHOT_PREFIX for the filename.
+    // -------------------------------------------------------------
+    function shotRect(c, x, y, w, h, r) {
+      if (!r) { c.rect(x, y, w, h); return; }
+      if (c.roundRect) { c.roundRect(x, y, w, h, r); return; }
+      r = Math.min(r, w / 2, h / 2);              // pre-roundRect browsers
+      c.moveTo(x + r, y);
+      c.arcTo(x + w, y, x + w, y + h, r);
+      c.arcTo(x + w, y + h, x, y + h, r);
+      c.arcTo(x, y + h, x, y, r);
+      c.arcTo(x, y, x + w, y, r);
+      c.closePath();
+    }
+    // Draw the LCD canvas into dst at the given box, centred and unsmoothed so
+    // the 84×48 framebuffer stays a crisp pixel grid instead of a blur.
+    function shotDrawLcd(c, x, y, w, h) {
+      c.imageSmoothingEnabled = false;
+      c.msImageSmoothingEnabled = false;
+      c.drawImage(canvas, x, y, w, h);
+      c.imageSmoothingEnabled = true;
+    }
+    function shotCompose() {
+      var out = document.createElement("canvas");
+      var c, photo = shellRoot && shellRoot.querySelector("img.shell-photo");
+      // --- Shell mode: photo + glass + screen, in the shell's own coordinates
+      // (the photos are authored at exactly def.w × def.h, so this is native
+      // resolution — the on-screen transform:scale is a viewport fit only).
+      if (shellDef && photo && photo.complete && photo.naturalWidth) {
+        var L = shellDef.lcd;
+        out.width = shellDef.w; out.height = shellDef.h;
+        c = out.getContext("2d");
+        c.drawImage(photo, 0, 0, shellDef.w, shellDef.h);
+        c.save();
+        c.beginPath();
+        shotRect(c, L.left, L.top, L.w, L.h, L.radius || 0);
+        c.clip();
+        // The panel background IS the backlight state (render() keeps it in
+        // sync); reuse it so a screenshot of a dark phone looks dark.
+        c.fillStyle = (shellLcdEl && shellLcdEl.style.background) || rgbStr(OFF);
+        c.fillRect(L.left, L.top, L.w, L.h);
+        var cw = L.canvasW || L.w, ch = L.canvasH || L.h;
+        shotDrawLcd(c, L.left + (L.w - cw) / 2, L.top + (L.h - ch) / 2, cw, ch);
+        c.restore();
+        return out;
+      }
+      // --- Grid mode (no photo shell): the screen alone, upscaled to something
+      // worth sharing, on a border of the current LCD background.
+      var scale = Math.max(2, Math.round(600 / (canvas.width || 84)));
+      var pad = 12 * (scale / 4 < 1 ? 1 : Math.round(scale / 4));
+      out.width = canvas.width * scale + pad * 2;
+      out.height = canvas.height * scale + pad * 2;
+      c = out.getContext("2d");
+      c.fillStyle = (shellRoot && shellLcdEl && shellLcdEl.style.background) || rgbStr(OFF);
+      c.fillRect(0, 0, out.width, out.height);
+      shotDrawLcd(c, pad, pad, canvas.width * scale, canvas.height * scale);
+      return out;
+    }
+    function shotName() {
+      var prefix = String(window.DCT3_SHOT_PREFIX || "nokia").replace(/[^\w.-]+/g, "-");
+      var model = String((C.model && C.model()) || "dct3").replace(/[^\w.-]+/g, "-");
+      var d = new Date(), p = function (n) { return (n < 10 ? "0" : "") + n; };
+      return prefix + "-" + model + "-" + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) +
+             "-" + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) + ".png";
+    }
+    // Public API: resolves to the PNG Blob (host pages can do their own thing
+    // with it). Rendering is synchronous off the live canvas, so the shot is
+    // always the frame the visitor just saw.
+    window.dct3Screenshot = function () {
+      return new Promise(function (res, rej) {
+        var out;
+        try { out = shotCompose(); } catch (e) { rej(e); return; }
+        if (!out.toBlob) { rej(new Error("canvas.toBlob unsupported")); return; }
+        out.toBlob(function (b) { b ? res(b) : rej(new Error("encode failed")); }, "image/png");
+      });
+    };
+    // Save it. Touch devices get the share sheet when the browser offers one
+    // (on iOS that is the only route to the camera roll); everything else gets
+    // a plain download. Both are user-gesture driven and purely local.
+    function shotSave(blob) {
+      var name = shotName();
+      var coarse = (navigator.maxTouchPoints || 0) > 0 ||
+                   (window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+      if (coarse && window.File && navigator.share && navigator.canShare) {
+        try {
+          var file = new File([blob], name, { type: "image/png" });
+          if (navigator.canShare({ files: [file] })) {
+            return navigator.share({ files: [file] }).catch(function () {});
+          }
+        } catch (_) {}
+      }
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url; a.download = name; a.rel = "noopener";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 30000);
+      return Promise.resolve();
+    }
+    var btnShot = document.getElementById("btn-shot");
+    if (btnShot) {
+      var shotLabel = btnShot.textContent;
+      var shotTimer = 0;
+      btnShot.addEventListener("click", function () {
+        function flash(msg) {
+          btnShot.textContent = msg;
+          if (shotTimer) clearTimeout(shotTimer);
+          shotTimer = setTimeout(function () { btnShot.textContent = shotLabel; shotTimer = 0; }, 2200);
+        }
+        window.dct3Screenshot()
+          .then(function (blob) { return shotSave(blob).then(function () { flash("✔ Saved"); }); })
+          .catch(function (e) { showError("screenshot", e); flash("Couldn't save"); });
+      });
     }
 
     // Physical keyboard → logical key label, routed through the model-aware
