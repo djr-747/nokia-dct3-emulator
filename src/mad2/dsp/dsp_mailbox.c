@@ -190,7 +190,119 @@ int dsp_mailbox_write(Mad2* m, uint32_t addr, int size, uint32_t value) {
     return 0;
 }
 
-// Per-step DSP pump: mailbox acks, IRQ4 generation, self-test + boot-msg injection.
+// The MSID the DSP reports in its {74 34} reply. See mad2.h (IdentitySpec + the
+// dsp_msid_override declaration) for the full rationale. Precedence:
+//
+//   1. DSPMSID=<hex>            explicit, wins over everything (up to 13 bytes, zero-padded
+//                               the same way the echo pads the MCU's 4-byte seed).
+//   2. DSPMSID=echo|off|0       force the raw seed echo — the A/B escape hatch, so a model
+//                               with a pinned MSID can still be run the old way.
+//   3. model->identity.msid     the pinned per-model MSID, when the profile carries one.
+//   4. (nothing)                the byte-for-byte seed echo.
+//
+// The env parse is done once; the profile lookup is per call, since the model is what the
+// caller is asking about. Every model in the tree now pins one, so case 4 is the fallback for
+// a profile that omits the field rather than the common case.
+//
+// The guard boots DO reach this — but via the per-engine callers (dsp_rom6.c / dsp_rom4.c),
+// NOT the legacy SIML capture further up this file, which rom6 bypasses entirely. Watch
+// ROM6_LOG=1 to see the exchange, not DSPSIML_LOG. Pinning every model left all four guard
+// hashes unchanged; pinned vs DSPMSID=echo is byte-identical on the 3310 gate.
+int dsp_msid_override(const Mad2* m, uint8_t out[13]) {
+    enum { ENV_UNPARSED = -1, ENV_NONE = 0, ENV_VALUE = 1, ENV_ECHO = 2 };
+    static int env_state = ENV_UNPARSED;
+    static uint8_t val[13];
+    if (env_state == ENV_UNPARSED) {
+        env_state = ENV_NONE;
+        const char* s = getenv("DSPMSID");
+        if (s && *s) {
+            if (!strcmp(s, "echo") || !strcmp(s, "off") || !strcmp(s, "0")) {
+                env_state = ENV_ECHO;
+                fprintf(stderr, "[dsp] DSPMSID=%s — pinned MSID disabled, echoing the "
+                                "MCU's seed\n", s);
+            } else {
+                int n = 0;
+                for (; s[0] && s[1] && n < 13; s += 2) {
+                    int hi = 0, lo = 0;
+                    for (int k = 0; k < 2; ++k) {
+                        char c = s[k]; int d;
+                        if      (c >= '0' && c <= '9') d = c - '0';
+                        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+                        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+                        else { d = -1; }
+                        if (d < 0) { n = -1; break; }
+                        if (k == 0) hi = d; else lo = d;
+                    }
+                    if (n < 0) break;
+                    val[n++] = (uint8_t)((hi << 4) | lo);
+                }
+                if (n > 0) {
+                    env_state = ENV_VALUE;
+                    fprintf(stderr, "[dsp] DSPMSID override: %d byte(s) substituted into the "
+                                    "{74 34} MSID reply\n", n);
+                }
+            }
+        }
+    }
+    if (env_state == ENV_VALUE) {
+        for (int i = 0; i < 13; ++i) out[i] = val[i];
+        return 1;
+    }
+    if (env_state == ENV_ECHO) return 0;
+
+    // Pinned per-model identity. An all-zero msid[] means the profile declares none.
+    if (m && m->model) {
+        const uint8_t* p = m->model->identity.msid;
+        int any = 0;
+        for (int i = 0; i < 13; ++i) any |= p[i];
+        if (any) {
+            for (int i = 0; i < 13; ++i) out[i] = p[i];
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// DSP ROM version, as a raw digit for the local-security {74 C8} reply.
+//
+// The MCU asks with m2d {70 0A} and the d2m handler at 0x2412F2 takes ONE byte from
+// msg[11], adds 0x30 to make it ASCII, NUL-terminates it and publishes it as string
+// id 9 — which is exactly what service command 0xC8 sub 0x09 ("Get DSP Internal SW")
+// returns. Answering with nothing is why real service tools report "cannot read ROM
+// version (DSP)" (EepromTools) or render it blank (NokTool).
+//
+// The digit IS the ROM generation, so it follows whichever engine is actually
+// answering: the ROM-6 engine reports 6, the ROM-4 engine reports 4.
+//
+// ON BY DEFAULT. Service command C8/09 "Get DSP Internal SW" returns <status> <chars> <NUL>,
+// status 0x00 = OK / 0x01 = unavailable. Without this reply the MCU never gets a string to
+// publish and C8/09 answers `01 00` — which is why tools report "cannot read ROM version
+// (DSP)". (The sibling C8/12 answering `00 41 00`, 'A' for the PPM letter of v5.22 A,
+// confirms the status-byte reading.)
+//
+// This was opt-in for a long time because answering drifted the 3310 guard boot to "SIM card
+// not accepted" (3d4bc06b… vs 395a267e…). TWO theories were wrong before the cause turned up.
+// It was NOT reply priority — giving the self-test the egress window ahead of 0xC8 changed
+// nothing. It was NOT the d2m ring shortcut — a fully faithful ring still drifted. The reply
+// record was simply the wrong SIZE: len 16, copied from the MSID reply, when only msg[11]
+// carries the digit, which padded a 4-byte answer out to 9 ring words instead of 3. At len 4
+// every gated model is byte-identical AND reports its version.
+//
+// The handler was never implicated. 0x2412F2 reads msg[11], adds 0x30, and 0x2C9356 memcpys
+// the result into a fixed 10-byte buffer at 0x110EC0; RAMWATCH over a full boot shows nothing
+// else touching those bytes.
+//
+// DSPROMVER=<digit> forces a value; DSPROMVER=0 suppresses the reply for an A/B.
+// Returns 0 only when suppressed, else 1 with the digit in *out.
+int dsp_rom_version(const Mad2* m, uint8_t* out) {
+    const char* e = getenv("DSPROMVER");
+    if (e && *e == '0' && !e[1]) return 0;                // DSPROMVER=0 -> do not answer (A/B)
+    if (e && *e >= '1' && *e <= '9') { *out = (uint8_t)(*e - '0'); return 1; }
+    // auto: the digit IS the ROM generation, so it follows whichever engine is answering.
+    *out = (m && mad2_active_dsp(m) == &mad2_dsp_rom4) ? 4u : 6u;
+    return 1;
+}
+
 void dsp_mailbox_tick(Mad2* m) {
     m->dsp_steps++;   // free-running step counter (this tick runs once per emulated step)
     // SIMACCEPT RAM patch: a pure MCU-RAM edit, independent of the DSP backend, so it runs even
@@ -282,6 +394,8 @@ void dsp_mailbox_tick(Mad2* m) {
             m->mem[cobba] = 0; m->mem[cobba + 1] = 0;
         }
     }
+    // (see mad2.h + dsp_msid_override for why an override exists at all — the real 13-byte MSID
+    // is derived by the undumped SIML crypto ROM, so the HLE echo only ever returns the seed.)
     // EXPERIMENTAL SIML local-security responder (env DSPSIML=1; docs/nhm5-register-gsm-
     //). Answer the {0x74,0x34/0x35/0x36} echoes the firmware blocks on after
     // streaming its {0x70,0x13/0x16/0x17} records. One record per empty-queue window; the
@@ -316,7 +430,10 @@ void dsp_mailbox_tick(Mad2* m) {
             uint8_t pl[64] = {0}; int len = 0; uint8_t sub = 0;
             if (m->dsp_siml_want34) {
                 sub = 0x34; pl[0] = 0x34;                // msg[11..23] = 13 MSID bytes
-                for (int i = 0; i < 13; ++i) pl[3 + i] = m->dsp_siml_msid[i];
+                uint8_t msid[13];
+                if (!dsp_msid_override(m, msid))         // nothing pinned -> echo the seed
+                    for (int i = 0; i < 13; ++i) msid[i] = m->dsp_siml_msid[i];
+                for (int i = 0; i < 13; ++i) pl[3 + i] = msid[i];
                 len = 16; m->dsp_siml_want34 = 0;
             } else if (m->dsp_siml_want35) {
                 // Two-region reply (RE'd + decode tree

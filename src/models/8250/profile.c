@@ -38,6 +38,12 @@ const ModelProfile model_8250 = {
         .scan = KP_SCAN_DIR_AWARE,
         .uif_irq = 1,
     },
+    // Factory identity — MINTED, pinned; see tools/dct3_identity.py and
+    //. COBBA s/n 00825042, IMEI 490154208250011.
+    .identity = {
+        .msid   = { 0x83, 0x8B, 0xB8, 0xDA, 0x8D, 0xFC, 0x83, 0xD3, 0x77, 0x87, 0x56, 0x22, 0x25 },
+        .imei14 = "49015420825001",
+    },
     // Period-correct backlight: the blue glow. 0xRRGGBB,
     // consumed by the harness tints (web palette / gui_sdl LCD bg).
     .led = { .lcd_rgb = 0x6FA8FF, .kbd_rgb = 0x6FA8FF },

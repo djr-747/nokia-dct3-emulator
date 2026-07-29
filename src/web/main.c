@@ -21,6 +21,7 @@
 #include "models/model.h"
 #include "harness/harness.h"                  // shared fault-detect + recover + D-06 instruments (plan 04)
 #include "harness/seccode.h"                   // seccode_call_sync — in-context firmware cipher call
+#include "services/identity_provision.h"        // EEPROM re-provisioning (identity reset)
 #include "mgba/internal/arm/isa-inlines.h"   // _ARMSetMode / ThumbWritePC for the CALL primitive
 
 // Vendored ARM core interrupt entry points (declared in arm.h via dct3_core.h;
@@ -184,6 +185,16 @@ static int      g_key_detected = 0;              // KEY_DOWN queued this press
 static uint32_t g_dbg_pc[DBG_NWATCH]  = {0};
 static int64_t  g_dbg_cnt[DBG_NWATCH] = {0};
 static int      g_dbg_any = 0;
+// Step-stamped watch events. The per-slot counters above say HOW MANY times each watched PC ran,
+// but not in what ORDER relative to each other or to anything else in the run. That is useless
+// when several watched handlers fire inside one long frame (e.g. every SCKTSRVMGR primitive of a
+// WAP/CSD dial lands in the same frame as the call's CONNECT, so frame-granularity counts cannot
+// say which arrived after it). This ring records (slot, step) per hit so the sequence is
+// recoverable. Ring, so a runaway watch degrades to "last N hits" instead of unbounded memory.
+#define DBG_EV_N 1024
+static uint8_t  g_dbgev_slot[DBG_EV_N] = {0};
+static double   g_dbgev_step[DBG_EV_N] = {0};
+static uint32_t g_dbgev_w = 0;      // total hits (ring index = w % DBG_EV_N)
 
 // last-N executed PCs, frozen the instant control jumps into the low
 // (exception-vector / null) range. The clock-tick null-callback crash lands at PC=0x20
@@ -224,11 +235,23 @@ static int        g_trace_on = 0;
 // UI-message log: capture r0 (the message id) each time the firmware's send/route
 // core is hit, into a ring. Lets the page show a live histogram of messages sent
 // to handlers — e.g. to spot a draw/key message re-posted every animation frame.
-#define MSGLOG_N 512
+#define MSGLOG_N 4096
 static uint32_t g_msglog[MSGLOG_N]    = {0};   // r0 (message id) at the capture PC
 static uint32_t g_msglog_lr[MSGLOG_N] = {0};   // LR (caller) at the capture PC
+static uint32_t g_msglog_a1[MSGLOG_N] = {0};   // r1 — second arg (dest/task for a send choke)
+static double   g_msglog_step[MSGLOG_N] = {0}; // step stamp, so captures order against other events
 static uint32_t g_msglog_w  = 0;       // total captures (ring index = w % N)
 static uint32_t g_msglog_pc = 0;       // PC to capture r0 at (0 = disabled)
+
+// Optional r1 whitelist. The interesting choke points are shared by thousands of call sites —
+// SELECTOR_LOOKUP_OBJ (0x3EF9A8) is on the path of 3132 dispatch sites, and TASK_MSG_POST_WAIT
+// (0x2F8948) of 401 — so an unfiltered capture overflows the ring long before the moment you
+// care about and leaves only the tail. When the question is "does selector X ever reach object
+// Y", whitelisting the few values of r1 keeps the whole run inside the ring, including events
+// during boot. Empty list = capture everything, exactly as before.
+#define MSGLOG_FILTER_N 8
+static uint32_t g_msglog_filter[MSGLOG_FILTER_N] = {0};
+static uint32_t g_msglog_filter_n = 0;
 
 // --- Firmware-function CALL primitive (debug) ------------------------------
 // Invoke a Thumb firmware function from JS, in the live boot context. Mirrors the
@@ -421,15 +444,21 @@ int dct3_web_boot(void) {
     // (reset reason 4). No-op on an unpatched image (byte-identical).
     dct3_fix_mcu_checksum(g_core);
 
-    // Web build defaults: turn on the SIML responder, the SIM-lock unlock RAM patch, and the
-    // GSMBRIDGE network bring-up stack so a real SIM is accepted and the phone reaches standby +
-    // registers on the network out of the box (UNFAITHFUL HLE stand-ins; each logs a one-time
-    // console warning when active). GSMBRIDGE keeps its L1_SCH_ARMED safety interlock, so it only
-    // acts once the firmware is genuinely running a carrier search. overwrite=0 so an explicit
-    // prior dct3_web_setenv("SIMACCEPT"/"DSPSIML"/"GSMBRIDGE","0") from JS still wins. Set BEFORE
-    // mad2_init (latches dsp_siml_en) and the first tick (latches the SIMACCEPT/GSMBRIDGE gates).
+    // Web build defaults: the SIM-lock unlock RAM patch + the GSMBRIDGE network bring-up stack,
+    // so a real SIM is accepted and the phone reaches standby + registers on the network out of
+    // the box (UNFAITHFUL HLE stand-ins; each logs a one-time console warning when active).
+    // GSMBRIDGE keeps its L1_SCH_ARMED safety interlock, so it only acts once the firmware is
+    // genuinely running a carrier search. overwrite=0 so an explicit prior
+    // dct3_web_setenv("SIMACCEPT"/"GSMBRIDGE","0") from JS still wins. Set BEFORE the first tick
+    // (which latches the SIMACCEPT/GSMBRIDGE gates).
+    //
+    // DSPSIML is NOT set here (dropped 2026-07-28). It gates only the legacy responder in
+    // dsp/dsp_mailbox.c, which the C54x cosim alone calls — so in the web build it was inert
+    // and its one-time "UNFAITHFUL: SIML responder ON" line was a misleading console warning
+    // about a flag nothing read. The rom4/rom6 engines answer the SIML handshake (and the
+    // pinned per-model MSID) unconditionally; that is what actually makes the web build accept
+    // a SIM, and it is unchanged by this.
     setenv("SIMACCEPT", "1", 0);
-    setenv("DSPSIML",   "1", 0);
     setenv("GSMBRIDGE", "1", 0);
 
     memset(&g_mad2, 0, sizeof g_mad2);
@@ -442,7 +471,12 @@ int dct3_web_boot(void) {
     // already holds valid location info. INTERIM; see swsim_clear_loci().
     { extern void swsim_backend_new_boot(void); swsim_backend_new_boot(); }
 #endif
-    g_mad2.sim_present = 0;          // web default: SIM not inserted (UI toggle reflects this)
+    // SIM inserted by default — agrees with mad2_init (present unless SIMABSENT)
+    // and with the UI, whose "SIM inserted" checkbox has always been `checked` and is pushed
+    // into the core right after boot (web/main.js). The old 0 here only created a brief
+    // card-absent window before that push; a phone powering on with a card in the tray is both
+    // the faithful default and what the page already showed.
+    g_mad2.sim_present = 1;
     g_mad2.verbose = 0;
     g_mad2.mem = g_core->ram;
     g_mad2.mem_mask = DCT3_RAM_MASK;
@@ -618,7 +652,13 @@ static void web_step_once(struct ARMCore* cpu) {
             }
             if (g_dbg_any)
                 for (int k = 0; k < DBG_NWATCH; ++k)
-                    if (g_dbg_pc[k] == pc) g_dbg_cnt[k]++;
+                    if (g_dbg_pc[k] == pc) {
+                        g_dbg_cnt[k]++;
+                        uint32_t ei = g_dbgev_w % DBG_EV_N;
+                        g_dbgev_slot[ei] = (uint8_t)k;
+                        g_dbgev_step[ei] = (double)g_step;
+                        g_dbgev_w++;
+                    }
             if (g_cap_pc && pc == g_cap_pc) { g_cap_val = (uint32_t)cpu->gprs[0]; g_cap_hits++; }   // capture r0 at PC
             if (g_sendlog_on && g_mad2.fw.mmi_send && pc == g_mad2.fw.mmi_send
                 && (!g_sendlog_filter || (((uint32_t)cpu->gprs[0] >> 16) & 0x3FFFu) == g_sendlog_filter)) {   // model-aware MMI poster hook (+ optional msgid filter)
@@ -631,10 +671,21 @@ static void web_step_once(struct ARMCore* cpu) {
                 g_sendlog_w++;
             }
             if (g_msglog_pc && pc == g_msglog_pc) {
+                if (g_msglog_filter_n) {
+                    uint32_t a1 = (uint32_t)cpu->gprs[1], keep = 0;
+                    for (uint32_t f = 0; f < g_msglog_filter_n; ++f)
+                        if (g_msglog_filter[f] == a1) { keep = 1; break; }
+                    if (!keep) goto msglog_done;
+                }
+                {
                 uint32_t idx = g_msglog_w % MSGLOG_N;
-                g_msglog[idx]    = (uint32_t)cpu->gprs[0];
-                g_msglog_lr[idx] = (uint32_t)cpu->gprs[14];
+                g_msglog[idx]      = (uint32_t)cpu->gprs[0];
+                g_msglog_a1[idx]   = (uint32_t)cpu->gprs[1];
+                g_msglog_lr[idx]   = (uint32_t)cpu->gprs[14];
+                g_msglog_step[idx] = (double)g_step;
                 g_msglog_w++;
+                }
+                msglog_done: ;
             }
             // Experimental: KEY_DOWN just queued -> release silently very soon.
             if (g_key_oneshot && g_key_seq_state == 1 && !g_key_detected && pc == FW_KEYDOWN_SENT) {
@@ -1028,7 +1079,7 @@ int dct3_web_warm_reset(void) {
     memset(g_core->ram, 0, g_model->mem.flash_base);  // clear RAM below flash; keep flash+EEPROM
     memset(&g_mad2, 0, sizeof g_mad2);                 // clears reset_request / power_off / etc.
     mad2_init(&g_mad2, g_model);
-    g_mad2.sim_present = 0;
+    g_mad2.sim_present = 1;          // same default as the cold-boot path above
     g_mad2.verbose = 0;
     g_mad2.mem = g_core->ram;
     g_mad2.mem_mask = DCT3_RAM_MASK;
@@ -1206,6 +1257,17 @@ int dct3_web_incoming_call(const char* calling_number) {
 EMSCRIPTEN_KEEPALIVE
 int dct3_web_incoming_sms(const char* originator, const char* text) {
     return rom6_queue_incoming_sms(&g_mad2, originator, text);
+}
+
+// Binary SMS to an application port — how operator settings, ringtones and
+// logos arrived. Port 49154 is Nokia's "Internet access configuration"; 2948 is
+// WAP Push, which carries OMA client provisioning.
+EMSCRIPTEN_KEEPALIVE
+int dct3_web_incoming_sms_bin(const char* originator, const uint8_t* data, int len,
+                              int destPort, int srcPort) {
+    return rom6_queue_incoming_sms_bin(&g_mad2, originator, data,
+                                       len > 0 ? (unsigned)len : 0u,
+                                       (uint16_t)destPort, (uint16_t)srcPort);
 }
 
 // SIM CHV1 (PIN) configuration + state, mirroring set_sim. The PIN/PUK are passed as
@@ -1440,10 +1502,27 @@ uint32_t dct3_web_acall_egsz(int i)         { (void)i; return 0; }
 // where r0 = message id); 0 disables. The page reads the ring + write counter.
 EMSCRIPTEN_KEEPALIVE
 void dct3_web_msglog_pc(uint32_t pc) { g_msglog_pc = pc; g_msglog_w = 0; }
+// Restrict capture to these values of r1 (the selector / destination task). Call once per
+// value; clears when the capture PC is (re)set is NOT implied — call dct3_web_msglog_filter(0)
+// semantics are avoided deliberately, so pass values before the run and never mid-run.
+EMSCRIPTEN_KEEPALIVE
+void dct3_web_msglog_filter(uint32_t v) {
+    if (g_msglog_filter_n < MSGLOG_FILTER_N) g_msglog_filter[g_msglog_filter_n++] = v;
+}
 EMSCRIPTEN_KEEPALIVE
 uint32_t* dct3_web_msglog_buf(void) { return g_msglog; }
 EMSCRIPTEN_KEEPALIVE
 uint32_t* dct3_web_msglog_lrbuf(void) { return g_msglog_lr; }
+// Per-entry accessors. Index by absolute capture number; when w > MSGLOG_N only the last
+// MSGLOG_N survive, so read [w - MSGLOG_N, w) to get the tail rather than a mixed ring.
+EMSCRIPTEN_KEEPALIVE
+uint32_t dct3_web_msglog_at(int i) { return g_msglog[(uint32_t)i % MSGLOG_N]; }
+EMSCRIPTEN_KEEPALIVE
+uint32_t dct3_web_msglog_a1(int i) { return g_msglog_a1[(uint32_t)i % MSGLOG_N]; }
+EMSCRIPTEN_KEEPALIVE
+uint32_t dct3_web_msglog_lr_at(int i) { return g_msglog_lr[(uint32_t)i % MSGLOG_N]; }
+EMSCRIPTEN_KEEPALIVE
+double dct3_web_msglog_step(int i) { return g_msglog_step[(uint32_t)i % MSGLOG_N]; }
 EMSCRIPTEN_KEEPALIVE
 int dct3_web_msglog_size(void) { return MSGLOG_N; }
 EMSCRIPTEN_KEEPALIVE
@@ -1455,6 +1534,24 @@ void dct3_web_dbg_watch(int slot, uint32_t pc) {
     g_dbg_pc[slot] = pc; g_dbg_cnt[slot] = 0;
     g_dbg_any = 0;
     for (int k = 0; k < DBG_NWATCH; ++k) if (g_dbg_pc[k]) g_dbg_any = 1;
+    g_dbgev_w = 0;      // arming a watch restarts the event sequence
+}
+
+// Step-stamped watch events, in hit order. `w` is the TOTAL number of hits: when it exceeds
+// DBG_EV_N only the last DBG_EV_N survive, and the caller should read indices
+// [w - DBG_EV_N, w) so an overflowed run reports its tail rather than silently mixing old
+// and new entries.
+EMSCRIPTEN_KEEPALIVE
+double dct3_web_dbgev_w(void) { return (double)g_dbgev_w; }
+EMSCRIPTEN_KEEPALIVE
+int dct3_web_dbgev_size(void) { return DBG_EV_N; }
+EMSCRIPTEN_KEEPALIVE
+int dct3_web_dbgev_slot(int i) {
+    return (i < 0) ? -1 : (int)g_dbgev_slot[(uint32_t)i % DBG_EV_N];
+}
+EMSCRIPTEN_KEEPALIVE
+double dct3_web_dbgev_step(int i) {
+    return (i < 0) ? -1.0 : g_dbgev_step[(uint32_t)i % DBG_EV_N];
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -1869,6 +1966,33 @@ int dct3_web_sim_write_ef(int df, int fid, const uint8_t* data, int len) {
 #endif
 }
 
+// ---- EEPROM re-provisioning ("reset the phone's identity") ------------------------------
+// Writes a complete factory identity — FLASH-ID/FAID, both SIMlock parts and the IMEI — all
+// derived from the model's pinned MSID. It does NOT poke EEPROM offsets: it drives the
+// firmware's own MBUS service handlers with the same B8/BA/B6 frames a Windows service tool
+// sends, so the firmware writes its own EEPROM wherever that build keeps its records. See
+// services/identity_provision.c.
+//
+// The result is an ordinary EEPROM change, so the NVRAM persistence already in the page picks
+// it up (dct3_web_eeprom_writes() moves) and saves/exports it like any other. Run it with the
+// phone booted into normal mode; a run that gets no reply times out and says so.
+EMSCRIPTEN_KEEPALIVE
+int dct3_web_reprovision(void)          { return identity_provision_start(&g_mad2); }
+EMSCRIPTEN_KEEPALIVE
+int dct3_web_reprovision_state(void)    { return identity_provision_state(); }   // IDPROV_*
+EMSCRIPTEN_KEEPALIVE
+const char* dct3_web_reprovision_status(void) { return identity_provision_status(); }
+EMSCRIPTEN_KEEPALIVE
+int dct3_web_reprovision_progress(void) { return identity_provision_progress(); }  // 0..3
+// Does this model carry a pinned identity at all (else the button has nothing to write)?
+EMSCRIPTEN_KEEPALIVE
+int dct3_web_has_identity(void) {
+    if (!g_model || !g_model->identity.imei14) return 0;
+    int any = 0;
+    for (int i = 0; i < 13; ++i) any |= g_model->identity.msid[i];
+    return any != 0;
+}
+
 // Total flash program ops + last command address — for diagnosing the commit
 // path (deferred-commit vs a dropped write) from a probe/console.
 EMSCRIPTEN_KEEPALIVE
@@ -1877,6 +2001,67 @@ EMSCRIPTEN_KEEPALIVE
 uint32_t dct3_web_flash_programs(void){ return (uint32_t)g_mad2.flash_programs; }
 EMSCRIPTEN_KEEPALIVE
 uint32_t dct3_web_flash_last_addr(void){ return g_mad2.flash_last_cmd_addr; }
+
+// ── WAP host bridge ──
+// The emulated gateway (src/mad2/dsp/wap.c) cannot open sockets from wasm, so a
+// host that can — the node harness, or a browser page via fetch — answers the
+// browser's requests instead. Enable the bridge, poll for the URI the phone
+// asked for, then hand back the transcoded body. The WTP transaction is held
+// open meanwhile (roughly a three-second budget before the phone gives up).
+// mode: 0 built-in deck, 1 host fetches/transcodes, 2 host relays to a real gateway.
+//
+// The mode is remembered here rather than only in the gateway, because booting
+// (and every warm reset, and every firmware swap from the picker) memsets
+// g_mad2 — which would silently disarm the bridge and leave the phone quietly
+// serving the built-in deck instead. The pollers below re-apply it.
+static int g_wap_mode = 0;
+
+static void wap_reapply(void) {
+    if (wap_host_bridge(&g_mad2.rom6.csdPpp.wap) != g_wap_mode)
+        wap_set_host_bridge(&g_mad2.rom6.csdPpp.wap, g_wap_mode);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void dct3_web_wap_bridge(int mode) {
+    g_wap_mode = mode;
+    wap_set_host_bridge(&g_mad2.rom6.csdPpp.wap, mode);
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char* dct3_web_wap_pending(void) {
+    wap_reapply();
+    const char* u = wap_pending_uri(&g_mad2.rom6.csdPpp.wap);
+    return u ? u : "";
+}
+
+// Relay mode: the raw datagram waiting to go upstream, copied into a static
+// staging buffer the host can read, and the reply path back.
+static uint8_t g_wap_relay[2048];
+EMSCRIPTEN_KEEPALIVE
+int dct3_web_wap_relay_take(void) {
+    wap_reapply();
+    unsigned len = 0;
+    const uint8_t* p = wap_pending_relay(&g_mad2.rom6.csdPpp.wap, &len);
+    if (!p || len > sizeof g_wap_relay) return 0;
+    memcpy(g_wap_relay, p, len);
+    return (int)len;
+}
+EMSCRIPTEN_KEEPALIVE
+uint8_t* dct3_web_wap_relay_buf(void) { return g_wap_relay; }
+
+EMSCRIPTEN_KEEPALIVE
+void dct3_web_wap_relay_deliver(const uint8_t* pay, int len) {
+    wap_relay_deliver(&g_mad2.rom6.csdPpp.wap, pay, len > 0 ? (unsigned)len : 0u,
+                      getenv("ROM6_LOG") != 0);
+}
+
+// ct is a WSP well-known content type (0x14 = application/vnd.wap.wmlc).
+// len 0 makes the gateway answer 500, which is how a failed fetch is reported.
+EMSCRIPTEN_KEEPALIVE
+void dct3_web_wap_deliver(int ct, const uint8_t* body, int len) {
+    wap_deliver(&g_mad2.rom6.csdPpp.wap, (uint8_t)ct, body,
+                len > 0 ? (unsigned)len : 0u, getenv("ROM6_LOG") != 0);
+}
 
 // Current keypad matrix column byte for a row (mad2 state, not RAM) — bit set =
 // that column is pressed. Plus the special-scan cols via row 8.

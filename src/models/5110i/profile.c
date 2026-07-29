@@ -68,6 +68,12 @@ const ModelProfile model_5110i = {
         .hold_insns = 400000,
         .col_port = 0x30, .row_port = 0x31, .dir_port = 0x2F,
     },
+    // Factory identity — MINTED, pinned; see tools/dct3_identity.py and
+    //. COBBA s/n 00511043, IMEI 490154205110028.
+    .identity = {
+        .msid   = { 0x82, 0x0C, 0x46, 0x35, 0x8C, 0x84, 0xA9, 0xA2, 0x04, 0xDD, 0x98, 0x61, 0xAC },
+        .imei14 = "49015420511002",
+    },
     .led = {
         // 5110-family EL backlight: PUP_GENIO (I/O 0x20) bit6, latched in ext_eeprom_write.
         .lcd_rgb = 0x55C955, .lcd_mask = 0x40, .no_kbd_led = 1,

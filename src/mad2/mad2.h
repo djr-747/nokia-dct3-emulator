@@ -450,9 +450,12 @@ typedef struct Mad2 {
     // sets the unlock latch [0x10EB18]=1 and OSE-signals task 2. Our default responder
     // answers ONLY 0x0D (fakes the self-test verdict) and never the SIML echoes, so the
     // firmware's SIM-lock state machine stalls after 0x16. This models the missing echoes.
-    // Faithful default OFF on native; ON in the web build (dct3_web_boot sets DSPSIML=1) with a
-    // one-time UNFAITHFUL warning. DSPSIML=0 forces off. Cosim-safe (behind the HLE quiet-gate).
-    uint8_t  dsp_siml_en;            // DSPSIML: run the HLE SIML responder (web-default on)
+    // SCOPE: this flag gates the LEGACY responder in dsp/dsp_mailbox.c ONLY, whose
+    // sole production caller is the C54x cosim pass-through. The live rom4/rom6 engines run the
+    // SIML handshake and the pinned-MSID reply unconditionally, so SIML is already on by default
+    // for every model they serve — do not read this flag as "is SIML enabled". Default OFF is
+    // deliberate: the cosim's real DSP supplies this behaviour and the HLE must not compete.
+    uint8_t  dsp_siml_en;            // DSPSIML: legacy (cosim-path) HLE SIML responder
     uint8_t  dsp_siml_want34;        // pending: deliver {0x74,0x34} MSID reply
     uint8_t  dsp_siml_want35;        // pending: deliver {0x74,0x35} SIML block echo
     uint8_t  dsp_siml_want36;        // pending: deliver {0x74,0x36} final validation pass=0
@@ -816,6 +819,30 @@ int  dsp_mailbox_write(Mad2* m, uint32_t addr, int size, uint32_t value);
 void dsp_mailbox_tick (Mad2* m);
 uint64_t dsp_mailbox_next_wake(Mad2* m);
 void dsp_mailbox_advance_to(Mad2* m, uint64_t cycles);
+
+// DSP local-security 0x74/0x34 MSID reply override (src/mad2/dsp/dsp_mailbox.c).
+//
+// The MCU builds the m2d {70 13} MSID setup from a 4-byte seed (3310 v5.79: the word at
+// 0x3CFFFC, read via 0x2EA372 — the last word before the NVRAM partition) and the DSP
+// answers {74 34} with THIRTEEN bytes, which the MCU stores at [0x10EB38] and later
+// reports over MBUS as service command 0xB5 "Get MSID". Our HLE responder cannot derive
+// the real 13 bytes (that lives in the undumped SIML crypto ROM), so it echoes the 4-byte
+// seed zero-padded — and real service tools reject the result, because a genuine MSID
+// begins 0x81/0x82/0x83.
+//
+// So the reply is substituted, from two sources (DSPMSID=<hex> wins; otherwise the model
+// profile's pinned IdentitySpec.msid — see models/model.h). Every model now carries a pinned
+// MSID, so the seed echo is the fallback for a profile that omits one rather than the common
+// case; DSPMSID=echo forces it back on for an A/B. The gated 3310 boot DOES exercise this: the
+// firmware issues {70 13} ~1.46M steps in and rom6 answers {74 34} with the pinned bytes. It
+// is drift-free rather than unexercised — pinned and DSPMSID=echo both hash 395a267e… on
+// firmware/Factory Reset 3310 NR1 v5.79.fls. Fills `out[13]`; returns 1 when it supplied a
+// value, 0 to mean "echo the seed".
+int dsp_msid_override(const Mad2* m, uint8_t out[13]);
+
+// DSP ROM version digit for the local-security {74 C8} reply. OPT-IN via DSPROMVER —
+// see dsp_rom_version() for why answering this query is not safe to default on.
+int dsp_rom_version(const Mad2* m, uint8_t* out);
 
 // GSM cell-search bridge (src/mad2/mdi_gsm.c). Synthesizes the DSP's radio responses so the
 // RR cell-selection FSM advances (§9 Phase A). Called from dsp_mailbox_tick; entirely gated

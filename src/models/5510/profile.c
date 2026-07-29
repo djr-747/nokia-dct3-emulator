@@ -65,6 +65,12 @@ const ModelProfile model_5510 = {
         .lines   = keylines_5510,
         .n_lines = (int)(sizeof(keylines_5510) / sizeof(keylines_5510[0])),
     },
+    // Factory identity — MINTED, pinned; see tools/dct3_identity.py and
+    //. COBBA s/n 00551042, IMEI 490154205510011.
+    .identity = {
+        .msid   = { 0x83, 0x90, 0x7A, 0xEA, 0xCC, 0xAE, 0xFD, 0xDA, 0xCD, 0xD3, 0x87, 0xDE, 0x51 },
+        .imei14 = "49015420551001",
+    },
     .battery = {
         // 3310 NiMH wedge-clean defaults; revisit once the 5510 reads its CCONT A/D.
         .vbatt = 0x220, .bsi = 0x100, .temp = 0x200, .charger = 0x000,

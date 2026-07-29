@@ -200,6 +200,8 @@ typedef struct C54xState {
     bool     par_set;
     bool     lk_used;    /* resolve_smem consumed extra word for lk */
     uint16_t mvpd_src;   /* MVPD auto-increment source address during RPT */
+    bool     dmad_set;   /* MVDK/MVKD/MVDM/MVMD: dmad already seeded this repeat */
+    uint16_t mvdk_dmad;  /* ...and its auto-incrementing dmad during RPT */
 
     /* RPTB state */
     bool     rptb_active;

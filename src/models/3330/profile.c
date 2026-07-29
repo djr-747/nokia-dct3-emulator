@@ -60,6 +60,12 @@ const ModelProfile model_3330 = {
         .lines   = keylines_3330,
         .n_lines = (int)(sizeof(keylines_3330) / sizeof(keylines_3330[0])),
     },
+    // Factory identity — MINTED, pinned; see tools/dct3_identity.py and
+    //. COBBA s/n 00333042, IMEI 490154203330016.
+    .identity = {
+        .msid   = { 0x83, 0x97, 0x38, 0xA4, 0xEB, 0xD3, 0xE1, 0xAB, 0xB5, 0x0D, 0xC9, 0xBE, 0x76 },
+        .imei14 = "49015420333001",
+    },
     .battery = {
         // 3310 NiMH wedge-clean defaults (same HW family as the 3310).
         .vbatt = 0x220, .bsi = 0x100, .temp = 0x200, .charger = 0x000,

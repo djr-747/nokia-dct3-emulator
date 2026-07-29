@@ -30,6 +30,7 @@
 //   DSP54_LOG=1          trace lazy-init + first port/HPI activity
 
 #include "mad2/mad2.h"
+#include "mad2/dsp/mdi_trace.h"
 #include "dct3_dsp54.h"
 #include "calypso_c54x.h"   // C54X_DATA_SIZE (image buffer bound)
 #include <stdlib.h>
@@ -1306,6 +1307,17 @@ static void c54x_sync_cycle(Mad2 *m, uint64_t cycles) {
 
 // Platform pump. Always run the legacy handshake work; in co-sim, advance the
 // real DSP by the independently clocked budget accumulated since the last pump.
+// Ring-byte reader for the shared MDI tracer (src/mad2/dsp/mdi_trace.h). Under co-sim the rings
+// live in the DSP's own memory, reached through the HPI window, not in m->mem — that difference
+// is the ONLY thing this backend has to supply; the decode and the output format are shared.
+// HPI reads are 16-bit at even MCU addresses and MAD2 is big-endian, so the high half is the
+// lower address.
+static uint8_t c54x_mdi_peek(const Mad2 *m, void *ctx, uint32_t mcu_addr) {
+    (void)m;
+    uint16_t w = dsp54_hpi_read((Dsp54 *)ctx, mcu_addr & ~1u);
+    return (mcu_addr & 1u) ? (uint8_t)(w & 0xFFu) : (uint8_t)(w >> 8);
+}
+
 static void c54x_tick(Mad2 *m) {
     c54x_lazy_init(m);
     // DSP54_INITLOG (DSP->MCU side, HLE baseline): log the DSP->MCU signals the model raises —
@@ -2156,8 +2168,20 @@ static void c54x_tick(Mad2 *m) {
         // clears verdict bit6 (MCU 0x22F082) -> CONTACT SERVICE. The faithful through-boot needs the
         // COBBA measurement-INPUT model (regs 5/6 @0x4AEA/0x4AF5), not an output patch. See HANDOFF
         // §4a-NEW.
+        // ⚠ DEFAULT FLIPPED TO OFF, 2026-07-29 — this stub is now HARMFUL, not merely a
+        // stand-in. It stages the sub-0x16 report's FINAL WIRE BYTES, which is the same buffer
+        // (0x1202..0x1207) the ROM's own SIMlock decode writes, so it OVERWRITES the genuine
+        // local-security record the mask ROM produces. That was invisible while the record was
+        // garbage — the whole reason the stub existed ("in cosim it runs on ring garbage").
+        // With the c54x ALU/control-flow fixes and the EEPROM SIMlock records provisioned
+        // (services/eeprom_provision.c), the ROM decodes a real record and the report no longer
+        // needs patching: the co-sim boots past "SIM card not accepted" to standby, the same
+        // screen the ROM-4 HLE reaches. Keeping it on holds the phone ON the lock screen.
+        // Now OPT-IN (DSP54_SELFTEST_MEAS=1) for A/B against the old behaviour.
         { static int sm_init = 0, sm_on = 0, sm_armed = 1;
-          if (!sm_init) { sm_init = 1; sm_on = dsp54_faithful("DSP54_SELFTEST_MEAS"); }
+          if (!sm_init) { sm_init = 1;
+              const char *e = getenv("DSP54_SELFTEST_MEAS");
+              sm_on = (e && *e) ? (atoi(e) != 0) : 0; }
           if (sm_on && g_dsp_run) {
               Dsp54Status st; dsp54_status(g_dsp, &st);
               // Stage POST-TRANSFORM (corrected 2026-06-11, first end-to-end run): the builder's
@@ -2458,6 +2482,14 @@ static void c54x_tick(Mad2 *m) {
     // ROM-6 group-0x03 keep-alive stream the shared body would emit.
     m->dsp_no_keepalive = 1;
     dsp_mailbox_tick(m);
+    // MDILOG: the DSP-side ring view. The shared tracer in src/mad2/dsp/mdi_trace.c does the
+    // decode; all this backend supplies is "how to read a ring byte", which here is the HPI
+    // window rather than MCU RAM. Without this observer the co-sim — the one configuration
+    // where a REAL DSP decides whether to answer — was the only path with no ring trace.
+    if (g_dsp && mdi_trace_level()) {
+        static MdiTrace dsp_view;
+        mdi_trace_poll(m, &dsp_view, "cosim", c54x_mdi_peek, g_dsp);
+    }
 }
 
 const DspOps mad2_dsp_c54x = {

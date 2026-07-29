@@ -69,6 +69,12 @@ const ModelProfile model_6250 = {
         .scan = KP_SCAN_DIR_AWARE,
         .uif_irq = 1,
     },
+    // Factory identity — MINTED, pinned; see tools/dct3_identity.py and
+    //. COBBA s/n 00625042, IMEI 490154206250013.
+    .identity = {
+        .msid   = { 0x83, 0x4E, 0xF9, 0xD1, 0xE5, 0xC9, 0xFC, 0x60, 0x26, 0x34, 0x2C, 0x94, 0xB0 },
+        .imei14 = "49015420625001",
+    },
     .led = { .lcd_rgb = 0x55C955, .kbd_rgb = 0x55C955 },
     .battery = {
         // Standard MAD2 CCONT A/D wiring assumed (== 6210 v5.56, verified there); the 6250

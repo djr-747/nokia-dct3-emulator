@@ -288,6 +288,17 @@
         // first-visit welcome SMS) via dct3.api.incomingSms(from, text).
         incomingCall: optWrap("dct3_web_incoming_call", "number", ["string"]),
         incomingSms:  optWrap("dct3_web_incoming_sms", "number", ["string", "string"]),
+        // Binary SMS to an application port — Nokia OTA settings provisioning
+        // (WSP push to port 49999) and the rest of the smart-messaging family.
+        incomingSmsBin: optWrap("dct3_web_incoming_sms_bin", "number",
+                                ["string", "number", "number", "number", "number"]),
+        // Emulated WAP gateway bridge (ROM-6 CSD models). While armed, the
+        // in-emulator gateway parks each browser request for the page to fetch
+        // through a /wapgw endpoint; unarmed, it serves its built-in deck — so
+        // the CSD call, RLP, PPP and WSP all still demo with no backend at all.
+        wapBridge:  optWrap("dct3_web_wap_bridge", null, ["number"]),
+        wapPending: optWrap("dct3_web_wap_pending", "string"),
+        wapDeliver: optWrap("dct3_web_wap_deliver", null, ["number", "number", "number"]),
         // NVRAM persistence surface. The flash NVRAM partition lives inside the
         // flat memory at ramPtr()+eepromOff(); early-MAD2 serial-bus models
         // (5110/…) keep theirs in a separate external I2C 24Cxx buffer instead.
@@ -925,6 +936,82 @@
     }
     if (slSpeed) { slSpeed.addEventListener("input", syncSpeed); syncSpeed(); }
 
+    // -------------------------------------------------------------
+    // Emulated WAP gateway bridge. The gateway inside the emulator holds each
+    // browser request while the page fetches it via a same-origin /wapgw
+    // endpoint. On a plain static host (retrophone.com today) that endpoint
+    // does not exist, so the bridge stays off and the gateway serves its
+    // built-in deck instead — the CSD call, RLP, PPP and WSP still run end to
+    // end with no backend. If /wapgw ever appears behind this origin, the
+    // probe below arms the bridge automatically with no client change.
+    // ?wapgw=<url> overrides the phone's home URL and forces the bridge on.
+    // -------------------------------------------------------------
+    var wapArmed = false, wapBusy = false;
+    var wapHome = new URLSearchParams(location.search).get("wapgw") || "";
+    function wapArm(why) {
+      C.wapBridge(1); wapArmed = true;
+      console.log("[DCT3] WAP gateway bridge armed (" + why + ")" + (wapHome ? " — home -> " + wapHome : ""));
+    }
+    if (C.wapBridge && C.wapPending && C.wapDeliver) {
+      if (wapHome) wapArm("?wapgw=");
+      else fetch("/wapgw?probe=1", { method: "HEAD" })
+        .then(function (r) { if (r.ok || r.status === 502) wapArm("endpoint present"); })
+        .catch(function () { console.log("[DCT3] no /wapgw endpoint — serving the built-in deck"); });
+    }
+    function pumpWapGw() {
+      if (!wapArmed || wapBusy || !C.wapPending) return;
+      var uri = C.wapPending();
+      if (!uri) return;
+      wapBusy = true;
+      var q = "/wapgw?uri=" + encodeURIComponent(uri) + (wapHome ? "&home=" + encodeURIComponent(wapHome) : "");
+      console.log("[DCT3] WAP: phone asked for " + uri);
+      fetch(q)
+        .then(function (r) { console.log("[DCT3] WAP: /wapgw -> " + r.status); return r.ok ? r.arrayBuffer() : null; })
+        .then(function (buf) {
+          if (!buf) { C.wapDeliver(0x14, 0, 0); return; }
+          var bytes = new Uint8Array(buf);
+          var p = mod._malloc(bytes.length);
+          mod.HEAPU8.set(bytes, p);
+          C.wapDeliver(0x14, p, bytes.length);
+          mod._free(p);
+        })
+        .catch(function () { C.wapDeliver(0x14, 0, 0); })
+        .finally(function () { wapBusy = false; });
+    }
+
+    // Nokia OTA settings: provision the phone's WAP profile the way operators
+    // did — a binary settings SMS ("Settings received"). Payload built in-page
+    // by web/otasettings.js (pure computation, no server). Known emulator
+    // defect: after one binary SMS nothing further is deliverable until
+    // reboot, so this is a once-per-session button.
+    var btnOta = document.getElementById("btn-ota-settings");
+    var otaOut = document.getElementById("ota-out");
+    var otaSeq = 0;
+    function queueOtaSettings() {
+      var say = function (msg, bad) {
+        if (otaOut) { otaOut.textContent = msg; otaOut.style.color = bad ? "#c00" : ""; }
+        console.log("[gsm] " + msg);
+      };
+      if (!C.incomingSmsBin) { say("This build has no binary-SMS injector", true); return; }
+      if (!window.DCT3_OTA)  { say("otasettings.js failed to load", true); return; }
+      try {
+        var fitted = window.DCT3_OTA.buildSettingsFitted({
+          url: "http://google.com", proxy: "127.0.0.1", dial: "123", name: "Retrophone",
+        });
+        var bytes = fitted.body;
+        var p = mod._malloc(bytes.length);
+        mod.HEAPU8.set(bytes, p);
+        var ok = C.incomingSmsBin("447700900123", p, bytes.length, 49999, 49154);
+        mod._free(p);
+        otaSeq++;
+        say(ok ? "Settings SMS #" + otaSeq + " sent (" + bytes.length + " B) — accept it on the phone, then Services ▸ Home"
+               : "Not queued — needs the 3410/3330, or wait for queue space", !ok);
+      } catch (e) {
+        say("OTA settings failed — " + e.message, true);
+      }
+    }
+    if (btnOta) btnOta.addEventListener("click", queueOtaSettings);
+
     function frame(now) {
       if (loopStopped) return;
       try {
@@ -967,6 +1054,7 @@
             if (cycles > 0) C.runCyc(cycles);
           }
         }
+        pumpWapGw();                        // hand a parked WAP request to the host bridge
         render();
         syncVibra();
         consecutiveFails = 0;

@@ -42,6 +42,7 @@
 #include "models/model.h"
 #include "mad2/dsp/dsp_rom4.h"
 #include "mad2/dsp/mdi.h"
+#include "mad2/dsp/mdi_queue.h"
 
 // Single build/destroy point. The core memset already zeroes m->rom4 on init/reset.
 void rom4_reset(struct Mad2* m) {
@@ -139,60 +140,33 @@ static void rom4_apply_si_plmn(const struct Mad2* m, uint8_t* si24) {
 
 // ===========================================================================================
 // MDIRCV egress — single packet at a time. Two software queues front the one hardware ring:
-// pending (FIFO) + delayed (time-ordered). The pump posts ONE record via mdi_d2m_deposit ONLY
-// when the ring is empty, then raises FIQ0. Stale unposted records (> 2 s) are dropped.
+// pending (FIFO) + delayed (time-ordered). The pump posts a record via mdi_d2m_append and
+// raises FIQ0. Stale unposted records (> 2 s) are dropped.
 // ===========================================================================================
-static void rom4_enqueue(struct Mad2* m, uint8_t op, const uint8_t* payload, uint8_t len) {
-    Rom4Dsp* r = &m->rom4;
-    uint8_t nt = (uint8_t)((r->p_tail + 1u) % ROM4_PENDING_N);
-    if (nt == r->p_head) return;                    // FIFO full: drop (real overflow)
-    Rom4MdiRec* rec = &r->pending[r->p_tail];
-    rec->op = op; rec->len = len;
-    if (len > ROM4_RCVMAX) len = ROM4_RCVMAX, rec->len = len;
-    for (uint8_t i = 0; i < len; ++i) rec->bytes[i] = payload ? payload[i] : 0u;
-    rec->enq = rom4_now(r); rec->due = rom4_now(r);
-    r->p_tail = nt;
-}
 
-// PumpDelayedMdiRcv: matured delayed records move into the FIFO in due order.
+// ---- d2m egress: thin wrappers over the shared queues (dsp/mdi_queue.c) -------------------
+// The queue machinery itself is transport and is shared with ROM-6; only the cycle source and
+// the keep-alive cadence are per-engine.
+#define ROM4_KA_CYC 25000000u   // idle-telemetry cadence, ~5 s (see rom4_idle_heartbeat)
+
+static void rom4_enqueue(struct Mad2* m, uint8_t op, const uint8_t* payload, uint8_t len) {
+    mdi_queue_enqueue(&m->rom4.q, rom4_now(&m->rom4), op, payload, len);
+}
 static void rom4_pump_delayed(struct Mad2* m, uint64_t cycles) {
-    Rom4Dsp* r = &m->rom4;
-    for (unsigned i = 0; i < ROM4_DELAYED_N; ++i) {
-        Rom4MdiRec* rec = &r->delayed[i];
-        if (rec->used && cycles >= rec->due) {
-            rom4_enqueue(m, rec->op, rec->bytes, rec->len);
-            rec->used = 0;
-        }
-    }
+    mdi_queue_pump_delayed(&m->rom4.q, cycles);
+}
+static void rom4_expire_stale(struct Mad2* m, uint64_t cycles) {
+    mdi_queue_expire_stale(&m->rom4.q, cycles, rom4_cpf() * 217u * 2u);   // 2 seconds
+}
+static void rom4_pump_mdircv(struct Mad2* m) {
+    mdi_queue_post(m, &m->rom4.q, ROM4_KA_CYC);
 }
 
 // ExpireStale: drop FIFO records that have waited unposted longer than 2 s.
-static void rom4_expire_stale(struct Mad2* m, uint64_t cycles) {
-    Rom4Dsp* r = &m->rom4;
-    uint64_t ttl = rom4_cpf() * 217u * 2u;          // 2 seconds
-    while (r->p_head != r->p_tail) {
-        Rom4MdiRec* rec = &r->pending[r->p_head];
-        if (cycles - rec->enq <= ttl) break;        // FIFO is roughly time-ordered
-        r->p_head = (uint8_t)((r->p_head + 1u) % ROM4_PENDING_N);
-    }
-}
 
 #define ROM4_KA_CYC 25000000u   // idle-telemetry cadence, ~5 s (see rom4_idle_heartbeat)
 
 // PumpMdiRcv: post ONE record from the FIFO head into the (empty) hardware ring + FIQ0.
-static void rom4_pump_mdircv(struct Mad2* m) {
-    Rom4Dsp* r = &m->rom4;
-    if (r->p_head == r->p_tail) return;             // FIFO empty
-    Rom4MdiRec* rec = &r->pending[r->p_head];
-    if (mdi_d2m_deposit(m->mem, m->mem_mask, m->fw.mdircv_q, m->fw.mdircv_tail,
-                        m->fw.mdircv_head, rec->op, rec->bytes, rec->len)) {
-        mad2_raise_fiq(m, 0);
-        r->p_head = (uint8_t)((r->p_head + 1u) % ROM4_PENDING_N);
-        // Real d2m traffic feeds the firmware's MDI-activity counter — re-pace the idle
-        // telemetry heartbeat so it only ever fills genuine DSP silence.
-        m->dsp_hb_next_cyc = m->rtc_mono + ROM4_KA_CYC;
-    }
-}
 
 // Perpetual idle MDI telemetry — the real DSP is NEVER silent. bitplane's 3210 evidence
 //: a header-only type-0x03 packet is the DSP idle/liveness indication
@@ -210,7 +184,7 @@ static void rom4_idle_heartbeat(struct Mad2* m) {
     if (!protocol_ready) { m->dsp_hb_next_cyc = 0; return; }
     if (!m->dsp_hb_next_cyc) { m->dsp_hb_next_cyc = m->rtc_mono + ROM4_KA_CYC; return; }
     if (m->rtc_mono < m->dsp_hb_next_cyc) return;
-    if (r->p_head != r->p_tail) return;      // engine has real traffic in flight: it will re-pace
+    if (r->q.p_head != r->q.p_tail) return;      // engine has real traffic in flight: it will re-pace
     uint32_t hp = m->fw.mdircv_head & m->mem_mask;
     uint32_t tp = m->fw.mdircv_tail & m->mem_mask;
     uint16_t head = (uint16_t)((m->mem[hp] << 8) | m->mem[hp + 1]);
@@ -236,18 +210,18 @@ static void rom4_idle_heartbeat(struct Mad2* m) {
 // DEACTIVATE is one-way and cancels queued work for the retired receiver (lifecycle rule).
 // Drop queued radio reports; the 0x74 self-test completion is never radio work.
 static void rom4_drop_radio_backlog(Rom4Dsp* r) {
-    Rom4MdiRec keep[ROM4_PENDING_N];
+    MdiRec keep[MDI_PENDING_N];
     uint8_t count = 0;
-    for (uint8_t i = r->p_head; i != r->p_tail; i = (uint8_t)((i + 1u) % ROM4_PENDING_N)) {
-        Rom4MdiRec* rec = &r->pending[i];
+    for (uint8_t i = r->q.p_head; i != r->q.p_tail; i = (uint8_t)((i + 1u) % MDI_PENDING_N)) {
+        MdiRec* rec = &r->q.pending[i];
         int radio = rec->op == 0x80u || rec->op == 0x83u || rec->op == 0x84u ||
                     rec->op == 0x86u || rec->op == 0x87u || rec->op == 0x89u ||
                     rec->op == 0x8Bu || rec->op == 0x8Cu || rec->op == 0x8Fu;
-        if (!radio && count + 1u < ROM4_PENDING_N) keep[count++] = *rec;
+        if (!radio && count + 1u < MDI_PENDING_N) keep[count++] = *rec;
     }
-    for (uint8_t i = 0; i < count; ++i) r->pending[i] = keep[i];
-    r->p_head = 0; r->p_tail = count;
-    for (unsigned i = 0; i < ROM4_DELAYED_N; ++i) r->delayed[i].used = 0;
+    for (uint8_t i = 0; i < count; ++i) r->q.pending[i] = keep[i];
+    r->q.p_head = 0; r->q.p_tail = count;
+    for (unsigned i = 0; i < MDI_DELAYED_N; ++i) r->q.delayed[i].used = 0;
 }
 
 // ===========================================================================================
@@ -826,6 +800,8 @@ static int rom4_write(struct Mad2* m, uint32_t addr, int size, uint32_t value) {
                 uint8_t sub = plen ? buf[0] : 0u;
                 if (sub == 0x0D) {                       // run self-test
                     m->dsp_st_req = 1;
+                } else if (sub == 0x0A) {                // DSP ROM version query -> want 0xC8
+                    uint8_t rv; if (dsp_rom_version(m, &rv)) r->siml_want |= 8u;   // opt-in only
                 } else if (sub == 0x13) {                // MSID setup -> want 0x34
                     for (int i = 0; i < 13 && (unsigned)(1 + i) < plen; ++i) r->siml_msid[i] = buf[1 + i];
                     r->siml_want |= 1u;
@@ -888,10 +864,10 @@ static uint64_t rom4_next_wake(struct Mad2* m) {
         next = m->dsp_cb_deadline_cyc;
     if (m->dsp_hb_next_cyc && m->dsp_hb_next_cyc < next)
         next = m->dsp_hb_next_cyc;   // idle telemetry heartbeat (deep-idle must wake for it)
-    for (unsigned i = 0; i < ROM4_DELAYED_N; ++i)
-        if (r->delayed[i].used && r->delayed[i].due < next) next = r->delayed[i].due;
-    if (r->p_head != r->p_tail) {
-        uint64_t expiry = r->pending[r->p_head].enq + rom4_cpf() * 217u * 2u;
+    for (unsigned i = 0; i < MDI_DELAYED_N; ++i)
+        if (r->q.delayed[i].used && r->q.delayed[i].due < next) next = r->q.delayed[i].due;
+    if (r->q.p_head != r->q.p_tail) {
+        uint64_t expiry = r->q.pending[r->q.p_head].enq + rom4_cpf() * 217u * 2u;
         if (expiry < next) next = expiry;
     }
     if (r->radioPhase != ROM4_RP_INACTIVE && r->reportsRemaining &&
@@ -951,7 +927,15 @@ static void rom4_tick(struct Mad2* m) {
             uint8_t pl[64] = {0}; uint8_t len = 0;
             if (r->siml_want & 1u) {                          // 0x34 MSID reply (msg[11..23])
                 pl[0] = 0x34;
-                for (int i = 0; i < 13; ++i) pl[3 + i] = r->siml_msid[i];
+                // Header byte 1 = 0x0E, measured from the 5110's own DSP mask ROM: the sub-0x13
+                // handler writes the header word as `*AR3+ = #340eh` (PROM 0x4ACF-1), i.e. wire
+                // `34 0E 00 <msid...>`. It is the count of payload bytes that follow the two
+                // header bytes (0x00 + the 13-byte MSID = 14). We emitted 0x00 here.
+                pl[1] = 0x0E;
+                uint8_t msid[13];
+                if (!dsp_msid_override(m, msid))               // nothing pinned -> echo the seed
+                    for (int i = 0; i < 13; ++i) msid[i] = r->siml_msid[i];
+                for (int i = 0; i < 13; ++i) pl[3 + i] = msid[i];
                 len = 16; r->siml_want &= (uint8_t)~1u;
             } else if (r->siml_want & 2u) {                   // 0x35 accepted record + echo
                 // Region A (msg[12..35]) = the DECODED, accepted local-security record. Region B
@@ -1014,9 +998,22 @@ static void rom4_tick(struct Mad2* m) {
                 len = 52; r->siml_blkidx++; r->siml_want &= (uint8_t)~2u;
             } else if (r->siml_want & 4u) {                   // 0x36 terminal verdict, pass=0 -> accepted
                 pl[0] = 0x36; len = 4; r->siml_want &= (uint8_t)~4u;
-            } else {                                          // self-test verdict {0x0D,0} pass
+            } else if (want_st) {                             // self-test verdict {0x0D,0} pass
+                // The self-test MUST take the window ahead of the ROM-version answer. The
+                // responder emits one reply per empty-ring egress window, so letting 0xC8 go
+                // first delays the self-test by a window and re-times the 0x34/0x35/0x36
+                // sequence the SIM-lock path depends on — that is exactly what drifted the
+                // 3310 guard boot to "SIM card not accepted" when the version reply was first
+                // added. 0xC8 is not boot-critical, so it waits its turn.
                 pl[0] = 0x0D; pl[1] = 0x00; len = 2;
                 m->dsp_selftest_replied = 1; m->dsp_st_req = 0;
+            } else {                                          // 0xC8 DSP ROM version (msg[11] = pl[3])
+                uint8_t rv = 6u; (void)dsp_rom_version(m, &rv);
+                // len 4, not 16: only msg[11] (= pl[3]) carries the version digit. The 16
+                // here was copied from the MSID reply, which genuinely needs it — padding a
+                // 4-byte answer out to 16 makes the record 9 ring words instead of 3.
+                pl[0] = 0xC8; pl[3] = rv;
+                len = 4; r->siml_want &= (uint8_t)~8u;
             }
             if (rom4_log_enabled())
                 fprintf(stderr, "[rom4] local-security d2m 0x74 sub=0x%02X len=%u @step=%llu\n",

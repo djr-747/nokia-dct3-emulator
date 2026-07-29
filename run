@@ -44,7 +44,9 @@ fw_curated() {
     3310)   echo "firmware/Factory Reset 3310 NR1 v5.79.fls" ;;
     3310v6) echo "firmware/FuBu3310 v6.39 (PPM B).fls" ;;
     3330)   echo "firmware/Nokia 3330 NHM-6 v4.16 A.fls" ;;
-    3350)   echo "firmware/Nokia 3350 NHM-9 v5.22 A.fls" ;;
+    # The bare v5.22 A image stops at CONTACT SERVICE — its EEPROM records don't satisfy
+    # the firmware's startup checks. The EEPROM-graft variant is the one that boots.
+    3350)   echo "firmware/Nokia 3350 NHM-9 v5.22 A (EEPROM graft).fls" ;;
     3410)   echo "firmware/Nokia 3410 NHM-2 v5.46 (FAID off, cksum fixed).fls" ;;
     5110)   echo "firmware/Nokia 5110 NSE-1 v5.30 A.fls" ;;
     5210)   echo "firmware/Nokia 5210 NSM-5 v5.40 A (EEPROM).fls" ;;
@@ -134,7 +136,7 @@ EOF
     keep recovery, drop eager intercept:  ./run 3410 boot --no-early
 
   mbus service tools (phone GUI + tool over the tty0tty modem comport, one cmd):
-    ./run 5110 noktool      # also: eeprom | faid | koci | nfree
+    ./run 5110 noktool      # also: eeprom | faid | koci | nfree | rolis
     (delegates to \$MBUS_TOOL_LAUNCHER, default ~/fresh-start.sh; phone boots OFF — tap 'p')
 
   examples:
@@ -160,7 +162,7 @@ MODEL="$1"; SCEN="$2"; shift 2
 # tears down stale procs, loads tty0tty, wires wine COM3 → /dev/tnt1, and starts both.
 # The phone boots powered OFF — tap 'p' in the GUI to power on.
 case "$SCEN" in
-  noktool|eeprom|faid|koci|nfree)
+  noktool|eeprom|faid|koci|nfree|rolis)
     LAUNCHER="${MBUS_TOOL_LAUNCHER:-$HOME/fresh-start.sh}"
     [ -x "$LAUNCHER" ] || { echo "run: MBUS tool launcher not found/executable: $LAUNCHER" >&2
                             echo "     set MBUS_TOOL_LAUNCHER=<path> or restore ~/fresh-start.sh" >&2; exit 2; }
@@ -169,7 +171,7 @@ case "$SCEN" in
 esac
 
 FW="$(fw_for "$MODEL")" || { echo "run: unknown model '$MODEL' (have: $MODELS)" >&2; exit 2; }
-scenario "$SCEN"        || { echo "run: unknown scenario '$SCEN' (have: $SCENARIOS  |  tools: noktool eeprom faid koci nfree)" >&2; exit 2; }
+scenario "$SCEN"        || { echo "run: unknown scenario '$SCEN' (have: $SCENARIOS  |  tools: noktool eeprom faid koci nfree rolis)" >&2; exit 2; }
 
 # ── model-specific knobs (appended to the scenario's KNOBS) ───────────────
 # 5110 (NSE-1, MAD2 V1-DCT3) — THE CANONICAL CONFIG:

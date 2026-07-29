@@ -83,6 +83,12 @@ const ModelProfile model_3410 = {
         .lines   = keylines_3410,
         .n_lines = (int)(sizeof(keylines_3410) / sizeof(keylines_3410[0])),
     },
+    // Factory identity — MINTED, pinned; see tools/dct3_identity.py and
+    //. COBBA s/n 00341042, IMEI 490154203410016.
+    .identity = {
+        .msid   = { 0x83, 0xA7, 0x66, 0x5A, 0xC1, 0x32, 0x47, 0xA2, 0x64, 0x8D, 0x53, 0x1C, 0x82 },
+        .imei14 = "49015420341001",
+    },
     .battery = {
         // PLACEHOLDER — 3310 NiMH wedge-clean defaults. The 3410 battery-type detection
         // window is unverified; revisit once it boots far enough to read CCONT A/D.

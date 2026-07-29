@@ -82,16 +82,17 @@ for g in $GATES; do
     5110cosim)
         # The real C54x co-sim path. The oracle script classifies the screen; we additionally
         # pin the exact hash so ANY pixel drift fails, not just CONTACT SERVICE/blank.
-        # ⚠ 23a09224 is "SIM card not accepted" — a KNOWN degradation of the co-sim + swSIM
-        # path introduced by the WIP in 999132f (see its commit message), NOT a good screen.
-        # It is pinned only so further drift is caught; re-bless deliberately when the co-sim
-        # SIM path is fixed and this boot reaches standby like the ROM-4 gate above.
+        # RE-BLESSED 2026-07-29: this gate now reaches STANDBY (1d1dee9b…), the same screen as
+        # the ROM-4 gate above — the co-sim SIM path the old comment was waiting on is fixed.
+        # The SIMlock record is now produced by the real mask ROM decoding a provisioned EEPROM
+        # record, with NO output stub (DSP54_SELFTEST_MEAS defaults OFF; it used to overwrite
+        # that very record). The old "SIM card not accepted" hash was 23a09224….
         if tools/check_5110_boot.sh > /tmp/guard_5110_oracle.log 2>&1; then
             got=$(md5sum build/lcd.pgm | awk '{print $1}')
-            if [ "$got" = "23a09224b2989eb05055678b921eb32b" ]; then
-                echo "GUARD 5110cosim: PASS (cosim 30M, lcd $got — known 'SIM card not accepted')"
+            if [ "$got" = "1d1dee9bd7e1c4e81b2e13f2f9324788" ]; then
+                echo "GUARD 5110cosim: PASS (cosim 30M, lcd $got — standby)"
             else
-                echo "GUARD 5110cosim: FAIL — oracle passed but lcd drift: got $got want 23a09224b2989eb05055678b921eb32b"
+                echo "GUARD 5110cosim: FAIL — oracle passed but lcd drift: got $got want 1d1dee9bd7e1c4e81b2e13f2f9324788"
                 FAILED=1
             fi
         else

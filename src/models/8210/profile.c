@@ -45,6 +45,12 @@ const ModelProfile model_8210 = {
         .scan = KP_SCAN_DIR_AWARE,
         .uif_irq = 1,
     },
+    // Factory identity — MINTED, pinned; see tools/dct3_identity.py and
+    //. COBBA s/n 00821042, IMEI 490154208210015.
+    .identity = {
+        .msid   = { 0x83, 0xAA, 0xE4, 0xBC, 0x2A, 0xB1, 0x35, 0xC7, 0xCE, 0x2B, 0x60, 0xF3, 0xB6 },
+        .imei14 = "49015420821001",
+    },
     .battery = {
         // Shared NSM Li-ion (BLB-2) battery-type window (== 8850/5210): BSI in
         // [0x13E,0x172] AND temp in [0x133,0x158). 3310 NiMH defaults fall outside.

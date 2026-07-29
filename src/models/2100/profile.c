@@ -65,6 +65,12 @@ const ModelProfile model_2100 = {
     },
     // Period-correct orange backlight (shared with the 5210).
     .led = { .lcd_rgb = 0xFFA040, .kbd_rgb = 0xFFA040 },
+    // Factory identity — MINTED, pinned; see tools/dct3_identity.py and
+    //. COBBA s/n 00210042, IMEI 490154202100014.
+    .identity = {
+        .msid   = { 0x83, 0xAA, 0x03, 0xDE, 0x51, 0x65, 0x57, 0xE0, 0xC1, 0xC8, 0x2D, 0xE6, 0x57 },
+        .imei14 = "49015420210001",
+    },
     .battery = {
         // NSM Li-ion (BLB-2) battery-type window — SHARED across the NSM family
         // (5210 / 8210 / 8250 / 8850). Mid-window values give a valid battery type so

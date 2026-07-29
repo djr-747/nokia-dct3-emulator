@@ -13,6 +13,7 @@
 #include "mad2/mad2.h"
 #include "models/model.h"
 #include "services/eeprom_provision.h"
+#include "services/dct3_calcul.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -172,6 +173,9 @@ static void faid_finalize_checksums(struct Mad2* m, const EepromFaid* f) {
 // with rec 0x705 @ EE 0x334 != 0 (layer2 presence marker) and rec 0x707 @ EE 0x335 != 0.
 // Record offsets RE'd from the static flash directory 0x2A6438. This provisions the coherent
 // record set so the firmware's own FAID check passes organically (no verdict poke).
+static void simlock_provision_5110(struct Mad2* m);   // defined just below
+static void record_area_cksum_5110(struct Mad2* m);
+
 static void faid_provision_5110(struct Mad2* m) {
     uint8_t* ee = m->i2c_eeprom;
     // Serial sub-field of the identity blob (fw 0x258798 selector 3). Deterministic from 0x0C;
@@ -193,6 +197,176 @@ static void faid_provision_5110(struct Mad2* m) {
         for (int i = 0; i < 8; ++i) printf(" %02X", derived[i]);
         printf("  -> rec706@0x32C rec704@0x304 rec705@0x334=1\n");
     }
+    simlock_provision_5110(m);
+    record_area_cksum_5110(m);   // must follow every record write
+}
+
+// ---- 5110 SIMlock records (EE 0x20..0x37) --------------------------------------------------
+// MEASURED on the v5.30 ring, not guessed. The MCU ships the whole record set to the DSP at
+// boot and the offsets fall straight out of it (`DSP54_COSIM=1 MDILOG=1`, m2d op=70):
+//
+//   {70 14} 12B = EE 0x14..0x1F   FLASH-ID record
+//   {70 15} 20B = EE 0x00..0x0B   IMEI record  + EE 0x0C..0x13 identity block
+//   {70 16} 24B = EE 0x20..0x37   SIMlock parts 1 and 2, XOR-masked in transit
+//
+// The mask is a fixed 12-byte constant applied to each half. Measured directly: stage 24 zero
+// bytes at 0x20 and the {70 16} payload comes back as SIML_XOR twice, exactly.
+//
+// The DSP decodes each half at PROM 0x7F2D — one of six entry points into the same cipher block
+// the MSID uses (0x7F22 is the matching ENCODE entry). 0x7F2D selects the LOCK table at data
+// 0xB6DF and mixes the COBBA words (0x1F0C:0x1F0D) into its first four bytes via 0x8015, which
+// is literally our sel_alg(algo, MODE_SIMLOCK, cobba); the round core is the same codec. Verified
+// with spike/dsp54/siml_probe.c: the key the ROM builds at 0x13DC and the plaintext it produces
+// are byte-identical to calcul_encode/decode.
+//
+// So a record set for our pinned identity is exactly:
+//     EE[0x20] = calcul_encode(LOCK1_DEF, algo, MODE_SIMLOCK, cobba) ^ SIML_XOR
+//     EE[0x2C] = calcul_encode(LOCK2_DEF, algo, MODE_SIMLOCK, cobba) ^ SIML_XOR
+// which reproduces, byte for byte, what NokTool writes into this EEPROM over MBUS — an
+// independent confirmation of the whole chain from a real service tool.
+//
+// LOCK1_DEF/LOCK2_DEF are the published Calcul UNLOCKED defaults, so this provisions a
+// coherent no-lock pair bound to this handset's COBBA. It is ordinary factory provisioning
+// through the real record format at the real offsets — not a bypass: the firmware still runs
+// its own SIMlock check, it just now has a self-consistent record to check instead of the
+// donor blob's, which belongs to a different COBBA and decodes to noise.
+// The transport pad, DERIVED — ported from the MCU routine that builds it (5110 v5.30
+// 0x25792C..0x2579A2, reached from the {70 16} assembler at 0x25792D; the final XOR loop is the
+// PC that shows up if you RAMWATCH the message buffer). It is a function of the IMEI RECORD and
+// of nothing else, which is why rewriting the FLASH-ID record leaves it untouched.
+//
+//   stage 1 (0x25792C)  the 12-byte IMEI record, laid down TWICE to fill 24 bytes, is walked in
+//                       byte PAIRS and each pair replaced by the 16-bit product's halves:
+//                       (a,b) -> (lo(a*b), hi(a*b)).
+//   stage 2 (0x25794C)  key[j] = bitrev(~X[23-j]) — the inner loop shifts the COMPLEMENT of each
+//                       source bit, LSB-first, into an accumulator it shifts left, so the byte
+//                       comes out bit-reversed and inverted, and the buffer comes out reversed.
+//                       (The same shape as the record codec's own rev_buf, plus the NOT.)
+//   stage 3 (0x25798E)  block[i] ^= key[i] over 24 bytes.
+//
+// Feeding the record twice is what makes the pad repeat with period 12, so only 12 bytes are
+// produced here. Verified against both measured pads:
+//     3AE6978A9961875C1B7B6F1B (donor) -> 2F52CF60F3DE63607599D3C7
+//     E37069457C7457265D647BC9 (ours)  -> F936DBD5CFA8E3F3C74D39F5
+// Computed, not measured — so provisioning stays correct for ANY pinned identity.
+static void siml_pad_from_imei(const uint8_t imei_rec[12], uint8_t pad[12]) {
+    uint8_t x[24];
+    for (int i = 0; i < 12; ++i) { x[i] = imei_rec[i]; x[12 + i] = imei_rec[i]; }
+    for (int i = 0; i < 12; ++i) {                       // stage 1
+        unsigned p = (unsigned)x[2 * i] * (unsigned)x[2 * i + 1];
+        x[2 * i]     = (uint8_t)(p & 0xFF);
+        x[2 * i + 1] = (uint8_t)((p >> 8) & 0xFF);
+    }
+    for (int j = 0; j < 12; ++j) {                       // stage 2
+        uint8_t s = (uint8_t)~x[23 - j], r = 0;
+        for (int b = 0; b < 8; ++b)
+            if (s & (1u << b)) r |= (uint8_t)(1u << (7 - b));
+        pad[j] = r;
+    }
+}
+#define SIML_P1_OFF 0x20u
+#define SIML_P2_OFF 0x2Cu
+
+static void simlock_provision_5110(struct Mad2* m) {
+    if (!m->model) return;
+    { const char* off = getenv("EE5110_NOSIML");        // A/B opt-out
+      if (off && *off && *off != '0') return; }
+    const uint8_t* msid = m->model->identity.msid;
+    int pinned = 0;
+    for (int i = 0; i < 13; ++i) if (msid[i]) { pinned = 1; break; }
+    if (!pinned) return;                    // no pinned identity -> nothing coherent to write
+
+    uint8_t crc[4], cobba[4], hash[4];
+    if (!calcul_decode_msid(msid, crc, cobba, hash)) return;
+
+    uint8_t* ee0 = m->i2c_eeprom;
+
+    // --- the other two records, so the whole set is bound to ONE identity -------------------
+    // Both of the blob's are the donor handset's, encoded against a COBBA that is not ours:
+    // decoded under our key they are noise (IMEI record -> 6106AB17…, FLASH-ID -> 35E438D0…).
+    // The MCU ships both to the DSP verbatim at boot ({70 15} = 0x00..0x13, {70 14} =
+    // 0x14..0x1F — read straight off the ring), so leaving them donor-owned means the DSP is
+    // handed an identity that contradicts the MSID we pin.
+    const char* imei14 = m->model->identity.imei14;
+    if (imei14) {
+        uint8_t imei_rec[12], imei_bcd[7];
+        if (calcul_imei_record(imei14, msid[0], cobba, imei_rec, imei_bcd))
+            memcpy(&ee0[0x00], imei_rec, 12);
+    }
+    {   // FLASH-ID record: the decoded MSID fields put through ppm_crc, then mode-1 encoded.
+        uint8_t plain[12], flid[12];
+        memcpy(plain, crc, 4); memcpy(plain + 4, cobba, 4); memcpy(plain + 8, hash, 4);
+        calcul_ppm_crc(plain);
+        if (calcul_encode(plain, msid[0], CALCUL_MODE_FLASH, cobba, flid))
+            memcpy(&ee0[0x14], flid, 12);
+    }
+
+    // The transport pad follows from the IMEI record we just wrote — computed, so this tracks
+    // any pinned identity with no re-measurement.
+    uint8_t SIML_XOR[12];
+    siml_pad_from_imei(&ee0[0x00], SIML_XOR);
+
+    // The PLAINTEXTS are NOT the published Calcul LOCK1_DEF/LOCK2_DEF. Those are the generic
+    // "unlocked" defaults of the record codec; this firmware's local-security profile is a
+    // different object, and feeding it LOCK1_DEF (which decodes to 0010 1000 0000 0010 0079)
+    // gets the record REJECTED and the phone takes its one-shot retry reboot (reason-4
+    // @0x258D2E).
+    //
+    // What it accepts is a WILDCARD-compare profile: part 1's leading FF FF FF FF FF match any
+    // IMSI, which is what "no operator lock" means here. These 24 bytes are exactly the
+    // region_a the ROM-4 HLE hands the firmware (src/mad2/dsp/dsp_rom4.c) — the known-accepted
+    // record. The difference is that the HLE FABRICATES it, whereas provisioning it here makes
+    // the real C54x mask ROM decode it out of the EEPROM and report it itself.
+    //
+    // Both carry the 0x54C2 trailer: the handler verifies each decoded part's last word against
+    // data[0xB703] (= 0x54C2) at PROM 0x4B8E/0x4B92 before zeroing it, which is also why both
+    // published LOCK defaults end in 54C2.
+    //
+    // Verified end to end: with these records and DSP54_SELFTEST_MEAS=0 (i.e. NO output stub),
+    // the co-sim boots past "SIM card not accepted" to standby — lcd 1d1dee9b…, the same screen
+    // the HLE reaches.
+    static const uint8_t SIML_P1_PLAIN[12] = {
+        0xFF,0xFF,0xFF,0xFF,0xFF,0x0F,0x00,0x00,0x00,0x78,0x54,0xC2 };
+    static const uint8_t SIML_P2_PLAIN[12] = {
+        0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x08,0x7C,0x54,0xC2 };
+    uint8_t p1[12], p2[12];
+    if (!calcul_encode(SIML_P1_PLAIN, msid[0], CALCUL_MODE_SIMLOCK, cobba, p1) ||
+        !calcul_encode(SIML_P2_PLAIN, msid[0], CALCUL_MODE_SIMLOCK, cobba, p2))
+        return;
+
+    uint8_t* ee = m->i2c_eeprom;
+    for (int i = 0; i < 12; ++i) {
+        ee[SIML_P1_OFF + i] = (uint8_t)(p1[i] ^ SIML_XOR[i]);
+        ee[SIML_P2_OFF + i] = (uint8_t)(p2[i] ^ SIML_XOR[i]);
+    }
+    if (getenv("I2CLOG")) {
+        printf("[faid] 5110 SIMlock provisioned (COBBA %02X%02X%02X%02X) p1@0x%02X=",
+               cobba[0], cobba[1], cobba[2], cobba[3], SIML_P1_OFF);
+        for (int i = 0; i < 12; ++i) printf("%02X", ee[SIML_P1_OFF + i]);
+        printf(" p2@0x%02X=", SIML_P2_OFF);
+        for (int i = 0; i < 12; ++i) printf("%02X", ee[SIML_P2_OFF + i]);
+        printf("\n");
+    }
+}
+
+// The whole record area 0x00..0x3D is covered by a 16-bit big-endian sum at 0x3E. Writing any
+// record without refreshing it fails the firmware's integrity check and the phone comes up on
+// CONTACT SERVICE — measured: provisioning SIMlock alone dropped the 5110 guard from
+// `23a09224…` to the CONTACT SERVICE hash `b86d6d5c…`, and refreshing this restored it.
+// The rule is confirmed against a real tool: recomputing it over NokTool's own bake (FLASH-ID +
+// both SIMlock records rewritten) reproduces the 0x1874 NokTool stored there, and the virgin
+// blob's 0x1A17 is the sum of its own untouched records. Idempotent — safe to run always.
+#define REC_CKSUM_OFF 0x3Eu
+static void record_area_cksum_5110(struct Mad2* m) {
+    uint8_t* ee = m->i2c_eeprom;
+    unsigned s = 0;
+    for (unsigned i = 0; i < REC_CKSUM_OFF; ++i) s += ee[i];
+    s &= 0xFFFFu;
+    ee[REC_CKSUM_OFF]     = (uint8_t)(s >> 8);
+    ee[REC_CKSUM_OFF + 1] = (uint8_t)(s & 0xFF);
+    if (getenv("I2CLOG"))
+        printf("[faid] 5110 record-area checksum @0x%02X = 0x%04X (sum 0x00..0x%02X)\n",
+               REC_CKSUM_OFF, s, REC_CKSUM_OFF - 1);
 }
 
 static void faid_provision(struct Mad2* m) {

@@ -43,6 +43,12 @@ const ModelProfile model_8855 = {
         .uif_irq = 1,
         .has_slide = 1,               // NSM-4 slide cover (reed switch), like the 8850
     },
+    // Factory identity — MINTED, pinned; see tools/dct3_identity.py and
+    //. COBBA s/n 00885542, IMEI 490154208855017.
+    .identity = {
+        .msid   = { 0x83, 0xD9, 0xEB, 0x7C, 0x8F, 0x4E, 0x0E, 0x69, 0x29, 0x30, 0xA2, 0x2C, 0x87 },
+        .imei14 = "49015420885501",
+    },
     .battery = {
         // Shared NSM Li-ion (BLB-2) battery-type window (== 8850/5210).
         .vbatt = 0x2C0, .bsi = 0x150, .temp = 0x140, .charger = 0x000,

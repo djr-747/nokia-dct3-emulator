@@ -61,6 +61,12 @@ const ModelProfile model_5210 = {
         .scan = KP_SCAN_DIR_AWARE,
         .uif_irq = 1,                 // matrix IRQ-source decode (8850-class)
     },
+    // Factory identity — MINTED, pinned; see tools/dct3_identity.py and
+    //. COBBA s/n 00521042, IMEI 490154205210018.
+    .identity = {
+        .msid   = { 0x83, 0xCE, 0xB2, 0xD8, 0x88, 0xB2, 0x4C, 0xCC, 0xDA, 0xBA, 0x77, 0x7E, 0x48 },
+        .imei14 = "49015420521001",
+    },
     // Period-correct backlight: the orange glow. 0xRRGGBB,
     // consumed by the harness tints (web palette / gui_sdl LCD bg).
     .led = { .lcd_rgb = 0xFFA040, .kbd_rgb = 0xFFA040 },

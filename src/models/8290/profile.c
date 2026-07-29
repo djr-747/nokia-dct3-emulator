@@ -40,6 +40,12 @@ const ModelProfile model_8290 = {
         .scan = KP_SCAN_DIR_AWARE,
         .uif_irq = 1,
     },
+    // Factory identity — MINTED, pinned; see tools/dct3_identity.py and
+    //. COBBA s/n 00829042, IMEI 490154208290017.
+    .identity = {
+        .msid   = { 0x83, 0xA6, 0x8F, 0xD9, 0xE7, 0xF5, 0xEE, 0x57, 0x7F, 0x86, 0x27, 0x55, 0xC8 },
+        .imei14 = "49015420829001",
+    },
     .battery = {
         // Shared NSM Li-ion (BLB-2) battery-type window (== 8210/8250/8850/5210).
         .vbatt = 0x2C0, .bsi = 0x150, .temp = 0x140, .charger = 0x000,

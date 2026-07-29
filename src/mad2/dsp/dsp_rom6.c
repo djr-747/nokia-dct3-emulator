@@ -26,12 +26,14 @@
 #include "models/model.h"
 #include "mad2/dsp/dsp_rom6.h"
 #include "mad2/dsp/mdi.h"
+#include "mad2/dsp/mdi_queue.h"
 
 // Single build/destroy point. The core memset already zeroes m->rom6 on init/reset.
 void rom6_reset(struct Mad2* m) {
     m->rom6 = (Rom6Dsp){0};
     m->rom6.nextBcchBroadcastCycle = UINT64_MAX;
     m->rom6.nextDedicatedCycle = UINT64_MAX;
+    m->rom6.nextCsdDataCycle   = UINT64_MAX;
     m->rom6.nextDedicatedBlkReqCycle = UINT64_MAX;
     m->rom6.nextRachTxCycle = UINT64_MAX;
     m->rom6.nextIncomingPagingCycle = UINT64_MAX;
@@ -142,94 +144,58 @@ static const uint8_t ROM6_SI4[23] = {
 // MDIRCV egress — single packet at a time (spec §RESPONDER).
 // ===========================================================================================
 // Two software queues front the one hardware ring: pendingMdiRcv (FIFO) + delayedMdiRcv
-// (time-ordered). PumpMdiRcv posts ONE record via mdi_d2m_deposit ONLY when the ring is empty,
+// (time-ordered). PumpMdiRcv posts a record via mdi_d2m_append when the ring has room,
 // then RaiseFiq0. Stale unposted records (> 2s) are dropped.
 
+
+
+
+// ---- d2m egress: thin wrappers over the shared queues (dsp/mdi_queue.c) -------------------
+// The queue machinery itself is transport and is shared with ROM-4; only the cycle source, the
+// keep-alive cadence and the ROM6_LOG narration are per-engine.
+#define ROM6_KA_CYC 25000000u   // idle-telemetry cadence, ~5 s @ 4.93 MHz (see rom6_idle_heartbeat)
+
 static void rom6_enqueue(struct Mad2* m, uint8_t op, const uint8_t* payload, uint8_t len) {
-    Rom6Dsp* r = &m->rom6;
-    uint8_t nt = (uint8_t)((r->p_tail + 1u) % ROM6_PENDING_N);
-    if (nt == r->p_head) return;                    // FIFO full: drop (real overflow)
-    Rom6MdiRec* rec = &r->pending[r->p_tail];
-    rec->op = op; rec->len = len;
-    if (len > ROM6_RCVMAX) len = ROM6_RCVMAX, rec->len = len;
-    for (uint8_t i = 0; i < len; ++i) rec->bytes[i] = payload ? payload[i] : 0u;
-    rec->enq = rom6_now(r); rec->due = rom6_now(r);
-    r->p_tail = nt;
+    mdi_queue_enqueue(&m->rom6.q, rom6_now(&m->rom6), op, payload, len);
 }
-
 static void rom6_enqueue_at(struct Mad2* m, uint64_t due,
-                              uint8_t op, const uint8_t* payload, uint8_t len) {
-    Rom6Dsp* r = &m->rom6;
-    for (unsigned i = 0; i < ROM6_DELAYED_N; ++i) {
-        Rom6MdiRec* rec = &r->delayed[i];
-        if (rec->used) continue;
-        rec->op = op; rec->len = (len > ROM6_RCVMAX) ? ROM6_RCVMAX : len;
-        for (uint8_t k = 0; k < rec->len; ++k) rec->bytes[k] = payload ? payload[k] : 0u;
-        rec->enq = rom6_now(r); rec->due = due; rec->used = 1;
-        return;
-    }
-    // delayed queue full: fall back to immediate (drop the delay rather than the record).
-    rom6_enqueue(m, op, payload, len);
+                            uint8_t op, const uint8_t* payload, uint8_t len) {
+    mdi_queue_enqueue_at(&m->rom6.q, rom6_now(&m->rom6), due, op, payload, len);
 }
-
 static void rom6_enqueue_after(struct Mad2* m, uint64_t delay,
-                                 uint8_t op, const uint8_t* payload, uint8_t len) {
+                               uint8_t op, const uint8_t* payload, uint8_t len) {
     rom6_enqueue_at(m, rom6_now(&m->rom6) + delay, op, payload, len);
 }
-
-// PumpDelayedMdiRcv: matured delayed records move into the FIFO in due order.
 static void rom6_pump_delayed(struct Mad2* m, uint64_t cycles) {
-    Rom6Dsp* r = &m->rom6;
-    for (unsigned i = 0; i < ROM6_DELAYED_N; ++i) {
-        Rom6MdiRec* rec = &r->delayed[i];
-        if (rec->used && cycles >= rec->due) {
-            rom6_enqueue(m, rec->op, rec->bytes, rec->len);
-            rec->used = 0;
-        }
+    mdi_queue_pump_delayed(&m->rom6.q, cycles);
+}
+static void rom6_expire_stale(struct Mad2* m, uint64_t cycles) {
+    mdi_queue_expire_stale(&m->rom6.q, cycles, rom6_cpf() * 217u * 2u);   // 2 seconds
+}
+static void rom6_pump_mdircv(struct Mad2* m) {
+    const MdiRec* rec = mdi_queue_peek(&m->rom6.q);
+    if (!rec) return;
+    uint8_t op = rec->op, len = rec->len;
+    uint8_t b[16];
+    for (unsigned i = 0; i < sizeof b && i < len; ++i) b[i] = rec->bytes[i];
+    if (!mdi_queue_post(m, &m->rom6.q, ROM6_KA_CYC)) return;
+    if (getenv("ROM6_LOG") && op == 0x80 && len >= 13) {
+        if (b[0] == 0x60 && b[12] == 0x3F)
+            fprintf(stderr, "[rom6] Immediate Assignment posted FN=%u @step=%llu\n",
+                    ((unsigned)b[3] << 16) | ((unsigned)b[4] << 8) | b[5],
+                    (unsigned long long)m->dsp_steps);
+        else if (b[0] == 0x80)
+            fprintf(stderr, "[rom6] dedicated posted FN=%u addr=%02X ctrl=%02X li=%02X @step=%llu\n",
+                    ((unsigned)b[3] << 16) | ((unsigned)b[4] << 8) | b[5], b[10], b[11], b[12],
+                    (unsigned long long)m->dsp_steps);
     }
 }
 
 // ExpireStale: drop FIFO records that have waited unposted longer than 2s (Cps*2 cycles).
-static void rom6_expire_stale(struct Mad2* m, uint64_t cycles) {
-    Rom6Dsp* r = &m->rom6;
-    uint64_t ttl = rom6_cpf() * 217u * 2u;        // 2 seconds
-    while (r->p_head != r->p_tail) {
-        Rom6MdiRec* rec = &r->pending[r->p_head];
-        if (cycles - rec->enq <= ttl) break;  // FIFO is roughly time-ordered
-        r->p_head = (uint8_t)((r->p_head + 1u) % ROM6_PENDING_N);
-    }
-}
 
 // PumpMdiRcv: post ONE record from the FIFO head into the (empty) hardware ring + RaiseFiq0.
 #define ROM6_KA_CYC 25000000u   // idle-telemetry cadence, ~5 s @ 4.93 MHz (see rom6_idle_heartbeat)
 
-static void rom6_pump_mdircv(struct Mad2* m) {
-    Rom6Dsp* r = &m->rom6;
-    if (r->p_head == r->p_tail) return;             // FIFO empty
-    Rom6MdiRec* rec = &r->pending[r->p_head];
-    // mdi_d2m_deposit only posts into an EMPTY ring (producer==consumer) — the "one packet at a
-    // time" guarantee. Returns 0 if the MCU has not drained the previous frame yet; retry next tick.
-    if (mdi_d2m_deposit(m->mem, m->mem_mask, m->fw.mdircv_q, m->fw.mdircv_tail,
-                        m->fw.mdircv_head, rec->op, rec->bytes, rec->len)) {
-        if (getenv("ROM6_LOG") && rec->op == 0x80 && rec->len >= 13) {
-            if (rec->bytes[0] == 0x60 && rec->bytes[12] == 0x3F)
-                fprintf(stderr, "[rom6] Immediate Assignment posted FN=%u RA=0x%02X @step=%llu\n",
-                        ((unsigned)rec->bytes[3] << 16) | ((unsigned)rec->bytes[4] << 8) | rec->bytes[5],
-                        rec->bytes[17], (unsigned long long)m->dsp_steps);
-            else if (rec->bytes[0] == 0x80)
-                fprintf(stderr,
-                        "[rom6] dedicated posted FN=%u addr=%02X ctrl=%02X li=%02X @step=%llu\n",
-                        ((unsigned)rec->bytes[3] << 16) | ((unsigned)rec->bytes[4] << 8) | rec->bytes[5],
-                        rec->bytes[10], rec->bytes[11], rec->bytes[12],
-                        (unsigned long long)m->dsp_steps);
-        }
-        mad2_raise_fiq(m, 0);
-        r->p_head = (uint8_t)((r->p_head + 1u) % ROM6_PENDING_N);
-        // Real d2m traffic feeds the firmware's MDI-activity counter — re-pace the idle
-        // telemetry heartbeat so it only ever fills genuine DSP silence (see rom6_idle_heartbeat).
-        m->dsp_hb_next_cyc = m->rtc_mono + ROM6_KA_CYC;
-    }
-}
 
 // Perpetual idle MDI telemetry — the real DSP is NEVER silent. The firmware's 0xE4
 // DSP-liveness watchdog (soft-timer slot 36) is perpetual and counter-driven: every ~19-21 s
@@ -249,7 +215,7 @@ static void rom6_idle_heartbeat(struct Mad2* m) {
     if (!protocol_ready) { m->dsp_hb_next_cyc = 0; return; }
     if (!m->dsp_hb_next_cyc) { m->dsp_hb_next_cyc = m->rtc_mono + ROM6_KA_CYC; return; }
     if (m->rtc_mono < m->dsp_hb_next_cyc) return;
-    if (r->p_head != r->p_tail) return;      // engine has real traffic in flight: it will re-pace
+    if (r->q.p_head != r->q.p_tail) return;      // engine has real traffic in flight: it will re-pace
     uint32_t hp = m->fw.mdircv_head & m->mem_mask;
     uint32_t tp = m->fw.mdircv_tail & m->mem_mask;
     uint16_t head = (uint16_t)((m->mem[hp] << 8) | m->mem[hp + 1]);
@@ -275,21 +241,21 @@ static void rom6_idle_heartbeat(struct Mad2* m) {
 // is active; the firmware then retunes back to CCCH between UA and the first
 // network I-frame.  Real RF naturally discards those bursts at the retune edge.
 static void rom6_drop_idle_radio_backlog(Rom6Dsp* r) {
-    Rom6MdiRec keep[ROM6_PENDING_N];
+    MdiRec keep[MDI_PENDING_N];
     uint8_t count = 0;
-    for (uint8_t i = r->p_head; i != r->p_tail;
-         i = (uint8_t)((i + 1u) % ROM6_PENDING_N)) {
-        Rom6MdiRec* rec = &r->pending[i];
+    for (uint8_t i = r->q.p_head; i != r->q.p_tail;
+         i = (uint8_t)((i + 1u) % MDI_PENDING_N)) {
+        MdiRec* rec = &r->q.pending[i];
         int idle_radio = rec->op == 0x80u && rec->len != 0u &&
                          (rec->bytes[0] == 0x50u || rec->bytes[0] == 0x60u);
-        if (!idle_radio && count + 1u < ROM6_PENDING_N)
+        if (!idle_radio && count + 1u < MDI_PENDING_N)
             keep[count++] = *rec;
     }
-    r->p_head = 0;
-    r->p_tail = count;
-    for (uint8_t i = 0; i < count; ++i) r->pending[i] = keep[i];
-    for (unsigned i = 0; i < ROM6_DELAYED_N; ++i) {
-        Rom6MdiRec* rec = &r->delayed[i];
+    r->q.p_head = 0;
+    r->q.p_tail = count;
+    for (uint8_t i = 0; i < count; ++i) r->q.pending[i] = keep[i];
+    for (unsigned i = 0; i < MDI_DELAYED_N; ++i) {
+        MdiRec* rec = &r->q.delayed[i];
         if (rec->used && rec->op == 0x80u && rec->len != 0u &&
             (rec->bytes[0] == 0x50u || rec->bytes[0] == 0x60u))
             rec->used = 0;
@@ -594,7 +560,8 @@ enum {
     KIND_ALERTING,
     KIND_CONNECT,
     KIND_CONNECT_ACK,
-    KIND_RELEASE
+    KIND_RELEASE,
+    KIND_ASSIGNMENT_CMD
 };
 
 enum { INCOMING_CALL = 1, INCOMING_SMS = 2 };
@@ -665,6 +632,19 @@ static void rom6_copy_sms(char out[121], const char* value) {
     out[n] = 0;
 }
 
+// A queued MT service needs the phone paged before it can be delivered.
+static void rom6_arm_incoming_paging(struct Mad2* m) {
+    Rom6Dsp* r = &m->rom6;
+    if (r->suppressImsiPaging && !r->dedicatedConfigured && !r->incomingPagingActive) {
+        rom6_refresh_paging_identity(m);
+        r->incomingPagingActive = 1;
+        r->incomingPagingAnswered = 0;
+        r->incomingPagingBursts = 0;
+        r->incomingPagingCycles = 0;
+        r->nextIncomingPagingCycle = rom6_next_paging_group_cycle(r, rom6_now(r));
+    }
+}
+
 static int rom6_queue_incoming(struct Mad2* m, uint8_t kind,
                                  const char* address, const char* text) {
     Rom6Dsp* r = &m->rom6;
@@ -676,15 +656,7 @@ static int rom6_queue_incoming(struct Mad2* m, uint8_t kind,
     rom6_copy_digits(service->address, address);
     if (kind == INCOMING_SMS) rom6_copy_sms(service->text, text);
     r->incomingTail = next;
-    if (r->suppressImsiPaging && !r->dedicatedConfigured &&
-        !r->incomingPagingActive) {
-        rom6_refresh_paging_identity(m);
-        r->incomingPagingActive = 1;
-        r->incomingPagingAnswered = 0;
-        r->incomingPagingBursts = 0;
-        r->nextIncomingPagingCycle =
-            rom6_next_paging_group_cycle(r, rom6_now(r));
-    }
+    rom6_arm_incoming_paging(m);
     if (rom6_log_enabled())
         fprintf(stderr, "[rom6] incoming %s queued from %s%s%s\n",
                 kind == INCOMING_CALL ? "call" : "SMS", service->address,
@@ -703,13 +675,69 @@ int rom6_queue_incoming_sms(struct Mad2* m, const char* originator, const char* 
         ? rom6_queue_incoming(m, INCOMING_SMS, originator, text) : 0;
 }
 
+// A binary SMS addressed to an application port — the envelope operator
+// settings, ringtones and logos arrived in. The phone routes it by destination
+// port rather than showing it as text.
+int rom6_queue_incoming_sms_bin(struct Mad2* m, const char* originator,
+                                  const uint8_t* data, unsigned len,
+                                  uint16_t destPort, uint16_t srcPort) {
+    if (!m || mad2_active_dsp(m) != &mad2_dsp_rom6 || !data || !len) return 0;
+    Rom6Dsp* r = &m->rom6;
+    // One SMS carries 140 octets of user data including the header, so a
+    // payload larger than that is split and reassembled by the phone. Settings
+    // messages routinely need this.
+    const unsigned onePart = 140u - 7u;             // port IE only
+    const unsigned partCap = 140u - 12u;            // port IE + SAR IE
+    unsigned parts = len <= onePart ? 1u : (len + partCap - 1u) / partCap;
+    if (parts > 255u) return 0;
+    uint8_t ref = ++r->nextSmsReference;
+    unsigned off = 0;
+    for (unsigned i = 0; i < parts; ++i) {
+        uint8_t next = (uint8_t)((r->incomingTail + 1u) % ROM6_INCOMING_N);
+        if (next == r->incomingHead) return 0;      // queue full: deliver nothing further
+        Rom6IncomingService* service = &r->incoming[r->incomingTail];
+        memset(service, 0, sizeof *service);
+        service->kind = INCOMING_SMS;
+        rom6_copy_digits(service->address, originator);
+        unsigned chunk = len - off;
+        unsigned cap = parts > 1u ? partCap : onePart;
+        if (chunk > cap) chunk = cap;
+        memcpy(service->bin, data + off, chunk);
+        service->binLen = (uint8_t)chunk;
+        service->destPort = destPort;
+        service->srcPort = srcPort;
+        if (parts > 1u) {
+            service->sarRef = ref;
+            service->sarTotal = (uint8_t)parts;
+            service->sarSeq = (uint8_t)(i + 1u);
+        }
+        off += chunk;
+        r->incomingTail = next;
+    }
+    rom6_arm_incoming_paging(m);
+    if (rom6_log_enabled())
+        fprintf(stderr, "[rom6] queued binary SMS from %s: %u bytes -> port %u (%u part%s)\n",
+                originator, len, destPort, parts, parts == 1u ? "" : "s");
+    return 1;
+}
+
+// Dedicated logical channels seen on DCT3: 0x80 = SDCCH, 0xB0 = FACCH (signalling associated
+// with a traffic channel), 0xD9 = the traffic channel itself as named by channel-configure.
+// Anything at or above 0xA0 therefore belongs to a traffic channel and runs on FACCH timing
+// rather than the SDCCH's 51-frame control multiframe.
+static int rom6_logch_is_traffic(uint8_t l) { return l >= 0xA0u; }
+
 // Wrap a 23-byte LAPDm L2 block as an 0x80 RECEIVED_BLOCK on the dedicated channel (logch 0x80)
 // and enqueue it on the FIFO (single-packet egress paces delivery).
 static void rom6_dl_lapdm_at(struct Mad2* m, const uint8_t* L2, uint64_t eventCycles) {
     Rom6Dsp* r = &m->rom6;
     uint8_t pl[64];
     uint32_t fn = rom6_frame_at(eventCycles);
-    uint8_t len = rom6_b_received_block(pl, 0x80, r->dedicatedBsic, r->dedicatedArfcn, fn, L2, 23);
+    // Tag the block with whatever dedicated channel is currently in force: SDCCH before an
+    // assignment, the assigned traffic channel (FACCH) after one. Falls back to SDCCH so any
+    // path that never latched a channel behaves exactly as it did before traffic channels existed.
+    uint8_t logch = r->dedicatedLogch ? r->dedicatedLogch : 0x80u;
+    uint8_t len = rom6_b_received_block(pl, logch, r->dedicatedBsic, r->dedicatedArfcn, fn, L2, 23);
     rom6_enqueue(m, 0x80, pl, len);
 }
 
@@ -861,19 +889,31 @@ static uint16_t rom6_build_mt_call_setup(uint8_t out[64], const char* number) {
     return (uint16_t)(13u + bytes);
 }
 
+// Build the SMS-DELIVER. Two shapes, chosen by `svc`:
+//   text   — GSM 7-bit, no header. The ordinary message path.
+//   binary — 8-bit data with a port-addressing User Data Header (GSM 03.40
+//            §9.2.3.24.4). This is the envelope every "smart message" of the
+//            era travelled in: operator settings, ringtones, logos, vCards.
+//            TP-UDHI (bit 6 of the first octet) says a header is present, and
+//            TP-DCS 0xF5 means 8-bit data, class 1 — what Nokia's own OTA
+//            settings messages used.
 static uint16_t rom6_build_mt_sms(uint8_t out[ROM6_L3_MAX],
                                     const char* originator, const char* text,
-                                    uint8_t reference) {
+                                    uint8_t reference,
+                                    const Rom6IncomingService* svc) {
     uint8_t tpdu[180], rpdu[220], user[120], digits[10], sca[6];
     uint8_t origin_digits = (uint8_t)strlen(originator);
     if (origin_digits > 20u) origin_digits = 20u;
     uint8_t origin_bytes = rom6_encode_digits(digits, originator);
-    uint8_t septets = rom6_pack_gsm7(user, sizeof user, text);
-    unsigned user_bytes = ((unsigned)septets * 7u + 7u) / 8u;
+    int binary = svc && svc->binLen;
+    uint8_t septets = binary ? 0u : rom6_pack_gsm7(user, sizeof user, text);
+    unsigned user_bytes = binary ? 0u : ((unsigned)septets * 7u + 7u) / 8u;
     unsigned t = 0;
-    tpdu[t++] = 0x04; tpdu[t++] = origin_digits; tpdu[t++] = 0x81;
+    tpdu[t++] = binary ? 0x44u : 0x04u;          // TP-UDHI set for the header
+    tpdu[t++] = origin_digits; tpdu[t++] = 0x81;
     memcpy(tpdu + t, digits, origin_bytes); t += origin_bytes;
-    tpdu[t++] = 0x00; tpdu[t++] = 0x00;
+    tpdu[t++] = 0x00;                            // TP-PID
+    tpdu[t++] = binary ? 0xF5u : 0x00u;          // TP-DCS: 8-bit class 1 / GSM7
     {
         time_t stamp = time(NULL);
         struct tm utc = {0};
@@ -891,8 +931,34 @@ static uint16_t rom6_build_mt_sms(uint8_t out[ROM6_L3_MAX],
         tpdu[t++] = rom6_nitz_bcd((unsigned)utc.tm_sec);
         tpdu[t++] = 0x00;
     }
-    tpdu[t++] = septets;
-    memcpy(tpdu + t, user, user_bytes); t += user_bytes;
+    if (binary) {
+        // TP-UDL counts the header as well as the data, since both live in the
+        // 140-octet user-data field. A concatenated part carries the SAR IE
+        // after the port IE — exactly the "0B0504C34FC0020003040201" the OTA
+        // settings spec shows.
+        int concat = svc->sarTotal > 1u;
+        const uint8_t udhLen = concat ? 11u : 6u;
+        unsigned n = svc->binLen;
+        if (n > sizeof svc->bin) n = sizeof svc->bin;
+        if (n > 140u - (udhLen + 1u)) n = 140u - (udhLen + 1u);
+        tpdu[t++] = (uint8_t)(udhLen + 1u + n);  // TP-UDL
+        tpdu[t++] = udhLen;                      // UDHL
+        tpdu[t++] = 0x05;                        // IEI: 16-bit port addressing
+        tpdu[t++] = 0x04;                        // IEDL
+        tpdu[t++] = (uint8_t)(svc->destPort >> 8); tpdu[t++] = (uint8_t)svc->destPort;
+        tpdu[t++] = (uint8_t)(svc->srcPort >> 8);  tpdu[t++] = (uint8_t)svc->srcPort;
+        if (concat) {
+            tpdu[t++] = 0x00;                    // IEI: 8-bit concatenation
+            tpdu[t++] = 0x03;                    // IEDL
+            tpdu[t++] = svc->sarRef;
+            tpdu[t++] = svc->sarTotal;
+            tpdu[t++] = svc->sarSeq;
+        }
+        memcpy(tpdu + t, svc->bin, n); t += n;
+    } else {
+        tpdu[t++] = septets;
+        memcpy(tpdu + t, user, user_bytes); t += user_bytes;
+    }
 
     sca[0] = 0x91;
     uint8_t sca_bytes = rom6_encode_digits(sca + 1, "1234567890");
@@ -920,8 +986,46 @@ static int rom6_get_rpdu(const uint8_t* info, uint16_t len,
     return 1;
 }
 
+// Decode the SETUP's Bearer Capability IE (GSM 04.08 §10.5.4.5) into the call's
+// bearer + transfer mode. IE layout in a SETUP: IEI 0x04, length, then octet 3 =
+//   bit 8   extension
+//   bits7-6 radio channel requirement
+//   bit 5   coding standard
+//   bit 4   transfer mode      0 = circuit, 1 = packet
+//   bits3-1 information transfer capability  000 speech / 001 UDI (CSD) / 010 3.1k / 011 fax
+// Verified live on the 3410 v5.46 WAP dial (tools/macros/3410-): the
+// browser's SETUP carries 04 07 A1 … -> octet 3 = 0xA1 = circuit mode + UDI, i.e. CSD.
+// A voice dial from the same firmware carries speech (000) in the same position, so this
+// IE — not the CM service type, which is 1 for both — is what tells the two apart.
+// Absent/short IE leaves the call speech, matching the pre-CSD behaviour exactly.
+static void rom6_decode_bearer(Rom6Dsp* r, const uint8_t* info, uint16_t len) {
+    r->callBearer = ROM6_BEARER_SPEECH;
+    r->callTransferMode = 0;
+    // Bearer Capability is the first IE of a SETUP (mandatory), right after PD/TI + type.
+    if (len < 5u || info[2] != 0x04u) return;
+    uint8_t ie_len = info[3];
+    if (!ie_len || (unsigned)4u + ie_len > len) return;
+    uint8_t octet3 = info[4];
+    r->callBearer = (uint8_t)(octet3 & 0x07u);
+    r->callTransferMode = (uint8_t)((octet3 >> 3) & 0x01u);
+    // Keep the offered octets verbatim so CALL PROCEEDING can confirm the bearer unchanged.
+    r->callBcapLen = (uint8_t)(ie_len > sizeof r->callBcap ? sizeof r->callBcap : ie_len);
+    memcpy(r->callBcap, info + 4, r->callBcapLen);
+}
+
+static const char* rom6_bearer_name(uint8_t bearer) {
+    switch (bearer) {
+    case ROM6_BEARER_SPEECH:  return "speech";
+    case ROM6_BEARER_UDI:     return "UDI/CSD-data";
+    case ROM6_BEARER_AUDIO31: return "3.1kHz-audio";
+    case ROM6_BEARER_FAX_G3:  return "fax-G3";
+    default:                  return "other";
+    }
+}
+
 static void rom6_decode_mo_call(Rom6Dsp* r, const uint8_t* info, uint16_t len) {
     r->remoteNumber[0] = 0;
+    rom6_decode_bearer(r, info, len);
     for (unsigned i = 2; i + 2u < len; ++i) {
         if (info[i] != 0x5Eu) continue;
         unsigned count = info[i + 1u];
@@ -1056,6 +1160,7 @@ static void rom6_start_next_incoming_paging(struct Mad2* m) {
     r->incomingPagingActive = 1;
     r->incomingPagingAnswered = 0;
     r->incomingPagingBursts = 0;
+    r->incomingPagingCycles = 0;
     r->nextIncomingPagingCycle =
         rom6_next_paging_group_cycle(r, rom6_now(r));
 }
@@ -1073,12 +1178,19 @@ static void rom6_queue_mt_sms(struct Mad2* m) {
     Rom6Dsp* r = &m->rom6;
     uint8_t info[ROM6_L3_MAX];
     uint16_t len = rom6_build_mt_sms(info, r->activeIncomingAddress,
-                                       r->activeIncomingText, r->nextSmsReference++);
+                                       r->activeIncomingText, r->nextSmsReference++,
+                                       &r->activeIncoming);
     rom6_send_iframes(m, 3, info, len, rom6_link(r, 3)->vr,
                         KIND_MT_SMS_CP_DATA);
-    if (rom6_log_enabled())
-        fprintf(stderr, "[rom6] MT SMS CP-DATA queued from %s text=\"%s\"\n",
-                r->activeIncomingAddress, r->activeIncomingText);
+    if (rom6_log_enabled()) {
+        if (r->activeIncoming.binLen)
+            fprintf(stderr, "[rom6] MT SMS CP-DATA queued from %s — %u binary bytes to port %u\n",
+                    r->activeIncomingAddress, r->activeIncoming.binLen,
+                    r->activeIncoming.destPort);
+        else
+            fprintf(stderr, "[rom6] MT SMS CP-DATA queued from %s text=\"%s\"\n",
+                    r->activeIncomingAddress, r->activeIncomingText);
+    }
 }
 
 // Network step: a downlink I-frame we sent has just been acknowledged by the MS -> advance the FSM.
@@ -1143,13 +1255,22 @@ static int rom6_pop_incoming(Rom6Dsp* r) {
     r->activeIncomingKind = service->kind;
     memcpy(r->activeIncomingAddress, service->address, sizeof service->address);
     memcpy(r->activeIncomingText, service->text, sizeof service->text);
+    r->activeIncoming = *service;
     r->incomingHead = (uint8_t)((r->incomingHead + 1u) % ROM6_INCOMING_N);
     return 1;
 }
 
+static int rom6_check_assignment_complete(struct Mad2* m, const uint8_t* info, uint16_t len);
+static int rom6_check_assignment_failure(struct Mad2* m, const uint8_t* info, uint16_t len);
+
 static void rom6_net_established(struct Mad2* m, const uint8_t* info, uint16_t len) {
     Rom6Dsp* r = &m->rom6;
     int log = rom6_log_enabled();
+    // A re-establishment on a freshly assigned channel carries ASSIGNMENT COMPLETE, not a
+    // registration primitive — handle it before the REG_IDLE-gated branches below, which would
+    // otherwise ignore it entirely (the MM connection is already active at this point).
+    if (rom6_check_assignment_complete(m, info, len)) return;
+    if (rom6_check_assignment_failure(m, info, len)) return;
     if (len >= 2 && (info[0] & 0x0Fu) == 0x05u && info[1] == 0x08u && r->regState == REG_IDLE) {
         uint8_t luacc[7] = { 0x05, 0x02, 0, 0, 0, 0x00, 0x01 };
         mad2_sim_current_plmn(m, luacc + 2);
@@ -1161,6 +1282,16 @@ static void rom6_net_established(struct Mad2* m, const uint8_t* info, uint16_t l
                info[1] == 0x24u && r->regState == REG_IDLE) {
         uint8_t service = info[2] & 0x0Fu;
         if (service == SVC_MO_CALL || service == SVC_EMERGENCY || service == SVC_SMS) {
+            // A CM Service Request opens a NEW transaction, so clear the previous call's
+            // leftovers here. Without this the transaction state is never cleared (release only
+            // moves callState to 3), and the duplicate-SETUP guard below — which must ignore the
+            // MS's retransmitted SETUP after a CSD channel change — would go on to swallow the
+            // first SETUP of the *next* call as well.
+            if (service != SVC_SMS) {
+                r->callState = 0; r->callDirection = 0;
+                r->callTiPd = ROM6_TI_PD_NONE;
+                r->csdAssignPending = 0;
+            }
             rom6_queue_cipher_command(m, service);
             if (log) fprintf(stderr, "[rom6] CM-Service-Request service=%u -> cipher command\n", service);
         }
@@ -1181,6 +1312,115 @@ static void rom6_queue_call_message(struct Mad2* m, uint8_t ti_pd,
     rom6_send_iframes(m, 0, info, sizeof info, rom6_link(r, 0)->vr, kind);
 }
 
+
+// One downlink CSD data block: d2m opcode 0x9C. See the CONNECT site for the full trace of why
+// this opcode and this payload layout, and why the 0x80 ReceivedBlock used for signalling does
+// NOT reach the data path.
+static void rom6_send_csd_data_block(struct Mad2* m) {
+    Rom6Dsp* r = &m->rom6;
+    uint8_t pl[32];
+    memset(pl, 0, sizeof pl);
+    pl[0] = r->csdTrafficLogch ? r->csdTrafficLogch : r->dedicatedLogch;
+    pl[1] = 0x00;                 // bit0 clear -> data; bit0 set would route to signalling (0x3F9)
+    // pl[2..3] is a downlink GSM 04.22 RLP frame header, LITTLE-endian (measured: the firmware's
+    // NTB_STATUS_DECODE 0x2CAFA4 maps its U-frame M bits 1:1 onto the link events — UA -> 0x408
+    // is what acknowledges the MS's SABM). The RLP peer decides which frame goes out.
+    // ROM6_CSD_STATUS=<hex> force-overrides the header word for A/B experiments.
+    uint16_t h = rlp_peer_next_downlink(&r->csdRlp, pl);
+    { const char* sv = getenv("ROM6_CSD_STATUS");
+      if (sv) { h = (uint16_t)strtoul(sv, 0, 16);
+                pl[2] = (uint8_t)(h & 0xFFu); pl[3] = (uint8_t)(h >> 8); } }
+    rom6_enqueue(m, 0x9C, pl, sizeof pl);
+    if (getenv("ROM6_LOG"))
+        fprintf(stderr, "[rom6] CSD: d2m RLP frame hdr=0x%04X vs=%u vr=%u est=%u\n",
+                h, r->csdRlp.vs, r->csdRlp.vr, r->csdRlp.established);
+}
+
+// ── RR ASSIGNMENT COMMAND — move a CSD call off SDCCH onto a data-mode traffic channel ──
+//
+// WHY THIS EXISTS. A voice call in this engine never leaves SDCCH: the CC handshake completes
+// on the signalling channel and the HLE never models speech frames, so no traffic channel is
+// needed and none is assigned. A CSD call cannot cheat that way — the data path (RLP → L2R →
+// PPP) rides the TRAFFIC channel, so until the MS is assigned a TCH in a *data* channel mode
+// there is nothing for the data stack to run on. Observed live: after CONNECT the dedicated
+// link falls to empty UI fill frames forever and the browser sits on "Connecting" — no RLP,
+// because there is no data channel.
+//
+// GSM 04.08 §9.1.2 ASSIGNMENT COMMAND:
+//   06 2E | Channel Description 2 (3 oct, V) | Power Command (1 oct, V) | 63 <Channel Mode> (TV)
+// Channel Description 2 (§10.5.2.5a): channel type 00001 = TCH/F + ACCHs.
+// Channel Mode (§10.5.2.6): 0x03 = data, 12.0 kbit/s radio interface rate — the radio rate that
+// carries the 9.6 kbit/s user rate a DCT3 CSD/WAP call asks for. (0x01 would be speech.)
+//
+// SCOPE / SAFETY: sent ONLY for a call whose decoded bearer is UDI (CSD). Voice calls keep the
+// exact pre-existing SDCCH-only flow, so the green guard boots stay byte-identical.
+#define ROM6_CHMODE_DATA_12K0  0x03u   // §10.5.2.6 data, 12.0 kbit/s radio interface rate
+#define ROM6_TCHF_TIMESLOT     0x01u   // TN 1 — SDCCH sits on TN 0 in this engine's cell
+// TCH/F data blocks arrive every 20 ms on a real 9.6k CSD call, i.e. a little under
+// 5 GSM frames. 4 keeps the stack fed without flooding the single MDIRCV ring.
+#define ROM6_CSD_DATA_FRAMES   4u
+
+static void rom6_queue_assignment_command(struct Mad2* m) {
+    Rom6Dsp* r = &m->rom6;
+    uint16_t arfcn = r->dedicatedArfcn;
+    uint8_t  tsc   = (uint8_t)(r->dedicatedBsic & 0x07u);   // TSC = BCC of the serving cell
+    uint8_t ac[8];
+    ac[0] = 0x06;                                            // PD = RR management
+    ac[1] = 0x2E;                                            // ASSIGNMENT COMMAND
+    ac[2] = (uint8_t)((0x01u << 3) | ROM6_TCHF_TIMESLOT);    // TCH/F + ACCHs, timeslot
+    ac[3] = (uint8_t)((tsc << 5) | ((arfcn >> 8) & 0x03u));  // TSC | H=0 | ARFCN high
+    ac[4] = (uint8_t)(arfcn & 0xFFu);                        // ARFCN low
+    ac[5] = 0x00;                                            // Power Command: max power level
+    ac[6] = 0x63;                                            // Channel Mode IEI
+    ac[7] = ROM6_CHMODE_DATA_12K0;                           // data channel mode
+    rom6_send_iframes(m, 0, ac, sizeof ac, rom6_link(r, 0)->vr, KIND_ASSIGNMENT_CMD);
+    if (rom6_log_enabled())
+        fprintf(stderr,
+                "[rom6] CSD: ASSIGNMENT COMMAND -> TCH/F TN%u ARFCN %u TSC %u mode=0x%02X (data 12.0k)\n",
+                ROM6_TCHF_TIMESLOT, arfcn, tsc, ROM6_CHMODE_DATA_12K0);
+}
+
+// ASSIGNMENT COMPLETE (04.08 §9.1.3, `06 29 <RR cause>`) closes the assignment: the MS is now
+// established on the traffic channel. It arrives either in the SABM information field (the MS
+// re-establishes the link on the new channel and puts the L3 there, exactly as it does with the
+// LU-Request during registration) or as an ordinary I-frame — so both entry points call this.
+// Returns 1 if the message was consumed. Only then is it safe to resume the CC handshake, which
+// now travels on the new channel because the downlink follows `dedicatedLogch`.
+static void rom6_queue_call_message(struct Mad2* m, uint8_t ti_pd, uint8_t type, uint8_t kind);
+
+static int rom6_check_assignment_complete(struct Mad2* m, const uint8_t* info, uint16_t len) {
+    Rom6Dsp* r = &m->rom6;
+    if (len < 2u || (info[0] & 0x0Fu) != 0x06u || info[1] != 0x29u) return 0;
+    if (rom6_log_enabled())
+        fprintf(stderr, "[rom6] CSD: ASSIGNMENT COMPLETE (cause 0x%02X) — MS established on TCH @step=%llu\n",
+                len > 2u ? info[2] : 0u, (unsigned long long)m->dsp_steps);
+    if (r->csdAssignPending) {
+        r->csdAssignPending = 0;
+        // Resume the deferred CC handshake on the assigned channel.
+        rom6_queue_call_message(m, r->callTiPd, 0x07, KIND_CONNECT);
+        if (rom6_log_enabled())
+            fprintf(stderr, "[rom6] CSD: assignment done -> CONNECT on the traffic channel\n");
+    }
+    return 1;
+}
+
+// ASSIGNMENT FAILURE (§9.1.4) — the MS could not take the assigned channel and stayed put.
+// Worth naming explicitly: it is the difference between "the firmware rejected our assignment"
+// and "the firmware never answered", which are very different bugs.
+static int rom6_check_assignment_failure(struct Mad2* m, const uint8_t* info, uint16_t len) {
+    Rom6Dsp* r = &m->rom6;
+    if (len < 2u || (info[0] & 0x0Fu) != 0x06u || info[1] != 0x2Fu) return 0;
+    if (rom6_log_enabled())
+        fprintf(stderr, "[rom6] CSD: ASSIGNMENT FAILURE (cause 0x%02X) — MS stayed on the old channel\n",
+                len > 2u ? info[2] : 0u);
+    if (r->csdAssignPending) {
+        r->csdAssignPending = 0;
+        r->dedicatedLogch = 0x80u;                    // it never left the SDCCH
+        rom6_queue_call_message(m, r->callTiPd, 0x07, KIND_CONNECT);
+    }
+    return 1;
+}
+
 static void rom6_net_active(struct Mad2* m, uint8_t sapi,
                               const uint8_t* info, uint16_t len) {
     Rom6Dsp* r = &m->rom6;
@@ -1189,6 +1429,10 @@ static void rom6_net_active(struct Mad2* m, uint8_t sapi,
     uint8_t pd = info[0] & 0x0Fu;
     uint8_t type = info[1];
     uint8_t cc_type = type & 0xBFu;
+
+    // RR assignment outcome can also arrive as a plain I-frame on the established link.
+    if (rom6_check_assignment_complete(m, info, len)) return;
+    if (rom6_check_assignment_failure(m, info, len)) return;
 
     if (r->regState == REG_AWAIT_CIPHER_COMPLETE) {
         if (pd == 0x06u && type == 0x32u) {
@@ -1202,6 +1446,10 @@ static void rom6_net_active(struct Mad2* m, uint8_t sapi,
                 uint16_t setup_len = rom6_build_mt_call_setup(
                     setup, r->activeIncomingAddress);
                 r->callState = 1; r->callDirection = 2;
+                // The MT SETUP we build is a speech call by construction; say so
+                // rather than leaving a previous CSD call's bearer showing.
+                r->callBearer = ROM6_BEARER_SPEECH;
+                r->callTransferMode = 0;
                 memcpy(r->remoteNumber, r->activeIncomingAddress,
                        sizeof r->activeIncomingAddress);
                 rom6_send_iframes(m, 0, setup, setup_len,
@@ -1216,14 +1464,76 @@ static void rom6_net_active(struct Mad2* m, uint8_t sapi,
     if (r->regState != REG_MM_ACTIVE) return;
 
     if (pd == 0x03u && cc_type == 0x05u && r->activeService == SVC_MO_CALL) {
+        // A SETUP for a call transaction that is already running is a RETRANSMISSION, not a new
+        // call. It happens on every CSD dial: the MS drops the SDCCH to take the assigned traffic
+        // channel, re-establishes LAPDm there, and re-sends the SETUP as part of that
+        // re-establishment. Replaying the handshake into a call that has already reached CONNECT
+        // is a protocol error, and the firmware says so — measured on the traffic channel, it
+        // answers each replayed message with CC STATUS `03 7D 02 E0 E2 CA`:
+        //   cause 98 "message type not compatible with protocol state", call state U10 (active).
+        // Three of them, one per replayed CALL PROCEEDING / ALERTING / CONNECT. The network side
+        // ignores a duplicate SETUP on an existing transaction, so do that.
+        if (r->callState != 0u && r->callDirection == 1u &&
+            r->callTiPd != ROM6_TI_PD_NONE && r->callTiPd == info[0]) {
+            if (log) fprintf(stderr,
+                             "[rom6] CSD: duplicate SETUP on TI 0x%02X (call already in state %u)"
+                             " — ignored, no handshake replay\n", info[0], r->callState);
+            return;
+        }
         rom6_decode_mo_call(r, info, len);
         r->outgoingCallCount++;
         r->callDirection = 1; r->callState = 1;
-        rom6_queue_call_message(m, info[0], 0x02, KIND_CALL_PROCEEDING);
-        rom6_queue_call_message(m, info[0], 0x01, KIND_ALERTING);
-        rom6_queue_call_message(m, info[0], 0x07, KIND_CONNECT);
-        if (log) fprintf(stderr, "[rom6] MO CALL SETUP to %s -> PROCEEDING/ALERTING/CONNECT\n",
-                         r->remoteNumber);
+        r->callTiPd = info[0];
+        // CALL PROCEEDING. For a data call, confirm the negotiated bearer by echoing the MS's
+        // own Bearer Capability IE (04.08 §9.3.3 allows it, and a real network sends it): the
+        // MS's data entity has no rate/transparency parameters to configure a data path with
+        // otherwise. Speech keeps the bare 2-octet message it has always had.
+        if (r->callBearer == ROM6_BEARER_UDI && r->callBcapLen) {
+            uint8_t cp[4 + sizeof r->callBcap];
+            cp[0] = (uint8_t)(info[0] ^ 0x80u);
+            cp[1] = 0x02;                        // CALL PROCEEDING
+            cp[2] = 0x04;                        // Bearer Capability IEI
+            cp[3] = r->callBcapLen;
+            memcpy(cp + 4, r->callBcap, r->callBcapLen);
+            rom6_send_iframes(m, 0, cp, (uint16_t)(4u + r->callBcapLen),
+                              rom6_link(r, 0)->vr, KIND_CALL_PROCEEDING);
+            if (log) fprintf(stderr, "[rom6] CSD: CALL PROCEEDING confirms bearer (%u octets)\n",
+                             r->callBcapLen);
+        } else {
+            rom6_queue_call_message(m, info[0], 0x02, KIND_CALL_PROCEEDING);
+        }
+        // A data call needs a traffic channel to carry RLP; a real network assigns one right
+        // after CALL PROCEEDING. Voice keeps the SDCCH-only path (see rom6_queue_assignment_command).
+        // DEFAULT ON for data calls: the assignment completes (ASSIGNMENT COMPLETE cause 0x00)
+        // and the call ends up established on a traffic channel in data mode, which is where a
+        // CSD bearer belongs. Voice is untouched — this arm is reached only for a UDI bearer.
+        // ROM6_CSD_ASSIGN=0 forces the old SDCCH-only flow for A/B. The two firmware facts this
+        // depends on (the correlated 0x89 confirm, and FACCH signalling on logch 0xB0) are
+        // written up in.
+        // Assign only while still on the SDCCH. The MS retransmits its SETUP after
+        // re-establishing on the traffic channel (the original was never acknowledged on the
+        // channel it has since left), and treating that copy as a fresh call would assign a
+        // second time and churn the channel for no reason.
+        int assigning = 0;
+        if (r->callBearer == ROM6_BEARER_UDI && !rom6_logch_is_traffic(r->dedicatedLogch)) {
+            const char* as = getenv("ROM6_CSD_ASSIGN");
+            if (!as || atoi(as) != 0) { rom6_queue_assignment_command(m); assigning = 1; }
+        }
+        if (assigning) {
+            // Defer the rest of the CC handshake: the MS is about to drop this link and
+            // re-establish on the traffic channel, so anything sent now is transmitted into a
+            // channel it has already left. CONNECT resumes from ASSIGNMENT COMPLETE. (There is
+            // no ALERTING on a data call — nothing rings.)
+            r->csdAssignPending = 1;
+        } else {
+            rom6_queue_call_message(m, info[0], 0x01, KIND_ALERTING);
+            rom6_queue_call_message(m, info[0], 0x07, KIND_CONNECT);
+        }
+        if (log) fprintf(stderr,
+                         "[rom6] MO %s SETUP to %s bearer=%s (%s) -> PROCEEDING/ALERTING/CONNECT\n",
+                         r->callBearer == ROM6_BEARER_UDI ? "DATA(CSD)" : "CALL",
+                         r->remoteNumber, rom6_bearer_name(r->callBearer),
+                         r->callTransferMode ? "packet" : "circuit");
     } else if (pd == 0x03u && cc_type == 0x0Eu &&
                r->activeService == SVC_EMERGENCY) {
         memcpy(r->remoteNumber, "emergency", 10);
@@ -1246,7 +1556,59 @@ static void rom6_net_active(struct Mad2* m, uint8_t sapi,
         if (log) fprintf(stderr, "[rom6] MT CALL answered -> CONNECT ACKNOWLEDGE\n");
     } else if (pd == 0x03u && cc_type == 0x0Fu) {
         r->callState = 2;
-        if (log) fprintf(stderr, "[rom6] CALL connected\n");
+        if (log) fprintf(stderr, "[rom6] CALL connected @step=%llu\n",
+                         (unsigned long long)m->dsp_steps);
+        // ── CSD: start feeding the traffic channel downlink ──
+        //
+        // On a data call a real network transmits on the TCH continuously from the moment the call
+        // is up; the MS's RLP peer only starts once blocks arrive. This engine has never sent a
+        // block on a traffic logch, which is exactly why the firmware's data stack sits idle.
+        //
+        // The receiving path is fully mapped and, crucially, ALREADY ARMED at this point (verified
+        // live: [0x118AC4] == 0x3E3791). The chain is:
+        //   0x35F20A  wakes NTB task 29 (msg 0x3EA) and registers 0x3E3790 as the block callback
+        //   0x3E3790  reads the block's logch byte: 0xB0 (FACCH) or flag[+5]==1 -> msg 0x3F9,
+        //             but logch == [0x12BE17] (== 0xD9, the TCH we assigned) -> builds msg 0x3F8
+        //   msg 0x3F8 -> NTB_MSG_RECV arm 0x2CB1A0 -> DPI 0x308060 with the RLP link params
+        // So a block tagged with the traffic logch is what the data stack is waiting for.
+        //
+        // DEFAULT ON for data calls, like the assignment above: the blocks carry genuine RLP
+        // frames now (rlp.c), the link comes up, and the phone reaches CONNECT and its browser.
+        // ROM6_CSD_DATA=0 forces the old silent-traffic-channel flow for A/B. Voice is untouched —
+        // this arm is reached only for a UDI bearer on a traffic logch.
+        if (r->callBearer == ROM6_BEARER_UDI && rom6_logch_is_traffic(r->dedicatedLogch)) {
+            const char* dv = getenv("ROM6_CSD_DATA");
+            if (!dv || atoi(dv) != 0) {
+                // The record is d2m opcode 0x9C, NOT the 0x80 ReceivedBlock used for signalling.
+                // Traced end to end in the firmware:
+                //   MDI recv task 0x3ED764 switches on record byte[3]; 0x80 and 0x83..0x8F are the
+                //   signalling opcodes, and the discrete arm `opcode == 0x9C` -> 0x3ED7E4
+                //     -> 0x308268  (checks [0x118AD8], then loads the callback from [0x118AB4+16])
+                //     -> [0x118AC4] = NTB_RX_BLOCK_CB 0x3E3790, called as (r0, r1 = record,
+                //        r2 = bit0 of record[5])
+                //   which, for record[4] == [0x12BE17] (== 0xD9) and bit0 of record[5] == 0,
+                //   rewrites the buffer's first halfword to 0x3F8 and posts it to NTB task 29.
+                // Because the record buffer BECOMES the message, the payload maps straight onto
+                // what NTB_STATUS_DECODE 0x2CAFA4 reads at msg+6:
+                //   payload[0] = logch        payload[1] = flags (bit0 must be 0)
+                //   payload[2..3] = the 16-bit LITTLE-endian link status word
+                //   payload[4..]  = user data
+                rlp_peer_reset(&r->csdRlp);      // fresh link per call: ADM until the MS's SABM
+                ppp_reset(&r->csdPpp);
+                // WAPGW/WAPPROXY in the environment point the gateway at the
+                // real network; unset, it serves its built-in deck. The web
+                // build ignores this and is driven by the page's JS bridge.
+                wap_host_configure(&r->csdPpp.wap);
+                rom6_send_csd_data_block(m);
+                // ...and keep transmitting. A real network drives the traffic channel for the
+                // life of the call; one block starts the stack but is not a data path.
+                r->nextCsdDataCycle = rom6_now(r) + ROM6_CSD_DATA_FRAMES * rom6_cpf();
+                if (log) fprintf(stderr,
+                                 "[rom6] CSD: data path armed on logch=0x%02X — d2m 0x9C every %u frames\n",
+                                 r->csdTrafficLogch ? r->csdTrafficLogch : r->dedicatedLogch,
+                                 ROM6_CSD_DATA_FRAMES);
+            }
+        }
     } else if (pd == 0x03u && cc_type == 0x25u) {
         r->callState = 3;
         rom6_queue_call_message(m, info[0], 0x2D, KIND_RELEASE);
@@ -1284,9 +1646,16 @@ static void rom6_net_active(struct Mad2* m, uint8_t sapi,
 }
 
 // SABM (with optional LU-Request info): reset the link, queue UA, run establishment if info present.
-static void rom6_lapdm_sabm(struct Mad2* m, const uint8_t* L2, unsigned l2len) {
+static void rom6_lapdm_sabm(struct Mad2* m, const uint8_t* L2, unsigned l2len, uint8_t logch) {
     Rom6Dsp* r = &m->rom6;
     uint8_t sapi = (uint8_t)((L2[0] >> 2) & 7u);
+    // Answer on the channel the MS established on. This matters after an assignment: the
+    // firmware CONFIGURES the traffic channel as logch 0xD9, but signals on its associated
+    // FACCH, logch 0xB0 (measured — the SABM arrives tagged 0xB0). Answering the configure
+    // designation instead means the UA is transmitted where the MS is not listening, it retries
+    // SABM N200 times and gives up with ASSIGNMENT FAILURE. Following the establishment channel
+    // is also a no-op for registration, whose SABM arrives on the SDCCH we already use.
+    if (logch) r->dedicatedLogch = logch;
     uint8_t ctrl = L2[1], li = L2[2];
     uint8_t infolen = (uint8_t)(li >> 2);
     if (3u + infolen > l2len) infolen = (uint8_t)(l2len > 3 ? l2len - 3 : 0);
@@ -1301,7 +1670,7 @@ static void rom6_lapdm_sabm(struct Mad2* m, const uint8_t* L2, unsigned l2len) {
 static void rom6_lapdm_uplink(struct Mad2* m, uint8_t logch, const uint8_t* L2, unsigned l2len) {
     Rom6Dsp* r = &m->rom6;
     int log = getenv("ROM6_LOG") != 0;
-    (void)logch;
+
     if (l2len < 3) return;
     uint8_t addr = L2[0], ctrl = L2[1], li = L2[2];
     uint8_t sapi = (uint8_t)((addr >> 2) & 7u);
@@ -1311,7 +1680,7 @@ static void rom6_lapdm_uplink(struct Mad2* m, uint8_t logch, const uint8_t* L2, 
     // SABM: ctrl&0xEF==0x2F, LI odd, M=0.
     if ((ctrl & 0xEFu) == 0x2Fu && (li & 1u) && !(li & 2u)) {
         if (log) fprintf(stderr, "[rom6] LAPDm SABM sapi=%u info=%u -> UA\n", sapi, li >> 2);
-        rom6_lapdm_sabm(m, L2, l2len);
+        rom6_lapdm_sabm(m, L2, l2len, logch);
         return;
     }
     // DISC: ctrl&0xEF==0x43, LI==0x01. Queue UA, then release the SDCCH once drained.
@@ -1409,8 +1778,20 @@ static void rom6_handle_mdi(struct Mad2* m, uint8_t op, const uint8_t* buf, unsi
             if (log) fprintf(stderr, "[rom6] 0x8F NO_PSW_LEFT (search done, commit serving cell) @step=%llu\n",
                              (unsigned long long)m->dsp_steps);
         }
-        uint8_t pl89[1] = { confirm };
-        rom6_enqueue(m, 0x89, pl89, 1);           // 0x89 CHANNEL_CHANGED_CNF (RESPONSE)
+        // 0x89 CHANNEL_CHANGED_CNF (RESPONSE). The firmware's handler (3410 0x35DBAC, the
+        // skeleton-matched analogue of 3310 0x2C3D4C, 97%) correlates this confirm against the
+        // pending channel-change request at [0x12E5B8]:
+        //     armed [0x12D6E8]==1 · pend!=0 · pend->hw[0]!=0x409 · (block[4]&1)==pend[+2] · pend[+3]==1
+        // and only then runs the success path that completes the change. block[4] is this payload
+        // byte. RAM-watched live on the CSD assignment: for the traffic channel the firmware writes
+        // pend = {04 02 00 01} — i.e. pend[+2]=0, pend[+3]=1 (armed and waiting) — whereas the
+        // SDCCH change earlier writes pend[+2]=1. Both samples say pend[+2] is the COMPLEMENT of
+        // the configured logch's bit 0 (SDCCH 0x80 -> 1, TCH 0xD9 -> 0). Echoing `confirm` (=1)
+        // therefore fails the correlation on a traffic channel and the change is aborted.
+        // Applied to traffic logches ONLY: the SDCCH/BCCH/CCCH paths keep the exact byte they
+        // always sent, so every already-green boot stays byte-identical.
+        uint8_t pl89[1] = { (logch >= 0xC0u) ? (uint8_t)(!(logch & 1u)) : confirm };
+        rom6_enqueue(m, 0x89, pl89, 1);
         if (logch == 0x60) {                        // CCCH configured
             r->ccchConfigured = 1;
             if (plen >= 12) r->ccchArfcn = (uint16_t)(((uint16_t)buf[10] << 8) | buf[11]);
@@ -1422,9 +1803,29 @@ static void rom6_handle_mdi(struct Mad2* m, uint8_t op, const uint8_t* buf, unsi
             if (plen >= 12) { r->servingArfcn = (uint16_t)(((uint16_t)buf[10] << 8) | buf[11]);
                               r->measurementArfcn = r->servingArfcn; }
             rom6_enq_si_burst(m);
+        } else if (logch >= 0xC0) {                 // traffic channel (TCH/FACCH) — post-assignment
+            // The firmware retuned to the channel our ASSIGNMENT COMMAND named (observed 0xD9 for
+            // TCH/F TN1). Follow it: keep the dedicated cadence and LAPDm link exactly as they are
+            // — this is a channel change, not a new link — and just move the downlink there, so the
+            // CC handshake continues on the FACCH instead of being transmitted into the old SDCCH.
+            r->dedicatedLogch = logch;
+            r->csdTrafficLogch = logch;          // remember 0xD9 before the FACCH steals dedicatedLogch
+            if (plen >= 12) r->dedicatedArfcn = (uint16_t)(((uint16_t)buf[10] << 8) | buf[11]);
+            // Re-arm both cadences onto the faster FACCH spacing right away; otherwise the first
+            // slot after the change is still the stale 51-frame one and the MS's first SABM has
+            // already timed out before we ever answer it.
+            {
+                uint64_t cpf = rom6_cpf(), now = rom6_now(r);
+                r->nextDedicatedCycle = now + 2u * cpf;
+                r->nextDedicatedBlkReqCycle = now + 4u * cpf;
+            }
+            if (log) fprintf(stderr,
+                             "[rom6] CSD: traffic channel configured logch=0x%02X ARFCN %u — downlink follows\n",
+                             logch, r->dedicatedArfcn);
         } else if (logch == 0x80) {                 // dedicated (SDCCH) — STAGE 2 capture
             rom6_drop_idle_radio_backlog(r);
             r->dedicatedConfigured = 1;
+            r->dedicatedLogch = 0x80u;
             r->dedicatedReleasePending = 0;
             if (plen >= 12) r->dedicatedArfcn = (uint16_t)(((uint16_t)buf[10] << 8) | buf[11]);
             r->dedicatedBsic = (plen > 1) ? buf[1] : r->servingBsic;
@@ -1533,7 +1934,7 @@ static void rom6_handle_mdi(struct Mad2* m, uint8_t op, const uint8_t* buf, unsi
         uint16_t arfcn = r->servingArfcn ? r->servingArfcn
                        : (r->measurementArfcn ? r->measurementArfcn : ROM6_SEARCH_ARFCN);
         r->measurementArfcn = arfcn;                // RssiArfcn() coherence for the follow-up 0x0F/0x46
-        uint8_t pl[ROM6_RCVMAX];
+        uint8_t pl[MDI_RCVMAX];
         uint8_t len = rom6_b_rssi8b(pl, arfcn);
         rom6_enqueue(m, 0x8B, pl, len);
         if (log) fprintf(stderr,
@@ -1544,6 +1945,36 @@ static void rom6_handle_mdi(struct Mad2* m, uint8_t op, const uint8_t* buf, unsi
     }
     case 0x57:                                      // serving -> SCH
         rom6_enq_sch(m);
+        break;
+    // ── 0x50 — the MS's uplink RLP frame. THE data seam. ──
+    //
+    // NOT a "configure" record: the payload IS a GSM 04.22 RLP frame as the MCU hands it to the
+    // DSP — [0] no-I-field flag, [1] logch, [2..3] 16-bit frame header LE, [4..28] 25-byte
+    // I-field, [29..31] the 24-bit FCS slot left ZERO for the DSP to fill on air (which is why no
+    // CRC-24 table exists in any DCT3 image, and why an earlier session wrongly "refuted" the
+    // RLP-frame reading off the zero tail). Built by RLP_FRAME_BUILD 0x2CAAC4 into ctx+66; the
+    // header encoder is its tail 0x2CAF88, the decoder for our direction is 0x2CAFA4.
+    //
+    // Measured captures decode as textbook TS 24.022: idle NULLs 0x3DF8, SABM 0x1FF9 retried
+    // N2+1 times, then — once we answer UA (0x33F8 -> event 0x408) — RR supervision 0x01F1 and
+    // I-frames carrying L2R-COP PDUs. We are the DSP-side RLP peer: feed the frame to the peer
+    // state machine; its response rides the next periodic d2m 0x9C block.
+    case 0x50:
+        rlp_peer_on_uplink(&m->rom6.csdRlp, buf, plen);
+        // Pump the byte pipes: L2R characters up into PPP, PPP's responses
+        // back down into the RLP tx queue for the next d2m blocks.
+        { uint8_t io[128]; unsigned n;
+          while ((n = rlp_peer_take_rx(&m->rom6.csdRlp, io, sizeof io)) > 0)
+              ppp_rx_bytes(&m->rom6.csdPpp, io, n, log);
+          while ((n = ppp_tx_take(&m->rom6.csdPpp, io, sizeof io)) > 0)
+              rlp_peer_queue_tx(&m->rom6.csdRlp, io, n); }
+        if (log) {
+            uint16_t h = plen >= 4u ? (uint16_t)(buf[2] | ((uint16_t)buf[3] << 8)) : 0u;
+            fprintf(stderr, "[rom6] CSD: 0x50 uplink RLP frame hdr=0x%04X ns=%u nr=%u @step=%llu — payload",
+                    h, rlp_hdr_ns(h), rlp_hdr_nr(h), (unsigned long long)m->dsp_steps);
+            for (unsigned i = 0; i < plen && i < 8u; ++i) fprintf(stderr, " %02X", buf[i]);
+            fprintf(stderr, "\n");
+        }
         break;
     case 0x1B: {                                    // SEND_BLOCK (uplink LAPDm) -> L3 — STAGE 2
         // payload[1]=logch, payload[2..]=23-byte uplink LAPDm block.
@@ -1678,6 +2109,8 @@ static int rom6_write(struct Mad2* m, uint32_t addr, int size, uint32_t value) {
                             (unsigned long long)m->dsp_steps);
                 if (sub == 0x0D) {                       // run self-test
                     m->dsp_st_req = 1;
+                } else if (sub == 0x0A) {                // DSP ROM version query -> want 0xC8
+                    uint8_t rv; if (dsp_rom_version(m, &rv)) r->siml_want |= 8u;   // opt-in only
                 } else if (sub == 0x13) {                // MSID setup -> want 0x34
                     for (int i = 0; i < 13 && (unsigned)(1 + i) < plen; ++i) r->siml_msid[i] = buf[1 + i];
                     r->siml_want |= 1u;
@@ -1737,10 +2170,10 @@ static uint64_t rom6_next_wake(struct Mad2* m) {
         next = m->dsp_cb_deadline_cyc;
     if (m->dsp_hb_next_cyc && m->dsp_hb_next_cyc < next)
         next = m->dsp_hb_next_cyc;   // idle telemetry heartbeat (deep-idle must wake for it)
-    for (unsigned i = 0; i < ROM6_DELAYED_N; ++i)
-        if (r->delayed[i].used && r->delayed[i].due < next) next = r->delayed[i].due;
-    if (r->p_head != r->p_tail) {
-        uint64_t expiry = r->pending[r->p_head].enq + rom6_cpf() * 217u * 2u;
+    for (unsigned i = 0; i < MDI_DELAYED_N; ++i)
+        if (r->q.delayed[i].used && r->q.delayed[i].due < next) next = r->q.delayed[i].due;
+    if (r->q.p_head != r->q.p_tail) {
+        uint64_t expiry = r->q.pending[r->q.p_head].enq + rom6_cpf() * 217u * 2u;
         if (expiry < next) next = expiry;
     }
     if (r->servingArfcn && r->nextBcchBroadcastCycle < next)
@@ -1754,6 +2187,7 @@ static uint64_t rom6_next_wake(struct Mad2* m) {
         if (r->nextDedicatedCycle < next) next = r->nextDedicatedCycle;
         if (r->nextDedicatedBlkReqCycle < next) next = r->nextDedicatedBlkReqCycle;
     }
+    if (r->nextCsdDataCycle < next) next = r->nextCsdDataCycle;
     return next;
 }
 
@@ -1787,8 +2221,21 @@ static void rom6_advance_to(struct Mad2* m, uint64_t cycles) {
                     rom6_frame_at(eventCycles) % 51u,
                     r->incomingPagingBursts);
         if (r->incomingPagingBursts >= 8u) {
-            r->incomingPagingActive = 0;
-            r->nextIncomingPagingCycle = UINT64_MAX;
+            // One burst run is not a verdict. The MS answers a page only from
+            // idle, and after a delivery it may still be busy with what we just
+            // sent — a binary SMS hands off to an application (WAP push opens
+            // the settings note), which takes far longer than dropping text
+            // into the inbox. Measured: the second of two binary messages was
+            // never delivered because all 8 bursts landed while the MS was busy
+            // and the service was then stranded in the queue for good. A real
+            // network keeps paging, so back off and run the cycle again.
+            if (++r->incomingPagingCycles < ROM6_PAGING_CYCLES) {
+                r->incomingPagingBursts = 0;
+                r->nextIncomingPagingCycle += 8u * 51u * rom6_cpf();
+            } else {
+                r->incomingPagingActive = 0;
+                r->nextIncomingPagingCycle = UINT64_MAX;
+            }
         } else {
             r->nextIncomingPagingCycle += 2u * 51u * rom6_cpf();
         }
@@ -1797,8 +2244,27 @@ static void rom6_advance_to(struct Mad2* m, uint64_t cycles) {
     // Dedicated LAPDm and block requests are independent scheduled events. Downlink
     // frames are kept raw until this point, so their GSM FN comes from the slot that
     // actually emitted them, never from the MCU write that happened to create them.
+    if (r->nextCsdDataCycle != UINT64_MAX && cycles >= r->nextCsdDataCycle) {
+        if (r->callState == 2u && r->callBearer == ROM6_BEARER_UDI) {
+            rom6_send_csd_data_block(m);
+            r->nextCsdDataCycle += (uint64_t)ROM6_CSD_DATA_FRAMES * rom6_cpf();
+            // Service any request the gateway parked for the host. Doing it on
+            // the data cadence means every native front end (GUI, trace tools)
+            // gets the fetch path without wiring anything of its own.
+            wap_host_pump(&r->csdPpp.wap);
+        } else {
+            r->nextCsdDataCycle = UINT64_MAX;      // call gone: stop feeding the channel
+        }
+    }
     if (r->dedicatedConfigured) {
-        uint64_t period = 51u * rom6_cpf();
+        // Downlink slot spacing. SDCCH/8 carries one block per 51-frame control multiframe
+        // (~235 ms), which is what every already-green path uses. A FACCH does NOT: it steals
+        // traffic bursts, so consecutive blocks are ~8 frames apart (~37 ms). Measured need:
+        // once the MS is assigned a traffic channel it establishes with SABM and expects UA
+        // inside T200 — at the 51-frame spacing our UA always arrives late, the MS retries N200
+        // times and then sends ASSIGNMENT FAILURE (cause 0x6F), which is exactly what the trace
+        // showed before this. Only traffic logches change; SDCCH keeps its 51 frames.
+        uint64_t period = (uint64_t)(rom6_logch_is_traffic(r->dedicatedLogch) ? 8u : 51u) * rom6_cpf();
         if (cycles >= r->nextDedicatedCycle) {
             uint64_t eventCycles = r->nextDedicatedCycle;
             if (r->dedicatedHead != r->dedicatedTail) {
@@ -1908,7 +2374,11 @@ static void rom6_tick(struct Mad2* m) {
             uint8_t pl[64] = {0}; uint8_t len = 0;
             if (r->siml_want & 1u) {                          // 0x34 MSID reply (msg[11..23])
                 pl[0] = 0x34;
-                for (int i = 0; i < 13; ++i) pl[3 + i] = r->siml_msid[i];
+                pl[1] = 0x0E;   // see dsp_rom4.c — measured from the 5110 mask ROM (`#340eh`)
+                uint8_t msid[13];
+                if (!dsp_msid_override(m, msid))               // nothing pinned -> echo the seed
+                    for (int i = 0; i < 13; ++i) msid[i] = r->siml_msid[i];
+                for (int i = 0; i < 13; ++i) pl[3 + i] = msid[i];
                 len = 16; r->siml_want &= (uint8_t)~1u;
             } else if (r->siml_want & 2u) {                   // 0x35 decoded record + ciphertext echo
                 // Region A = the DECODED unlocked record (msg[12..35]); Region B (msg[36..59]) = a
@@ -1995,9 +2465,22 @@ static void rom6_tick(struct Mad2* m) {
                 len = 52; r->siml_blkidx++; r->siml_want &= (uint8_t)~2u;
             } else if (r->siml_want & 4u) {                   // 0x36 terminal verdict, pass=0 -> unlocked
                 pl[0] = 0x36; len = 4; r->siml_want &= (uint8_t)~4u;
-            } else {                                          // self-test verdict {0x0D,0} pass
+            } else if (want_st) {                             // self-test verdict {0x0D,0} pass
+                // The self-test MUST take the window ahead of the ROM-version answer. The
+                // responder emits one reply per empty-ring egress window, so letting 0xC8 go
+                // first delays the self-test by a window and re-times the 0x34/0x35/0x36
+                // sequence the SIM-lock path depends on — that is exactly what drifted the
+                // 3310 guard boot to "SIM card not accepted" when the version reply was first
+                // added. 0xC8 is not boot-critical, so it waits its turn.
                 pl[0] = 0x0D; pl[1] = 0x00; len = 2;
                 m->dsp_selftest_replied = 1; m->dsp_st_req = 0;
+            } else {                                          // 0xC8 DSP ROM version (msg[11] = pl[3])
+                uint8_t rv = 6u; (void)dsp_rom_version(m, &rv);
+                // len 4, not 16: only msg[11] (= pl[3]) carries the version digit. The 16
+                // here was copied from the MSID reply, which genuinely needs it — padding a
+                // 4-byte answer out to 16 makes the record 9 ring words instead of 3.
+                pl[0] = 0xC8; pl[3] = rv;
+                len = 4; r->siml_want &= (uint8_t)~8u;
             }
             if (getenv("ROM6_LOG"))
                 fprintf(stderr, "[rom6] SIML d2m 0x74 sub=0x%02X len=%u -> %02X %02X %02X %02X %02X %02X @step=%llu\n",

@@ -8,6 +8,9 @@
   <!-- Per-model phone shells (photo + hit-zones + glyph mask). Plain config, not
        core code — cache-busted like style.css; main.js reads window.DCT3_SHELLS. -->
   <script>document.write('<scr' + 'ipt src="shells/shells.js?v=' + Date.now() + '"></scr' + 'ipt>');</script>
+  <!-- OTA settings builder (pure computation, shared with tools/otasettings.mjs);
+       main.js reads window.DCT3_OTA for the "OTA settings SMS" button. -->
+  <script>document.write('<scr' + 'ipt src="otasettings.js?v=' + Date.now() + '"></scr' + 'ipt>');</script>
 </head>
 <body>
   <header class="topbar">
@@ -88,6 +91,7 @@
           <button id="btn-reset-eeprom" title="Wipe persisted EEPROM/NVRAM and reload from the original image">Reset</button>
           <button id="btn-eeprom-file" title="Download the current 192 KB EEPROM/NVRAM partition (0x3D0000-0x400000) as a .bin">→ file</button>
           <button id="btn-merge-fls" title="Write the current EEPROM/NVRAM back into the loaded firmware and download it as a new .fls (e.g. factory-reset the phone in the UI, then bake the clean EEPROM into the flash)">Merge → .fls</button>
+          <button id="btn-reprovision" title="Write this model's factory identity (FLASH-ID/FAID, both SIMlock parts, IMEI) by driving the firmware's own MBUS service handlers — the same B8/BA/BA frames a service tool sends. Boot to standby first. Finishes by reading the IMEI back through the firmware.">Provision identity</button>
         </div>
         <div class="controls">
           <button id="btn-seccode-unlock" title="At a 'Security code' screen: type any 5 digits, click this, then press OK. It repairs the entry buffer to the real code 12345 (working around the keypad first-keypress bug) so the firmware's own accept path runs. Re-click before each gate (boot lock + Restore Factory Settings re-prompt).">Unlock security code</button>
@@ -129,6 +133,7 @@
         <div class="controls">
           <button id="btn-incoming-call" title="Queue a network-originated call. The phone is paged asynchronously after registration.">Incoming call</button>
           <button id="btn-incoming-sms" title="Queue a network-originated SMS. The phone is paged asynchronously after registration.">Incoming SMS</button>
+          <button id="btn-ota-settings" title="Queue a Nokia OTA settings message: a binary SMS (WSP push to port 49999) carrying a WAP profile. The phone should show 'Service settings received'. Needs the node dev server, which builds the payload. Repeat it to probe the known defect where nothing is deliverable after a binary SMS.">OTA settings SMS</button>
         </div>
         <span id="out-incoming" class="val" role="status" aria-live="polite"></span>
       </div>

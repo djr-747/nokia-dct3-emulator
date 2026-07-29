@@ -119,8 +119,13 @@ void mbus_bridge_feed(struct Mad2* m) {
     if (g_hb_head != g_hb_tail && (m->mbus_ctrl & 0x40) && mbus_rx_count(m) == 0) {
         uint8_t b = g_hostbuf[g_hb_head++ % HOSTBUF_SZ];
         mbus_rx_push(m, b);
-        if (g_log) fprintf(stderr, "[mbus-bridge]   ->phone 0x%02X (%u staged left)\n",
-                           b, (unsigned)(g_hb_tail - g_hb_head));
+        // The trailing @<cycles> is emulated ARM time (m->rtc_mono, ~13 MHz). It is what makes
+        // the log a TIMING reference and not just a byte order: inter-byte spacing within a
+        // frame, and the half-duplex turnaround between the phone's last byte and the tool's
+        // first, are both only visible here. (mbusdec.py's byte regex is unaffected.)
+        if (g_log) fprintf(stderr, "[mbus-bridge]   ->phone 0x%02X (%u staged left) @%llu\n",
+                           b, (unsigned)(g_hb_tail - g_hb_head),
+                           (unsigned long long)m->rtc_mono);
     }
 }
 
@@ -138,7 +143,8 @@ void mbus_bridge_poll(struct Mad2* m, int fd) {
             if ((unsigned)(g_hb_tail - g_hb_head) < HOSTBUF_SZ)
                 g_hostbuf[g_hb_tail++ % HOSTBUF_SZ] = buf[i];             // else drop (overrun)
         }
-        if (g_log) fprintf(stderr, "[mbus-bridge] rx<-tool %zd byte(s)\n", n);
+        if (g_log) fprintf(stderr, "[mbus-bridge] rx<-tool %zd byte(s) @%llu\n",
+                           n, (unsigned long long)m->rtc_mono);
     }
 
     // 2) phone -> host: forward everything the firmware has shifted out (the 64-byte TX ring
@@ -147,7 +153,8 @@ void mbus_bridge_poll(struct Mad2* m, int fd) {
     while ((b = mbus_tx_out_pop(m)) >= 0) {
         uint8_t ob = (uint8_t)b;
         ssize_t w = write(fd, &ob, 1); (void)w;
-        if (g_log) fprintf(stderr, "[mbus-bridge] tool<-phone 0x%02X\n", ob);
+        if (g_log) fprintf(stderr, "[mbus-bridge] tool<-phone 0x%02X @%llu\n",
+                           ob, (unsigned long long)m->rtc_mono);
     }
 }
 

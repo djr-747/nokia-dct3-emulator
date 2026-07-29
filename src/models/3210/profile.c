@@ -94,6 +94,12 @@ const ModelProfile model_3210 = {
         .n_lines = (int)(sizeof(keylines_3210) / sizeof(keylines_3210[0])),
         .scan = KP_SCAN_PLAIN,       // 3310-class: 0xE0 = power special-scan
     },
+    // Factory identity — MINTED, pinned; see tools/dct3_identity.py and
+    //. COBBA s/n 00321042, IMEI 490154203210010.
+    .identity = {
+        .msid   = { 0x82, 0x88, 0x8E, 0x08, 0x77, 0x5E, 0x30, 0x34, 0x0B, 0x5B, 0x24, 0x9D, 0xA7 },
+        .imei14 = "49015420321001",
+    },
     .led = {
         // Green EL backlight = PUP_GENIO (I/O 0x20) bit6 (0x40), like the 5110. Vibrates via
         // an accessory vibra battery pack on the 3310's channel (I/O 0x15 bit4), no internal motor.

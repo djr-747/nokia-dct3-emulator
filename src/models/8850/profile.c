@@ -42,6 +42,12 @@ const ModelProfile model_8850 = {
         .has_slide = 1,               // NSM-2 is a slide phone: reed-switch cover sensor on
                                       // I/O 0x28 bit0 / interrupt source 0x29 bit0 (mad2 models).
     },
+    // Factory identity — MINTED, pinned; see tools/dct3_identity.py and
+    //. COBBA s/n 00885042, IMEI 490154208850018.
+    .identity = {
+        .msid   = { 0x83, 0x82, 0x0F, 0xB3, 0xCC, 0xDA, 0x68, 0x96, 0x7D, 0x1D, 0xFE, 0xE0, 0x05 },
+        .imei14 = "49015420885001",
+    },
     .battery = {
         // 8850 battery-type detection (fn 0x2FF716, mode 10): reads CCONT A/D ch3
         // (BSI) + ch4 (temp) and only returns a VALID type (non-zero -> boot; 0 ->

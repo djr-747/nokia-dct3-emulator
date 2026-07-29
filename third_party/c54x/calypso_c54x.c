@@ -3835,7 +3835,7 @@ static uint16_t prog_read(C54xState *s, uint32_t addr)
     return s->prog[c54x_prog_xlate(s, addr16)];
 }
 
-static void __attribute__((unused)) prog_write(C54xState *s, uint32_t addr, uint16_t val)
+static void prog_write(C54xState *s, uint32_t addr, uint16_t val)
 {
     uint16_t addr16 = addr & 0xFFFF;
     /* PROM1 (0xE000-0xFFFF) is ROM — reject writes */
@@ -5516,7 +5516,7 @@ static int c54x_exec_one(C54xState *s)
             if ((op & 0xFEFF) == 0xF490) {
                 int src = (op >> 8) & 1;
                 int64_t *acc = src ? &s->b : &s->a;
-                uint16_t c = (s->st0 >> 8) & 1; /* carry */
+                uint16_t c = (s->st0 & ST0_C) ? 1 : 0;   /* carry = ST0 bit 11, NOT bit 8 (= DP MSB) */
                 uint16_t lsb = *acc & 1;
                 *acc = sext40(((uint64_t)(*acc & 0xFFFFFFFFFFULL) >> 1) | ((uint64_t)c << 39));
                 if (lsb) s->st0 |= ST0_C; else s->st0 &= ~ST0_C;
@@ -5527,7 +5527,7 @@ static int c54x_exec_one(C54xState *s)
             if ((op & 0xFEFF) == 0xF491) {
                 int src = (op >> 8) & 1;
                 int64_t *acc = src ? &s->b : &s->a;
-                uint16_t c = (s->st0 >> 8) & 1;
+                uint16_t c = (s->st0 & ST0_C) ? 1 : 0;   /* carry = ST0 bit 11, NOT bit 8 (= DP MSB) */
                 uint16_t msb = (*acc >> 39) & 1;
                 *acc = sext40(((*acc << 1) & 0xFFFFFFFFFFULL) | c);
                 if (msb) s->st0 |= ST0_C; else s->st0 &= ~ST0_C;
@@ -5818,7 +5818,7 @@ static int c54x_exec_one(C54xState *s)
                 if ((op & 0xFEFF) == 0xF490) {
                     int src = (op >> 8) & 1;
                     int64_t *acc = src ? &s->b : &s->a;
-                    uint16_t c = (s->st0 >> 8) & 1; /* carry */
+                    uint16_t c = (s->st0 & ST0_C) ? 1 : 0;   /* carry = ST0 bit 11, NOT bit 8 (= DP MSB) */
                     uint16_t lsb = *acc & 1;
                     *acc = sext40(((uint64_t)(*acc & 0xFFFFFFFFFFULL) >> 1) | ((uint64_t)c << 39));
                     if (lsb) s->st0 |= ST0_C; else s->st0 &= ~ST0_C;
@@ -5828,7 +5828,7 @@ static int c54x_exec_one(C54xState *s)
                 if ((op & 0xFEFF) == 0xF491) {
                     int src = (op >> 8) & 1;
                     int64_t *acc = src ? &s->b : &s->a;
-                    uint16_t c = (s->st0 >> 8) & 1;
+                    uint16_t c = (s->st0 & ST0_C) ? 1 : 0;   /* carry = ST0 bit 11, NOT bit 8 (= DP MSB) */
                     uint16_t msb = (*acc >> 39) & 1;
                     *acc = sext40(((*acc << 1) & 0xFFFFFFFFFFULL) | c);
                     if (msb) s->st0 |= ST0_C; else s->st0 &= ~ST0_C;
@@ -6030,8 +6030,15 @@ static int c54x_exec_one(C54xState *s)
                 /* F075-F07F: undefined, treat as 1-word NOP */
                 return consumed + s->lk_used;
             }
-            /* F0Bx/F1Bx: RSBX/SSBX */
-            if ((op & 0x00F0) == 0x00B0) {
+            /* RSBX/SSBX are F6Bx (clear) / F7Bx (set) — verified against every status-bit op in
+             * the 5110 DSP image (F6B6/B7/B8/B9/BB, F7B6/B7/BB = FRCT/C16/SXM/OVM/INTM). The old
+             * guard tested only `(op & 0x00F0) == 0x00B0`, so inside this F0xx/F1xx block it
+             * swallowed 0xF0B0 = `OR A,-16,A` and returned without touching the accumulator.
+             * That broke the 16-bit byte-swap idiom `x &= 0xFFFF; x <<<= 8; x |= x >> 16` for the
+             * A accumulator only (the B form 0xF3B0 is outside this block and was fine) — which
+             * is the mixing step of the 5110's identity cipher, so every MSID came out wrong.
+             * Fix 2026-07-28. */
+            if ((op & 0xFEF0) == 0xF6B0) {
                 int bit = op & 0x0F;
                 int set = (op >> 8) & 1;
                 int st = (op >> 5) & 1;
@@ -6133,14 +6140,27 @@ static int c54x_exec_one(C54xState *s)
                     int shift = op & 0x1F;
                     if (shift > 15) shift -= 32;
                     uint8_t aop = (op >> 5) & 0x7;
+                    /* `AND/OR/XOR src, SHIFT, dst` is dst = dst OP (src << SHIFT) — the SHIFT
+                     * qualifies the SOURCE and the DESTINATION is the other operand, exactly
+                     * as for `ADD src, SHIFT, dst`.
+                     *
+                     * BUG FIX 2026-07-29: this used `sv` (the source) for BOTH operands, so
+                     * with SHIFT=0 and src != dst it computed src OP src — meaning XOR always
+                     * produced a hard ZERO. It survived because the only site exercised until
+                     * now was the MSID byte-swap `OR A,-16,A` (0xF0B0), where src == dst and
+                     * both readings agree. The site that exposed it is the SIMlock key
+                     * derivation at PROM 0x801F, `XOR A,B` (0xF1C0): A = COBBA, B = the LOCK
+                     * table's first four bytes. Zeroing B wiped the COBBA out of the key, so
+                     * the SIMlock codec ran on a key that could never match a real record. */
+                    int64_t dv = dst_sel ? s->b : s->a;
                     int64_t shifted;
                     if (shift >= 0) shifted = sv << shift;
                     else            shifted = sv >> (-shift);
                     switch (aop) {
-                    case 4: *dst = sext40(sv) & sext40(shifted); break;
-                    case 5: *dst = sext40(sv) | sext40(shifted); break;
-                    case 6: *dst = sext40(sv) ^ sext40(shifted); break;
-                    case 7: { uint64_t uv = (uint64_t)(sv & 0xFFFFFFFFFFULL);
+                    case 4: *dst = sext40(sext40(dv) & sext40(shifted)); break;
+                    case 5: *dst = sext40(sext40(dv) | sext40(shifted)); break;
+                    case 6: *dst = sext40(sext40(dv) ^ sext40(shifted)); break;
+                    case 7: { uint64_t uv = (uint64_t)(sv & 0xFFFFFFFFFFULL);   /* SFTL: pure shift, no dst operand */
                               if (shift >= 0) uv <<= shift; else uv >>= (-shift);
                               *dst = sext40(uv & 0xFFFFFFFFFFULL); } break;
                     default: break;
@@ -6294,23 +6314,22 @@ static int c54x_exec_one(C54xState *s)
                 int shift = (shift_raw & 0x10) ? (shift_raw - 32) : shift_raw;
                 int64_t src = src_b ? s->b : s->a;
                 int64_t result = src;
-                switch (sub) {
-                case 0x4: { int64_t dst_in = dst_b ? s->b : s->a;
-                            int64_t sh = (shift >= 0) ? (dst_in << shift)
-                                                      : (dst_in >> (-shift));
-                            result = src & sh; break; }
-                case 0x5: { int64_t dst_in = dst_b ? s->b : s->a;
-                            int64_t sh = (shift >= 0) ? (dst_in << shift)
-                                                      : (dst_in >> (-shift));
-                            result = src | sh; break; }
-                case 0x6: { int64_t dst_in = dst_b ? s->b : s->a;
-                            int64_t sh = (shift >= 0) ? (dst_in << shift)
-                                                      : (dst_in >> (-shift));
-                            result = src ^ sh; break; }
-                case 0x7: { uint64_t usrc = (uint64_t)src & 0xFFFFFFFFFFULL;
-                            result = (int64_t)((shift >= 0) ? (usrc << shift)
-                                                            : (usrc >> (-shift)));
-                            break; }
+                /* Same operand rule as the F0xx/F1xx copy above (fixed 2026-07-29): the SHIFT
+                 * qualifies the SOURCE, and the DESTINATION is the un-shifted operand —
+                 * dst = dst OP (src << SHIFT). This copy had it the other way round
+                 * (src OP (dst << SHIFT)), which coincides only at SHIFT == 0. Keeping the two
+                 * copies of one instruction on two different semantics is not defensible. */
+                { int64_t dst_in = dst_b ? s->b : s->a;
+                  int64_t sh = (shift >= 0) ? (src << shift) : (src >> (-shift));
+                  switch (sub) {
+                  case 0x4: result = dst_in & sh; break;
+                  case 0x5: result = dst_in | sh; break;
+                  case 0x6: result = dst_in ^ sh; break;
+                  case 0x7: { uint64_t usrc = (uint64_t)src & 0xFFFFFFFFFFULL;  /* SFTL: pure shift */
+                              result = (int64_t)((shift >= 0) ? (usrc << shift)
+                                                              : (usrc >> (-shift)));
+                              break; }
+                  }
                 }
                 if (dst_b) s->b = sext40(result); else s->a = sext40(result);
                 return consumed + s->lk_used;
@@ -7686,19 +7705,33 @@ static int c54x_exec_one(C54xState *s)
          * mis-decoded — i.e. a COMPENSATING pair. Hypothesis: fixing the whole
          * 0x70-0x73 family together corrects both sides. Verified non-desyncing via
          * tools/dsp/decode_audit_diff.py. Same root as the 0x7C/0x7D MVPD/MVDP fix. */
+        /* SPRU172C: under RPT the dmad AUTO-INCREMENTS each iteration for this whole family,
+         * exactly like pmad does for MVPD/MVDP below. The immediate only seeds the first pass.
+         * Without it `RPT #5; MVDK *AR2+,0x13d0` writes all six source words to 0x13d0 instead
+         * of filling 0x13d0..0x13d5 — a block move degenerating into a single cell. That is what
+         * left the 5110's MSID cipher input (0x13d0..0x13d5) empty except its first word, so the
+         * DSP encoded near-zeros and every {74 34} identity failed its Cobba signature.
+         * Mirrors the 2026-07-07 MVPD fix; dmad_set is cleared alongside par_set at rpt arm/end.
+         * A non-repeated move is unaffected (rpt_active==0 -> ddst = dmad). Fix 2026-07-28. */
         if (hi8 == 0x72 || hi8 == 0x73) {       /* MMR variants: opcode + dmad */
             uint16_t mmr  = op & 0x7F;           /* MMRs alias data addr 0x00..0x1F */
             uint16_t dmad = prog_fetch(s, (uint16_t)(s->pc + 1));
-            if (hi8 == 0x72) data_write(s, mmr,  data_read(s, dmad));  /* MVDM (dmad)->MMR */
-            else             data_write(s, dmad, data_read(s, mmr));   /* MVMD MMR->(dmad) */
+            uint16_t dm   = (s->rpt_active && s->dmad_set) ? s->mvdk_dmad : dmad;
+            if (s->rpt_active) s->dmad_set = true;
+            if (hi8 == 0x72) data_write(s, mmr, data_read(s, dm));      /* MVDM (dmad)->MMR */
+            else             data_write(s, dm,  data_read(s, mmr));     /* MVMD MMR->(dmad) */
+            s->mvdk_dmad = (uint16_t)(dm + 1);
             consumed = 2;
             return consumed + s->lk_used;        /* lk_used==0 here (no Smem) */
         }
         if (hi8 == 0x70 || hi8 == 0x71) {       /* Smem variants: opcode + dmad (+Smem-long) */
             addr = resolve_smem(s, op, &ind);    /* Smem (sets s->lk_used for long form) */
             uint16_t dmad = prog_fetch(s, (uint16_t)(s->pc + 1 + (s->lk_used ? 1 : 0)));
-            if (hi8 == 0x70) data_write(s, addr, data_read(s, dmad));  /* MVKD (dmad)->Smem */
-            else             data_write(s, dmad, data_read(s, addr));  /* MVDK Smem->(dmad) */
+            uint16_t dm   = (s->rpt_active && s->dmad_set) ? s->mvdk_dmad : dmad;
+            if (s->rpt_active) s->dmad_set = true;
+            if (hi8 == 0x70) data_write(s, addr, data_read(s, dm));     /* MVKD (dmad)->Smem */
+            else             data_write(s, dm,  data_read(s, addr));    /* MVDK Smem->(dmad) */
+            s->mvdk_dmad = (uint16_t)(dm + 1);
             consumed = 2;
             return consumed + s->lk_used;
         }
@@ -7735,7 +7768,14 @@ static int c54x_exec_one(C54xState *s)
             uint16_t psrc = (s->rpt_active && s->par_set) ? s->mvpd_src : pmad;
             if (s->rpt_active) s->par_set = true;
             if (hi8 == 0x7C) data_write(s, addr, prog_fetch(s, psrc)); /* MVPD P→D */
-            else             s->prog[psrc] = data_read(s, addr);       /* MVDP D→P */
+            /* MVDP D→P must go through prog_write, which enforces "PROM1 (0xE000-0xFFFF) is
+             * ROM — reject writes". Storing into s->prog[] directly bypassed that guard, so a
+             * write aimed at mask ROM actually LANDED. The 5110's ROM-version handler relies on
+             * the write being ignored: 0x4A09 stages 0x0100, 0x4A0B `prog(0ff87h) = *AR2` is
+             * swallowed by the ROM, and 0x4A0F reads back the ROM's own version word
+             * (prog[0xFF87] = 0x0004) — so the phone reports '4'. With the write landing we read
+             * our own 0x0100 back and reported '0'. Fix 2026-07-28. */
+            else             prog_write(s, psrc, data_read(s, addr));  /* MVDP D→P */
             s->mvpd_src = psrc + 1;
             consumed = 2;  /* opcode + pmad ; long-Smem extra added via lk_used */
             return consumed + s->lk_used;
@@ -12543,6 +12583,7 @@ int c54x_run(C54xState *s, int n_insns)
                 /* Fresh repeat: READA/WRITA must re-seed PAR from A on their
                  * first iteration (SPRU172C "A -> PAR"). */
                 s->par_set = false;
+                s->dmad_set = false;   /* same rule for the MVDK/MVKD/MVDM/MVMD dmad */
             } else if (s->rpt_count > 0) {
                 s->rpt_count--;
                 /* Delayed-branch window accounting for `retd/bd; rpt #k; insn`:
@@ -12568,6 +12609,7 @@ int c54x_run(C54xState *s, int n_insns)
             } else {
                 s->rpt_active = false;
                 s->par_set = false;
+                s->dmad_set = false;
             }
         }
 
@@ -12596,6 +12638,7 @@ int c54x_run(C54xState *s, int n_insns)
          * insns 1-mot. On décrémente du nombre de MOTS exécutés (= consumed), et
          * on NE compte PAS l'itération qui arme (ds_before==0 = la branche
          * elle-même ; le delay commence à l'instruction suivante). */
+        bool delayed_commit = false;
         if (s->delay_slots > 0) {
             if (ds_before == 0) {
                 /* itération de la branche différée elle-même : ne rien
@@ -12604,8 +12647,10 @@ int c54x_run(C54xState *s, int n_insns)
                 int wexec = (consumed > 0) ? consumed : 1;
                 if (s->delay_slots > wexec) s->delay_slots -= wexec;
                 else                        s->delay_slots = 0;
-                if (s->delay_slots == 0)
+                if (s->delay_slots == 0) {
                     s->pc = s->delayed_pc;
+                    delayed_commit = true;
+                }
             }
         }
 
@@ -12613,10 +12658,52 @@ int c54x_run(C54xState *s, int n_insns)
         /* === RPTB (block repeat) end-of-body check ===
          * Must run AFTER PC advance and delayed-branch settle so the
          * redirect to RSA is the final word on s->pc for this iteration.
-         * Triggers when PC has overshot REA (= reached REA+1 or beyond,
-         * accounting for 2-word instructions at the body's tail). Skip
-         * during RPT (single-instruction repeat has priority). */
-        if (s->rptb_active && !s->rpt_active && s->pc >= s->rea + 1) {
+         * Skip during RPT (single-instruction repeat has priority).
+         *
+         * On silicon the block-repeat is an address comparison in the FETCH
+         * stage: fetching REA redirects the NEXT fetch to RSA. Two ways that
+         * shows up here, and the old `s->pc >= s->rea + 1` alone conflated
+         * them with everything else that can move the PC:
+         *
+         *  1. SEQUENTIAL fall-out — the instruction we just ran was inside
+         *     the block [RSA,REA] and PC advanced past REA on its own
+         *     (REA+1, or REA+2 for a 2-word instruction sitting on REA).
+         *
+         *  2. A control transfer that LANDS on the block's fall-out point
+         *     (REA+1). This is the CALL-as-body case: 5110 PROM 0x7FF5 is
+         *     `RPTB 7FF8` whose whole body is the 2-word `CALL 7FFA` at
+         *     0x7FF7 — REA is the call's SECOND WORD. Silicon redirects at
+         *     the fetch of that word, so the call's return address is RSA
+         *     and the subroutine runs BRC+1 times. Modelling it as "loop
+         *     back when the RET brings us to REA+1" gives the same six
+         *     executions without having to rewrite the pushed return address.
+         *
+         * Everything else that moves the PC — the call's own redirect to
+         * 0x7FFA (= REA+2, so a widened window would NOT have worked),
+         * subroutine code running at addresses above REA, an interrupt
+         * vector — must NOT retire an iteration. The old condition fired on
+         * entry to the subroutine, draining BRC without ever running the
+         * body: the 0x7FE8 `xor_or_b` round updated only word[5], and every
+         * later round inherited the error, so the emitted MSID never carried
+         * a valid Cobba signature. */
+        bool rptb_wrapped   = (s->rsa > s->rea);   /* malformed/wrapped block: keep old loose rule */
+        bool rptb_in_block  = rptb_wrapped || (exec_pc >= s->rsa && exec_pc <= s->rea);
+        bool rptb_redirect  = (consumed == 0) || delayed_commit;
+        bool rptb_fallout   = rptb_redirect
+                                ? (s->pc == (uint16_t)(s->rea + 1))
+                                : (rptb_in_block && s->pc >= s->rea + 1);
+        /* A/B switch for bisecting this rule against the pre-2026-07-28 one. */
+        static int rptb_legacy = -1;
+        if (rptb_legacy < 0) rptb_legacy = getenv("C54X_RPTB_LEGACY") ? 1 : 0;
+        if (rptb_legacy) rptb_fallout = (s->pc >= s->rea + 1);
+        if (s->rptb_active && !s->rpt_active && rptb_fallout) {
+            static int rptb_trace = -1;
+            if (rptb_trace < 0) rptb_trace = getenv("C54X_RPTB_TRACE") ? 1 : 0;
+            if (rptb_trace)
+                fprintf(stderr, "[rptb] insn=%u exec_pc=0x%04x pc=0x%04x rsa=0x%04x "
+                                "rea=0x%04x brc=%d %s\n",
+                        s->insn_count, exec_pc, s->pc, s->rsa, s->rea, s->brc,
+                        s->brc > 0 ? "loop" : "EXIT");
             static int rptb_log = 0;
             if (rptb_log < 20) {
                 C54_LOG("RPTB redirect PC=0x%04x→RSA=0x%04x REA=0x%04x BRC=%d",

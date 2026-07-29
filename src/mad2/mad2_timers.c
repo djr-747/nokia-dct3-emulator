@@ -3,6 +3,8 @@
 // mad2_timers_tick / mad2_irq_poll / mad2_fiq_poll are public (mad2.h).
 
 #include "mad2/mad2_internal.h"
+#include "mad2/dsp/mdi_trace.h"
+#include "services/identity_provision.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -408,6 +410,11 @@ void mad2_timers_tick(Mad2* m, uint32_t cycles) {
               (!d->next_wake || d->next_wake(m) <= m->rtc_mono))
               d->advance_to(m, m->rtc_mono);
           if (d->tick) d->tick(m);
+          // MDILOG: one ring trace for every engine (see dsp/mdi_trace.h). This is the MCU-RAM
+          // viewpoint, so it covers rom4/rom6 and the MCU's own side under co-sim; the co-sim
+          // adds a second observer on the DSP-side copy from inside its own tick.
+          { static MdiTrace mcu_view;
+            mdi_trace_poll(m, &mcu_view, "mcu", mdi_trace_peek_mem, 0); }
       } }
     uint64_t d = (uint64_t)m->t0_div + 1;
     uint16_t c = (uint16_t)((m->rtc_mono * DCT3_T0_HZ) / (DCT3_ARM_HZ * d) + m->t0_offset);   // monotonic base + divider-continuity offset (see Timer1 note)
@@ -433,6 +440,14 @@ void mad2_timers_tick(Mad2* m, uint32_t cycles) {
             else { const char* t = getenv("T0FIQ4"); if (!t || strcmp(t, "0")) mad2_raise_fiq(m, 4); }
         }
     }
+
+    // EEPROM re-provisioning service (services/identity_provision.c). Idle unless a run was
+    // explicitly started, and then it only feeds MBUS frames the firmware's own service
+    // handlers answer — so it is inert on every boot that never asks for it. It lives on the
+    // shared platform tick because it needs a PER-STEP feed window (the firmware's MBUS
+    // RX-enable opens only briefly between bytes) and must work identically in the web and
+    // native builds.
+    identity_provision_tick(m);
 }
 
 int mad2_irq_poll(const Mad2* m) {

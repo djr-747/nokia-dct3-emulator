@@ -58,6 +58,12 @@ const ModelProfile model_8810 = {
         .hold_insns = 400000,
         .col_port = 0x30, .row_port = 0x31, .dir_port = 0x2F,
     },
+    // Factory identity — MINTED, pinned; see tools/dct3_identity.py and
+    //. COBBA s/n 00881042, IMEI 490154208810012.
+    .identity = {
+        .msid   = { 0x82, 0xE8, 0xB0, 0x62, 0x34, 0xE4, 0xC2, 0x0C, 0xB5, 0xF4, 0x9F, 0xBA, 0x19 },
+        .imei14 = "49015420881001",
+    },
     .led = {
         .lcd_rgb = 0x55C955, .lcd_mask = 0x40, .no_kbd_led = 1,
     },

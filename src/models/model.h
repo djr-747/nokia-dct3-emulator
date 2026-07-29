@@ -375,6 +375,34 @@ typedef struct {
     uint8_t  no_vibra;   // 1 = model has no vibra motor (5110 NSE-1: no internal vibra)
 } LedSpec;
 
+// --- Factory identity (MSID / COBBA / IMEI) -----------------------------------
+// The MSID is the ROOT of a DCT3 phone's identity. The MCU builds an m2d {70 13} setup
+// from a 4-byte seed and the DSP answers {74 34} with THIRTEEN bytes, which the MCU
+// stores and reports as MBUS service command 0xB5. Decoded, those 13 bytes are
+// (flash CRC | COBBA s/n | hash) — so the COBBA id a service tool displays is NOT stored
+// anywhere, it is derived from the MSID, and every security record (FLASH ID / SIMlock /
+// IMEI) is encoded with tables XOR-ed against that COBBA. One MSID, one coherent identity.
+//
+// Our HLE DSP responder cannot derive a real MSID: the 13 bytes come from the undumped
+// SIML crypto ROM, so it can only echo the MCU's 4-byte seed zero-padded. That echo is
+// rejected by real service tools (a genuine MSID starts 0x81/0x82/0x83) and, worse, it is
+// UNSTABLE — it follows whatever the MCU happened to send, so the identity a tool reads
+// changes between runs. Pinning a minted MSID per model fixes both, and because the COBBA
+// falls out of the MSID, pinning the MSID pins the COBBA.
+//
+// MINTED, not captured: these are example identities for an emulated handset, generated
+// and documented by tools/dct3_identity.py (`check-c` verifies these literals still match
+// it).
+typedef struct {
+    uint8_t     msid[13];   // 13-byte MSID for the {74 34} reply. ALL-ZERO = none pinned
+                            // -> the DSP keeps its byte-for-byte seed echo (the default
+                            // for every model that has not been minted one).
+    const char* imei14;     // first 14 IMEI digits (the 15th is the Luhn check digit).
+                            // NULL = none pinned. The IMEI lives in an EEPROM record, so
+                            // this is the value tools/dct3_reprovision.py writes via B6 —
+                            // it is not injected behind the firmware's back.
+} IdentitySpec;
+
 // --- GENSIO / serial-bus transport ports (per-model addressing) ---------------
 // The CCONT chip is reached over the GENSIO bus, but at DIFFERENT I/O ports on
 // MAD2 (memory-mapped GENSIO) vs serial-bus (bit-banged serial). The chip model
@@ -557,6 +585,7 @@ typedef struct ModelProfile {
     BatterySpec    battery;
     LedSpec        led;           // backlight colours (0 = classic yellow-green)
     GensioSpec     gensio;        // CCONT bus transport ports (0 = MAD2 default)
+    IdentitySpec   identity;      // minted MSID/IMEI (all-zero/NULL = none -> DSP seed echo)
     AsicConfig     asic;          // per-model ASIC values (version, DSP-reset readback, IRQ width)
     FwAddrs        fw;            // constant fallbacks for every firmware address
     const SigResolve* sigs;       // signature overrides (signature-first)

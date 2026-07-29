@@ -70,6 +70,12 @@ const ModelProfile model_7110 = {
         .lines   = keylines_7110,
         .n_lines = (int)(sizeof(keylines_7110) / sizeof(keylines_7110[0])),
     },
+    // Factory identity — MINTED, pinned; see tools/dct3_identity.py and
+    //. COBBA s/n 00711042, IMEI 490154207110018.
+    .identity = {
+        .msid   = { 0x82, 0x7D, 0xCF, 0x26, 0xCD, 0x8C, 0x49, 0xD4, 0x3B, 0xB1, 0x94, 0x15, 0x7E },
+        .imei14 = "49015420711001",
+    },
     .battery = {
         // 7110 self-test ADC gate (fn 0x49F5C0, latch [0x16BC7C], firmware/My 7110 v5.00):
         // reads CCONT A/D ch3 (BSI, = adc[3]) and ch4 (BTEMP, = adc[4]) via the bit-banged

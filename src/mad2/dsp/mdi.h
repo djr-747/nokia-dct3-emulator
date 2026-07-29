@@ -48,12 +48,6 @@ static inline uint16_t mdi_d2m_index_next(uint16_t idx) {
     return (uint16_t)(rel + MDI_D2M_FIRST_IDX);
 }
 
-// True if the producer may post another frame without the full->empty alias. Pass the raw
-// cursor index values (producer = [0x101C8], consumer = [0x101CA]).
-static inline int mdi_d2m_can_post(uint16_t producer, uint16_t consumer) {
-    return mdi_ring_avail(producer, consumer, MDI_RING_SLOTS) < MDI_D2M_CAPACITY;
-}
-
 // --- APIRAM access (big-endian, matching the ARM7TDMI-BE core / m->mem storage) ---------
 // The DSP HPI window is byte-addressable RAM; the MCU reads/writes it as big-endian
 // 16-bit cells (MDIRCV_DEQUEUE 0x2BAC72 does `ldrh` in BE mode). These take the raw backing
@@ -67,52 +61,115 @@ static inline void mdi_w16be(uint8_t* mem, uint32_t mask, uint32_t addr, uint16_
     mem[(addr + 1u) & mask] = (uint8_t)(val & 0xFFu);
 }
 
-// Post one d2m descriptor word {HIGH=len, LOW=opcode} at the producer slot and advance the
-// producer index (reserve-one full guard). `ring_base` = the d2m data base (slot at index
-// 0x80 -> 3310 mdircv_q 0x10100); `producer_addr`/`consumer_addr` = the cursor cells
-// ([0x101C8]/[0x101CA]). Returns 1 on success, 0 if the ring is full (frame dropped — the
-// caller retries on a later tick, as the real DSP would when the MCU has not yet drained).
-// Mirrors the drain's element math (elem = ring_base + (idx - 0x80)*2) and wrap.
-static inline int mdi_d2m_post(uint8_t* mem, uint32_t mask, uint32_t ring_base,
-                               uint32_t producer_addr, uint32_t consumer_addr,
-                               uint8_t opcode, uint8_t len) {
+// FAITHFUL producer append: write the record at the CURRENT producer index, wrapping
+// halfword-by-halfword at the ring end, and advance ONLY the producer. Contrast
+// mdi_d2m_deposit above, which relocates a would-straddle record to the ring start and then
+// drags the MCU's consumer after it — a write real silicon cannot make.
+//
+// A record MAY straddle the wrap. That is not an assumption: the MCU's own drain loop reads
+// the record one halfword at a time and wraps mid-record (3410 v5.46 0x34832A..0x348334):
+//
+//     0x348328  r6 = ring_end (window + 0x1C8)
+//     0x34832A  r4 = [r2]              ; read halfword
+//     0x34832E  r2 += 2
+//     0x348330  cmp r2, r6
+//     0x348332  bcc  +0                ; still inside the ring -> keep going
+//     0x348334  r2 = r5                ; WRAP to the ring start, mid-record
+//
+// So the producer simply writes through the wrap and the consumer follows it round. Neither
+// side has to touch the other's cursor. The "a record may not wrap" rule we inherited from
+// dsp_rom4.c does not hold for this drain.
+//
+// Returns 1 if appended, 0 if the ring lacks room (caller retries on a later tick).
+static inline int mdi_d2m_append(uint8_t* mem, uint32_t mask, uint32_t ring_base,
+                                 uint32_t producer_addr, uint32_t consumer_addr,
+                                 uint8_t opcode, const uint8_t* payload, uint8_t len) {
     uint16_t p = mdi_r16be(mem, mask, producer_addr);
     uint16_t c = mdi_r16be(mem, mask, consumer_addr);
-    if (!mdi_d2m_can_post(p, c)) return 0;
-    uint32_t elem = ring_base + (uint32_t)(uint16_t)(p - MDI_D2M_FIRST_IDX) * 2u;
-    mdi_w16be(mem, mask, elem, mdi_frame_word(opcode, len));
-    mdi_w16be(mem, mask, producer_addr, mdi_d2m_index_next(p));
+    unsigned words = 1u + ((unsigned)len + 1u) / 2u;            // word0 + ceil(len/2)
+    if (mdi_ring_avail(p, c, MDI_RING_SLOTS) + words > MDI_D2M_CAPACITY) return 0;
+
+    // Write `words` halfwords from the producer index, wrapping exactly as the drain does.
+    uint16_t w = p;
+    uint16_t hw = mdi_frame_word(opcode, len);
+    for (unsigned k = 0; k < words; ++k) {
+        uint32_t elem = ring_base + (uint32_t)(uint16_t)(w - MDI_D2M_FIRST_IDX) * 2u;
+        if (k == 0) {
+            mdi_w16be(mem, mask, elem, hw);                     // word0 = {HIGH=len, LOW=opcode}
+        } else {
+            unsigned off = (k - 1u) * 2u;                       // payload bytes for this word
+            mem[elem & mask]       = (payload && off     < len) ? payload[off]     : 0u;
+            mem[(elem + 1u) & mask]= (payload && off + 1u < len) ? payload[off + 1u] : 0u;
+        }
+        w = mdi_d2m_index_next(w);
+    }
+    mdi_w16be(mem, mask, producer_addr, w);                     // ONLY the producer moves
     return 1;
 }
 
-// Faithful DSP-responder deposit: place ONE record into an EMPTY d2m ring and hand it to the
-// MCU. Mirrors the boot self-test / keep-alive / SIML responders in dsp_rom4.c exactly
-// (the pattern the real DSP uses): only deposits when the ring is empty (producer==consumer),
-// relocates the write position to FIRST_IDX if the record would straddle the wrap (a record
-// may not wrap), writes word0 {HIGH=len, LOW=opcode} + `len` payload bytes, then repositions
-// the consumer to the record start and the producer just past it (words = 1 + ceil(len/2)).
+// ---------------------------------------------------------------------------
+// CANONICAL MDI OPCODE REFERENCE (3410 v5.46, static RE — 2026-07-29)
 //
-// `len` MUST be non-zero: task-4 (0x2EDC48) treats a drained frame whose high byte is 0 as
-// empty / re-fans it to the UI, so a zero-length frame neither routes nor bumps the liveness
-// counter. Returns 1 if deposited, 0 if the ring was not empty (the caller retries on a later
-// tick, exactly as the real DSP waits for a free window before posting).
-static inline int mdi_d2m_deposit(uint8_t* mem, uint32_t mask, uint32_t ring_base,
-                                  uint32_t producer_addr, uint32_t consumer_addr,
-                                  uint8_t opcode, const uint8_t* payload, uint8_t len) {
-    uint16_t p = mdi_r16be(mem, mask, producer_addr);
-    uint16_t c = mdi_r16be(mem, mask, consumer_addr);
-    if (p != c) return 0;                                       // only into an empty ring
-    unsigned words = 1u + ((unsigned)len + 1u) / 2u;            // word0 + ceil(len/2) payload words
-    uint16_t w = p;
-    if ((unsigned)w + words > (unsigned)MDI_D2M_LAST_IDX)       // record would straddle the wrap
-        w = MDI_D2M_FIRST_IDX;                                  // -> relocate to ring start (dsp_rom4.c straddle rule)
-    uint32_t elem = ring_base + (uint32_t)(uint16_t)(w - MDI_D2M_FIRST_IDX) * 2u;
-    mdi_w16be(mem, mask, elem, mdi_frame_word(opcode, len));    // word0 = {HIGH=len, LOW=opcode}
-    for (unsigned i = 0; i < len; ++i)
-        mem[(elem + 2u + i) & mask] = payload ? payload[i] : 0u;
-    mdi_w16be(mem, mask, consumer_addr, w);                     // MCU reads at w
-    mdi_w16be(mem, mask, producer_addr, (uint16_t)(w + words)); // producer past the record
-    return 1;
-}
+// Derived from the firmware, not from observation, so it lists opcodes rom6 has
+// never seen as well as the ones it has. Two separate namespaces — do not mix.
+//
+// (1) d2m (DSP -> MCU): what rom6 must PRODUCE.
+//     Dispatched by the MDI receive task (task idx 4, entry 0x3ED764, prio 10,
+//     stack 848) on byte[3] of the drained record. MEASURED: the dispatcher is a
+//     13-entry jump table at 0x3ED7B0 covering 0x83..0x8F, plus four discrete
+//     compares. Anything not listed falls to the shared ignore stub 0x3ED85E.
+//
+//       0x80 -> 0x3ED84C
+//       0x83 -> 0x3ED844      (rom6: RSSI)
+//       0x84 -> 0x3ED83C
+//       0x85 -> IGNORED (shared stub 0x3ED85E)
+//       0x86 -> 0x3ED834
+//       0x87 -> 0x3ED82C
+//       0x88 -> 0x3ED824      (rom6: nmeas result)
+//       0x89 -> 0x3ED81C      (rom6: channel-changed confirm)
+//       0x8A -> 0x3ED814
+//       0x8B -> 0x3ED80C      (rom6: ALL_RSSI_RESULTS)
+//       0x8C -> 0x3ED804
+//       0x8D -> IGNORED (shared stub 0x3ED85E)
+//       0x8E -> IGNORED (shared stub 0x3ED85E)
+//       0x8F -> 0x3ED7FC      (rom6: emitted with 0x02 channel configure)
+//       0x99 -> 0x3ED7F4
+//       0x9A -> 0x3ED7EC
+//       0x9C -> 0x3ED7E4
+//
+//     0x85/0x8D/0x8E are accepted-and-dropped: sending them is harmless but can
+//     never advance firmware state. 0x81/0x82 and >=0x9D are out of range
+//     entirely and reach no handler.
+//
+// (2) m2d (MCU -> DSP): what rom6 must CONSUME.
+//     NOT YET ENUMERATED FROM THE IMAGE. The m2d record is built by the MDI send
+//     task (task idx 3, entry 0x3E5DC8, prio 11) and pushed into the ring by
+//     0x34821E (r0 = total byte length, r1 = record ptr whose byte[0] IS the
+//     opcode; word0 = (len<<8)|opcode). 0x34821E has exactly one caller,
+//     0x3E5F5C, inside that task. The opcode namespace is therefore the set of
+//     record byte[0] values produced by task 3's producers, which is still open.
+//     Opcodes rom6 handles today (0x02, 0x0C, 0x0F, 0x11, 0x1B, 0x46, 0x55,
+//     0x56, 0x57) are OBSERVED, not enumerated — treat the list as incomplete.
+//
+// (3) NOT an MDI opcode namespace, despite appearances: 0x348674 is
+//     DSP_HPI_FIELD_WRITE(field 0..53, value). Its 54-entry jump table at
+//     0x3486A8 selects a bitfield inside the DSP HPI *control registers*
+//     0x100A8..0x100C2 (read-modify-write tail at 0x3489A2/0x3489A4), gated on
+//     [0x100E0]. These are register writes in shared RAM, NOT ring records, and
+//     they are invisible to a ring-only trace. If rom6 ever needs to react to a
+//     mode/config change that never shows up as a record, look here.
+//
+// (4) CSD user data: the opcode is NOT yet identified. Evidence bounding it:
+//     no module of the data stack (pdgntb 0x2CA000-0x2CC000, dgntbl2r
+//     0x3038B0-0x304B00, DPI 0x308000-0x309400, dgntbif 0x3E3000-0x3E5000)
+//     contains ANY literal reference to the shared window 0x10000..0x101FF
+//     except one: 0x101D0, referenced from 0x303E18 and 0x30852C. That cell is
+//     `hw_dsp_ftd_api_dump[0..9]` — 10 u16 counters sitting in the shared HPI
+//     window just past the MDIRCV cursors (0x101C8 tail / 0x101CA head), read
+//     and zeroed by the L2RCOP statistics dumps. "FTD" = fax/transparent data.
+//     So the CSD data conduit is a shared-window BLOCK at 0x101D0, reached
+//     through the MDI send/receive tasks rather than by the data stack directly.
+//     This is a LEAD, not a conclusion — the block's layout is unverified.
+// ---------------------------------------------------------------------------
 
 #endif // MAD2_MDI_H

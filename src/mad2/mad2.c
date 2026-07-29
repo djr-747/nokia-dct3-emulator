@@ -310,18 +310,26 @@ void mad2_init(Mad2* m, const ModelProfile* prof) {
     // under cosim (mirrors dsp54_faithful() in the c54x glue — kept inline to avoid a core->c54x dep).
     { const char *e = getenv("DSPNOSELFTEST");
       m->dsp_selftest_off = (e && *e) ? (atoi(e) != 0) : (getenv("DSP54_COSIM") ? 1 : 0); }
-    // SIML local-security responder. Opt-in on native
-    // (faithful default OFF), but ON by default in the web build (dct3_web_boot sets DSPSIML=1
-    // before this init). UNFAITHFUL when active — an HLE stand-in for the undumped SIML crypto
-    // mask ROM; the warning below fires once. DSPSIML=0 forces it off everywhere. Cosim is
-    // unaffected: the responder sits behind the HLE quiet-gate (dsp_hle_quiet).
+    // SIML local-security responder.
+    //
+    // NOTE: this flag NO LONGER decides whether SIML runs. The live engines
+    // (dsp_rom4.c / dsp_rom6.c) capture the {70 13/16/17} records and answer 0x34/0x35/0x36
+    // unconditionally — always on, for every model they serve, along with the pinned per-model
+    // MSID (dsp_msid_override). The 3310 gate exercises exactly that path with no env set.
+    //
+    // What dsp_siml_en still gates is the LEGACY responder in dsp/dsp_mailbox.c, whose only
+    // production caller is the C54x cosim pass-through (third_party/c54x/mad2_dsp_c54x.c).
+    // It stays default OFF deliberately: under cosim the real DSP supplies this behaviour and
+    // the HLE stand-in must not compete with it. Do NOT "default it on to match the engines" —
+    // that enables the HLE inside the faithful cosim path and moves the 5110cosim gate.
     { const char *e = getenv("DSPSIML");
       m->dsp_siml_en = (e && *e) ? (atoi(e) != 0) : 0; }
     if (m->dsp_siml_en) {
         static int siml_warned = 0;
         if (!siml_warned) { siml_warned = 1;
-            fprintf(stderr, "[dsp] UNFAITHFUL: SIML local-security responder ON by default "
-                            "(HLE stand-in for the undumped SIML crypto ROM); set DSPSIML=0 for the faithful path\n");
+            fprintf(stderr, "[dsp] UNFAITHFUL: legacy SIML responder enabled (DSPSIML=1) — an HLE "
+                            "stand-in for the undumped SIML crypto ROM, and only the cosim path "
+                            "reads it; the rom4/rom6 engines answer SIML on their own regardless\n");
         }
     }
     // (The DSP model drives every decision from DSP-visible signals only — see the

@@ -43,13 +43,9 @@ int main(void) {
         assert(idx == MDI_D2M_FIRST_IDX);
     }
 
-    // Reserve-one capacity: post allowed until avail hits 99 (empty-test would alias a
-    // full 100 back to empty), then blocked. P2-MUST-PIN #1.
+    // Reserve-one capacity: a record may occupy up to 99 words (the empty-test would alias a
+    // full 100 back to empty). P2-MUST-PIN #1. Exercised through mdi_d2m_append below.
     assert(MDI_D2M_CAPACITY == 99);
-    assert(mdi_d2m_can_post(0x80, 0x80));                // empty -> ok
-    assert(mdi_d2m_can_post(0xE2, 0x80));                // avail 98 -> ok
-    assert(!mdi_d2m_can_post(0xE3, 0x80));               // avail 99 (full) -> blocked
-    assert(!mdi_d2m_can_post(0x80, 0x81));               // avail 99 across wrap -> blocked
 
     // --- APIRAM big-endian access + d2m post (raw buffer; addresses are parameters) -----
     {
@@ -71,51 +67,39 @@ int main(void) {
         mdi_w16be(mem, mask, pcur, 0x80);                // producer idx 0x80
         mdi_w16be(mem, mask, ccur, 0x80);                // consumer idx 0x80 (empty)
 
-        assert(mdi_d2m_post(mem, mask, base, pcur, ccur, 0x92, 0x03) == 1);
-        assert(mem[0x100] == 0x03 && mem[0x101] == 0x92);   // BE {len,opcode} at slot 0x80
-        assert(mdi_r16be(mem, mask, pcur) == 0x81);         // producer advanced
+        // --- mdi_d2m_append: the faithful producer -------------------------------------
+        // Writes at OUR producer cursor and advances only it. The MCU owns the consumer and
+        // we must never write it — see the ownership note in mdi.h.
+        { const uint8_t pl[2] = {0x0D, 0x00};            // rom4 self-test frame {0x74,[0D,00]}
+          assert(mdi_d2m_append(mem, mask, base, pcur, ccur, 0x74, pl, 2) == 1); }
+        assert(mem[0x100] == 0x02 && mem[0x101] == 0x74);   // word0 {HIGH=len, LOW=opcode}
+        assert(mem[0x102] == 0x0D && mem[0x103] == 0x00);   // payload
+        assert(mdi_r16be(mem, mask, ccur) == 0x80);         // CONSUMER UNTOUCHED
+        assert(mdi_r16be(mem, mask, pcur) == 0x82);         // producer past the record (2 words)
 
-        assert(mdi_d2m_post(mem, mask, base, pcur, ccur, 0x74, 0x18) == 1);
-        assert(mem[0x102] == 0x18 && mem[0x103] == 0x74);   // next slot 0x81
-        assert(mdi_r16be(mem, mask, pcur) == 0x82);
+        // Several records may be in flight: a non-empty ring does NOT refuse.
+        assert(mdi_d2m_append(mem, mask, base, pcur, ccur, 0x92, 0, 1) == 1);
+        assert(mdi_r16be(mem, mask, ccur) == 0x80);         // still untouched
+        assert(mdi_r16be(mem, mask, pcur) == 0x84);         // 0x82 + 2 words
 
-        // Reserve-one: fill to avail 99, then post must fail (would alias full->empty).
-        mdi_w16be(mem, mask, pcur, 0xE2);
-        mdi_w16be(mem, mask, ccur, 0x80);                // avail 98
-        assert(mdi_d2m_post(mem, mask, base, pcur, ccur, 0x01, 0x00) == 1);  // -> avail 99
-        assert(mdi_r16be(mem, mask, pcur) == 0xE3);
-        assert(mdi_d2m_post(mem, mask, base, pcur, ccur, 0x02, 0x00) == 0);  // full -> dropped
-        assert(mdi_r16be(mem, mask, pcur) == 0xE3);          // producer unchanged on drop
-
-        // Producer index wraps 0xE3 -> 0x80; slot 0xE3 element = base + (0xE3-0x80)*2 = 0x1C6.
-        mdi_w16be(mem, mask, pcur, 0xE3);
-        mdi_w16be(mem, mask, ccur, 0x81);                // avail 98 -> post ok
-        assert(mdi_d2m_post(mem, mask, base, pcur, ccur, 0x88, 0x05) == 1);
-        assert(mem[0x1C6] == 0x05 && mem[0x1C7] == 0x88);
-        assert(mdi_r16be(mem, mask, pcur) == 0x80);          // wrapped
-
-        // --- mdi_d2m_deposit: faithful empty-ring record (mirrors the rom4-body responders) --
+        // A record MAY straddle the wrap: it is written through the ring end and continues at
+        // the start, because the MCU's drain reads halfword-by-halfword and wraps mid-record
+        // (3410 v5.46 0x34832A..0x348334). It is NOT relocated, and the consumer is not moved.
         for (unsigned i = 0; i < sizeof mem; ++i) mem[i] = 0;
-        mdi_w16be(mem, mask, pcur, 0x80);                // empty ring at slot 0x80
-        mdi_w16be(mem, mask, ccur, 0x80);
-        // Exact bytes of the rom4 body's self-test frame: {0x74, [0x0D,0x00]}, len 2 -> 2 words.
-        { const uint8_t pl[2] = {0x0D, 0x00};
-          assert(mdi_d2m_deposit(mem, mask, base, pcur, ccur, 0x74, pl, 2) == 1); }
-        assert(mem[0x100] == 0x02 && mem[0x101] == 0x74);    // word0 {HIGH=len, LOW=opcode}
-        assert(mem[0x102] == 0x0D && mem[0x103] == 0x00);    // payload
-        assert(mdi_r16be(mem, mask, ccur) == 0x80);          // consumer at record start
-        assert(mdi_r16be(mem, mask, pcur) == 0x82);          // producer past it (2 words)
-
-        // Non-empty ring -> refused (caller retries next tick, as the real DSP waits).
-        assert(mdi_d2m_deposit(mem, mask, base, pcur, ccur, 0x92, 0, 1) == 0);
-
-        // Straddle relocate: a record that would cross the wrap moves to FIRST_IDX (dsp_rom4.c).
-        mdi_w16be(mem, mask, pcur, 0xE3);                // 1 slot before END, empty
+        mdi_w16be(mem, mask, pcur, 0xE3);                   // last slot, empty ring
         mdi_w16be(mem, mask, ccur, 0xE3);
-        assert(mdi_d2m_deposit(mem, mask, base, pcur, ccur, 0x74, 0, 2) == 1);  // words 2, 0xE3+2>0xE3
-        assert(mdi_r16be(mem, mask, ccur) == 0x80);          // relocated to ring start
-        assert(mdi_r16be(mem, mask, pcur) == 0x82);
-        assert(mem[0x100] == 0x02 && mem[0x101] == 0x74);    // written at FIRST_IDX
+        { const uint8_t pl[2] = {0xAA, 0xBB};               // 2 words: word0 + 1 payload word
+          assert(mdi_d2m_append(mem, mask, base, pcur, ccur, 0x74, pl, 2) == 1); }
+        assert(mem[0x1C6] == 0x02 && mem[0x1C7] == 0x74);   // word0 at slot 0xE3 (ring end)
+        assert(mem[0x100] == 0xAA && mem[0x101] == 0xBB);   // payload wrapped to slot 0x80
+        assert(mdi_r16be(mem, mask, ccur) == 0xE3);         // consumer STILL untouched
+        assert(mdi_r16be(mem, mask, pcur) == 0x81);         // producer wrapped past the record
+
+        // Reserve-one: a record that would fill the ring is refused, producer unchanged.
+        mdi_w16be(mem, mask, pcur, 0x80);
+        mdi_w16be(mem, mask, ccur, 0x81);                   // avail 99 -> no room at all
+        assert(mdi_d2m_append(mem, mask, base, pcur, ccur, 0x02, 0, 0) == 0);
+        assert(mdi_r16be(mem, mask, pcur) == 0x80);         // unchanged on drop
     }
 
     printf("test_mdi: OK\n");

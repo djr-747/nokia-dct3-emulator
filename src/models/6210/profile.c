@@ -59,6 +59,12 @@ const ModelProfile model_6210 = {
         .scan = KP_SCAN_DIR_AWARE,
         .uif_irq = 1,
     },
+    // Factory identity — MINTED, pinned; see tools/dct3_identity.py and
+    //. COBBA s/n 00621042, IMEI 490154206210017.
+    .identity = {
+        .msid   = { 0x83, 0xCF, 0xA2, 0xAB, 0x53, 0xB3, 0x48, 0x19, 0x6A, 0xDE, 0x07, 0x66, 0x10 },
+        .imei14 = "49015420621001",
+    },
     .led = { .lcd_rgb = 0x55C955, .kbd_rgb = 0x55C955 },
     .battery = {
         // CCONT A/D — STANDARD MAD2 wiring (VERIFIED v5.56, 2026-06-20): the per-quantity

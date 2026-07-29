@@ -44,6 +44,12 @@ const ModelProfile model_3310 = {
         .lines   = keylines_3310,
         .n_lines = (int)(sizeof(keylines_3310) / sizeof(keylines_3310[0])),
     },
+    // Factory identity — MINTED, pinned; see tools/dct3_identity.py and
+    //. COBBA s/n 00331042, IMEI 490154203310018.
+    .identity = {
+        .msid   = { 0x83, 0xFE, 0x93, 0xA2, 0x8E, 0x7F, 0x04, 0x0B, 0xE2, 0x4A, 0x9B, 0xD4, 0xA5 },
+        .imei14 = "49015420331001",
+    },
     .battery = {
         // Must sit in a narrow wedge-clean window: <=0x210 enters the firmware's
         // low-battery path which corrupts the soft-timer queue (head [0x11182C])

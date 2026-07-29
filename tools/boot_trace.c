@@ -27,6 +27,7 @@
 #include "harness/seccode.h"   // SECCODE=1 validation knob (firmware-oracle code reader)
 #include "gui.h"               // optional SDL overlay (DCT3_SDL); NO-OP stubs otherwise
 #include "mbus_bridge.h"       // optional host-serial MBUS service bridge (MBUSPORT/MBUSPTY)
+#include "services/identity_provision.h"   // REPROVISION=1 — EEPROM identity re-provisioning
 #include "trace_names.h"       // BROKERLOG: name broker trace events via dct3trac dict
 #include <time.h>              // MBUS-bridge wall-clock pacing
 #include <mgba/internal/arm/decoder.h>
@@ -1264,9 +1265,35 @@ gui_run_start:   // in-process warm-reboot target (PWR held 30s); GUI build only
         ? strtoull(getenv("INCOMING_AT"), 0, 0) : 35000000u;
     int incoming_queued = 0;
 
+    // REPROVISION=1 — run the EEPROM re-provisioning service (services/identity_provision.c)
+    // once the phone has booted into normal mode, so the identity write path is testable
+    // headlessly instead of only through the web button. REPROVISION_AT=<step> moves the
+    // trigger (default 40M, comfortably past standby on the models that carry an identity).
+    long reprov_at = getenv("REPROVISION")
+        ? (getenv("REPROVISION_AT") ? atol(getenv("REPROVISION_AT")) : 40000000L) : -1;
+    int reprov_started = 0, reprov_reported = 0;
+
     for (; steps < budget; ++steps) {
         struct ARMCore* cpu = &c->cpu;
         uint32_t pc = (uint32_t)cpu->gprs[15] - (cpu->cpsr.t ? 4u : 8u);
+
+        if (reprov_at >= 0 && !reprov_started && steps >= reprov_at) {
+            reprov_started = 1;
+            // REPROVISION=verify reads the identity back without writing anything.
+            const char* rp = getenv("REPROVISION");
+            int vonly = rp && (!strcmp(rp, "verify") || !strcmp(rp, "2"));
+            if (!identity_provision_run(&h.mad2, vonly))
+                printf("[idprov] not started: %s\n", identity_provision_status());
+        }
+        if (reprov_started && !reprov_reported) {
+            int st = identity_provision_state();
+            if (st == IDPROV_DONE || st == IDPROV_FAILED) {
+                reprov_reported = 1;
+                printf("[idprov] %s: %s (step %ld, eeprom writes %llu)\n",
+                       st == IDPROV_DONE ? "DONE" : "FAILED", identity_provision_status(),
+                       steps, (unsigned long long)h.mad2.flash_eeprom_programs);
+            }
+        }
 
         if (!incoming_queued && h.mad2.rtc_mono >= incoming_at_cycle) {
             int queued = 0;

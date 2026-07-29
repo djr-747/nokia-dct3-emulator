@@ -61,6 +61,17 @@ const ModelProfile model_5110 = {
         .hold_insns = 400000,     // serial debounce FSM decodes 197-293k after the down-edge
         .col_port = 0x30, .row_port = 0x31, .dir_port = 0x2F,
     },
+    // Factory identity — MEASURED off the C54x mask ROM (not synthesized like the other
+    // models), pinned; see tools/dct3_identity.py (MEASURED) and
+    //. COBBA s/n 00160010, IMEI 490544109019871.
+    // Decodes to flash CRC 054b7d89 | COBBA 00160010 | sig A8A9AA + free 60 — byte-for-byte
+    // what the co-sim emits on {74 34} for `firmware/Nokia 5110 NSE-1 v5.30 A.fls`, so the
+    // HLE responder and DSP54_COSIM=1 now report the SAME phone. Binds to that image (the
+    // flash CRC is the real one); a different 5110 .fls needs its own measurement.
+    .identity = {
+        .msid   = { 0x82, 0x64, 0xB0, 0x00, 0xEB, 0x8F, 0x45, 0x7E, 0x16, 0x8B, 0xD2, 0xD3, 0x2A },
+        .imei14 = "49054410901987",
+    },
     .led = {
         // Iconic 5110 green EL backlight = PUP_GENIO (I/O 0x20) BIT6 (0x40 = PUP_GENIO_LED),
         // per MADos led scheme 2 (apps/main.c led=2; hw/led.c case 2; ioports.h PHONE_5110).

@@ -73,6 +73,13 @@
       lcdMode: mod.cwrap("dct3_web_lcd_mode", "number", []),
       leds: mod.cwrap("dct3_web_leds", "number", []),
       ledRgb: mod._dct3_web_led_rgb ? mod.cwrap("dct3_web_led_rgb", "number", ["number"]) : null,
+      // Emulated WAP gateway: when the phone's browser asks for a URL, the
+      // gateway parks the request and we answer it from the dev server's
+      // /wapgw endpoint (the page cannot fetch third-party sites itself —
+      // CORS — and the phone asks for whatever its WAP profile names).
+      wapBridge: mod._dct3_web_wap_bridge ? mod.cwrap("dct3_web_wap_bridge", null, ["number"]) : null,
+      wapPending: mod._dct3_web_wap_pending ? mod.cwrap("dct3_web_wap_pending", "string", []) : null,
+      wapDeliver: mod._dct3_web_wap_deliver ? mod.cwrap("dct3_web_wap_deliver", null, ["number", "number", "number"]) : null,
       buzzerOn: mod.cwrap("dct3_web_buzzer_on", "number", []),
       buzzerDiv: mod.cwrap("dct3_web_buzzer_div", "number", []),
       buzzerVol: mod.cwrap("dct3_web_buzzer_vol", "number", []),
@@ -97,8 +104,19 @@
       simSnapshot: mod.cwrap("dct3_web_sim_snapshot", "number", []),
       simSnapshotLen: mod.cwrap("dct3_web_sim_snapshot_len", "number", []),
       simRestore: mod.cwrap("dct3_web_sim_restore", "number", ["number", "number"]),
+      // Identity re-provisioning (services/identity_provision.c) — drives the firmware's
+      // own MBUS service handlers, so the EEPROM change persists through the normal path.
+      reprovision:       mod.cwrap("dct3_web_reprovision", "number", []),
+      reprovisionState:  mod.cwrap("dct3_web_reprovision_state", "number", []),
+      reprovisionStatus: mod.cwrap("dct3_web_reprovision_status", "string", []),
+      hasIdentity:       mod.cwrap("dct3_web_has_identity", "number", []),
       incomingCall: mod.cwrap("dct3_web_incoming_call", "number", ["string"]),
       incomingSms: mod.cwrap("dct3_web_incoming_sms", "number", ["string", "string"]),
+      // Binary SMS to an application port — Nokia OTA settings and the rest of
+      // the "smart message" family travel this way.
+      incomingSmsBin: mod._dct3_web_incoming_sms_bin
+        ? mod.cwrap("dct3_web_incoming_sms_bin", "number", ["string", "number", "number", "number", "number"])
+        : null,
       setSimPinEnabled: mod.cwrap("dct3_web_set_sim_pin_enabled", null, ["number"]),
       setSimPin: mod.cwrap("dct3_web_set_sim_pin", null, ["number"]),
       setSimPuk: mod.cwrap("dct3_web_set_sim_puk", null, ["number"]),
@@ -606,6 +624,36 @@
     };
     window.dct3SaveEeprom = function () { return saveNvram(true); };   // console helper
 
+    // --- identity re-provisioning ("factory reset" of the phone's identity) ---------
+    // Writes a complete, self-consistent identity — FLASH-ID/FAID, both SIMlock parts and
+    // the IMEI — all derived from the model's pinned MSID. It does NOT poke EEPROM offsets:
+    // it drives the firmware's own MBUS service handlers with the same B8/BA/B6 frames a
+    // Windows service tool sends, so the firmware writes its own EEPROM. That means the
+    // result is an ordinary NVRAM change and the persistence above saves and exports it
+    // like any other — no special path.
+    //
+    // Run it with the phone booted to standby: the service handlers only answer there. The
+    // run finishes by reading the IMEI back through the firmware (service command 0x66), so
+    // "done" means the phone itself reports the identity, not merely that the writes were
+    // ACKed. Poll dct3ReprovisionState() for 0 idle / 1 running / 2 done / 3 failed.
+    window.dct3Reprovision = function () {
+      if (!C.reprovision) return "unsupported build";
+      if (C.hasIdentity && !C.hasIdentity())
+        return "this model has no pinned identity (see tools/dct3_identity.py)";
+      if (!C.reprovision()) return C.reprovisionStatus ? C.reprovisionStatus() : "refused";
+      const poll = setInterval(() => {
+        const st = C.reprovisionState();
+        console.log("[DCT3] reprovision:", C.reprovisionStatus());
+        if (st === 2 || st === 3) {
+          clearInterval(poll);
+          if (st === 2) saveNvram(true);      // force a save the moment it lands
+        }
+      }, 1000);
+      return "started";
+    };
+    window.dct3ReprovisionState  = function () { return C.reprovisionState ? C.reprovisionState() : 0; };
+    window.dct3ReprovisionStatus = function () { return C.reprovisionStatus ? C.reprovisionStatus() : ""; };
+
     function render() {
       const ptr = C.fb();
       const fb = mod.HEAPU8.subarray(ptr, ptr + LCDBANKS * LCDW);  // flat, stride = width
@@ -794,6 +842,50 @@
     // Cleared on every (re)boot via resetReplayLog (see the call site below).
     function cancelReplay() { replayQueue = null; replayIdx = 0; replayTargetStep = 0; replayTargetCyc = 0; replayTargetPc = ''; replayHalted = false; }
     function replayActive() { return replayQueue !== null; }
+
+    // ── Emulated WAP gateway bridge ──
+    // The gateway inside the emulator holds each request while we fetch it via
+    // the dev server's /wapgw endpoint. If that endpoint is absent (serving the
+    // files from a plain static server) the bridge stays off and the phone gets
+    // the gateway's built-in deck instead, so nothing breaks.
+    let wapArmed = false, wapBusy = false;
+    const wapHome = new URLSearchParams(location.search).get("wapgw") || "";
+    const wapArm = (why) => {
+      C.wapBridge(1); wapArmed = true;
+      console.log("[DCT3] WAP gateway bridge armed (" + why + ")" + (wapHome ? " — home -> " + wapHome : ""));
+    };
+    if (C.wapBridge && C.wapPending && C.wapDeliver) {
+      // ?wapgw=<url> is an explicit request for the real network, so honour it
+      // without waiting on a probe. Otherwise ask whether this server hosts the
+      // endpoint at all; if it does not (a plain static server), stay off and
+      // let the gateway serve its built-in deck.
+      if (wapHome) wapArm("?wapgw=");
+      else fetch("/wapgw?probe=1", { method: "HEAD" })
+        .then(r => { if (r.ok || r.status === 502) wapArm("endpoint present"); })
+        .catch(() => console.log("[DCT3] no /wapgw endpoint — serving the built-in deck"));
+    } else {
+      console.log("[DCT3] this build has no WAP bridge exports — built-in deck only");
+    }
+    function pumpWapGw() {
+      if (!wapArmed || wapBusy) return;
+      const uri = C.wapPending();
+      if (!uri) return;
+      wapBusy = true;
+      const q = "/wapgw?uri=" + encodeURIComponent(uri) + (wapHome ? "&home=" + encodeURIComponent(wapHome) : "");
+      console.log("[DCT3] WAP: phone asked for " + uri);
+      fetch(q)
+        .then(r => { console.log("[DCT3] WAP: /wapgw -> " + r.status); return r.ok ? r.arrayBuffer() : null; })
+        .then(buf => {
+          if (!buf) { C.wapDeliver(0x14, 0, 0); return; }
+          const bytes = new Uint8Array(buf);
+          const p = mod._malloc(bytes.length);
+          mod.HEAPU8.set(bytes, p);
+          C.wapDeliver(0x14, p, bytes.length);
+          mod._free(p);
+        })
+        .catch(() => C.wapDeliver(0x14, 0, 0))
+        .finally(() => { wapBusy = false; });
+    }
 
     window.dct3CopyReplay = async function () {
       // Cycle-keyed events (cyc) are deterministic across replays; step is kept for
@@ -1141,6 +1233,7 @@
       // no boot fast-forward differentiation. Two replays of the same bundle now run
       // exactly the same cycle sequence → same instruction stream → same PC at halt.
       // Trades realtime feel for determinism (the whole point of replay).
+      pumpWapGw();
       const REPLAY_CYC_PER_FRAME = 10_000_000;   // ~13× realtime, fast enough to verify
       if (replayActive()) {
         const rem = replayTargetCyc > 0 ? Math.max(0, replayTargetCyc - C.cycles()) : 0;
@@ -2111,6 +2204,36 @@
       saveBtn.textContent = msg;
       setTimeout(() => (saveBtn.textContent = "Save EEPROM"), 1200);
     });
+    // Identity provisioning. Disabled outright for a model with no pinned identity, since
+    // there would be nothing to write. Progress is reported from the service's own status
+    // line; the run ends by reading the IMEI back through the firmware, so a green result
+    // means the phone reports the identity rather than merely that the writes were ACKed.
+    const reprovBtn = document.getElementById("btn-reprovision");
+    if (reprovBtn) {
+      if (C.hasIdentity && !C.hasIdentity()) {
+        reprovBtn.disabled = true;
+        reprovBtn.title = "This model has no pinned factory identity (see tools/dct3_identity.py)";
+      }
+      reprovBtn.addEventListener("click", () => {
+        if (!confirm("Write this model's factory identity (FAID, SIMlock, IMEI) over MBUS?\n\n"
+                   + "The phone must be booted to standby — its service handlers only answer there."))
+          return;
+        const label = reprovBtn.textContent;
+        reprovBtn.disabled = true;
+        window.dct3Reprovision();
+        const poll = setInterval(() => {
+          const st = window.dct3ReprovisionState();
+          reprovBtn.textContent = st === 2 ? "Provisioned ✓"
+                                : st === 3 ? "Failed — see console"
+                                : "Provisioning…";
+          if (st === 2 || st === 3) {
+            clearInterval(poll);
+            console.log("[DCT3] reprovision: " + window.dct3ReprovisionStatus());
+            setTimeout(() => { reprovBtn.textContent = label; reprovBtn.disabled = false; }, 4000);
+          }
+        }, 500);
+      });
+    }
     const resetEeBtn = document.getElementById("btn-reset-eeprom");
     if (resetEeBtn) resetEeBtn.addEventListener("click", () => {
       if (confirm("Wipe saved EEPROM/NVRAM (settings, clock, contacts) and reload the original image?"))
@@ -2972,6 +3095,46 @@
     const incomingSmsBtn = document.getElementById("btn-incoming-sms");
     if (incomingCallBtn) incomingCallBtn.addEventListener("click", () => queueIncoming("call"));
     if (incomingSmsBtn) incomingSmsBtn.addEventListener("click", () => queueIncoming("sms"));
+
+    // Nokia OTA settings: a binary SMS carrying a WAP profile, delivered as a
+    // WSP push to port 49999. The payload is built in-page (web/otasettings.js,
+    // the same generator the CLI uses — pure computation, no server needed);
+    // we just hand the bytes to the injector.
+    //
+    // Send it twice to exercise the open defect: nothing is deliverable after a
+    // binary SMS — the phone stops answering paging entirely. Watch the console
+    // for whether the second one ever arrives.
+    let otaSeq = 0;
+    async function queueOtaSettings() {
+      const number = ((incomingFrom && incomingFrom.value) || "").trim() || "447700900123";
+      if (!C.incomingSmsBin) {
+        incomingOut.textContent = "This build has no binary-SMS injector";
+        incomingOut.classList.add("error");
+        return;
+      }
+      try {
+        if (!window.DCT3_OTA) throw new Error("otasettings.js not loaded");
+        const { body: bytes, name: used } = window.DCT3_OTA.buildSettingsFitted({
+          url: "http://google.com", proxy: "127.0.0.1", dial: "123", name: "Emu net",
+        });
+        if (used !== "Emu net") console.log(`[ota] name shortened to "${used}" to fit one SMS`);
+        const p = mod._malloc(bytes.length);
+        mod.HEAPU8.set(bytes, p);
+        const ok = C.incomingSmsBin(number, p, bytes.length, 49999, 49154);
+        mod._free(p);
+        otaSeq++;
+        incomingOut.classList.toggle("error", !ok);
+        incomingOut.textContent = ok
+          ? `OTA settings #${otaSeq} queued (${bytes.length} B -> port 49999)`
+          : "Not queued — needs a ROM-6 model, or wait for queue space";
+        console.log(`[gsm] OTA settings #${otaSeq} queued from ${number}, ${bytes.length} bytes`);
+      } catch (e) {
+        incomingOut.classList.add("error");
+        incomingOut.textContent = "OTA settings failed — " + e.message;
+      }
+    }
+    const otaBtn = document.getElementById("btn-ota-settings");
+    if (otaBtn) otaBtn.addEventListener("click", queueOtaSettings);
 
     setInterval(() => {
       if (outSim) outSim.textContent = "(" + C.simApdus() + " APDUs)";

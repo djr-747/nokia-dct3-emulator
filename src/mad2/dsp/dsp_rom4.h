@@ -9,6 +9,7 @@
 #define MAD2_DSP_ROM4_H
 
 #include <stdint.h>
+#include "mad2/dsp/mdi_queue.h"
 
 struct Mad2;
 struct DspOps;
@@ -56,14 +57,6 @@ enum {
 #define ROM4_RCVMAX     168u   // max d2m payload bytes (0x8B ALL_RSSI_RESULTS = 166)
 #define ROM4_PENDING_N  48u    // FIFO of ready records
 #define ROM4_DELAYED_N  48u    // time-ordered delayed queue
-typedef struct Rom4MdiRec {
-    uint8_t  op;                  // MDI opcode (frame-word LOW byte)
-    uint8_t  len;                 // payload byte count (frame-word HIGH byte)
-    uint8_t  bytes[ROM4_RCVMAX];  // payload (what follows the {len,op} word)
-    uint64_t enq;                 // monotonic cycle when enqueued (stale-drop reference)
-    uint64_t due;                 // monotonic event deadline
-    uint8_t  used;                // delayed-slot occupancy flag
-} Rom4MdiRec;
 
 // Engine state machine — held by value in struct Mad2, zeroed by the core memset.
 typedef struct Rom4Dsp {
@@ -97,9 +90,7 @@ typedef struct Rom4Dsp {
     uint8_t  siml_block[24];     // security block captured from 0x70/0x16 (echoed as region B)
 
     // --- MDIRCV egress software queues ---
-    Rom4MdiRec pending[ROM4_PENDING_N]; // FIFO ring of ready records
-    uint8_t    p_head, p_tail;          // FIFO cursors (count = (tail-head) mod N)
-    Rom4MdiRec delayed[ROM4_DELAYED_N]; // time-ordered slots (used-flag array)
+    MdiQueue q;                  // shared d2m egress queues (mdi_queue.h)
 } Rom4Dsp;
 
 // Single build/destroy point — called from the mad2 boot/reset path.

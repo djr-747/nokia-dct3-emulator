@@ -10,6 +10,9 @@
        a "../" prefix; then pull in the registry (parser-blocking, before main.js). -->
   <script>window.DCT3_SHELL_PREFIX = "../";</script>
   <script>document.write('<scr' + 'ipt src="../shells/shells.js?v=' + Date.now() + '"></scr' + 'ipt>');</script>
+  <!-- OTA settings builder (pure computation, shared with the legacy runner and
+       tools/otasettings.mjs); main.js reads window.DCT3_OTA for the WAP button. -->
+  <script>document.write('<scr' + 'ipt src="../otasettings.js?v=' + Date.now() + '"></scr' + 'ipt>');</script>
 </head>
 <body>
   <!-- Top-of-page error banner. Shown by main.js when anything throws.
@@ -159,6 +162,23 @@
           <input type="text" id="in-opname" maxlength="16" spellcheck="false">
         </label>
         <button id="btn-opname" class="quick-btn" type="button">Apply (reloads page)</button>
+      </div>
+
+      <div class="dev-group">
+        <h3>WAP browsing (3410)</h3>
+        <!-- Provisions the phone's WAP profile the period-correct way: a Nokia
+             OTA settings binary SMS, built entirely in-page (otasettings.js).
+             Accept it on the phone, then Services ▸ Home dials a genuine CSD
+             data call — RLP, PPP and WSP against the emulated network — and
+             the gateway's built-in WML deck renders in the phone's own
+             browser. No traffic leaves the browser: with no /wapgw endpoint
+             on this host the gateway serves its built-in deck.
+             Known emulator defect: after one binary SMS nothing further is
+             deliverable until reboot — send it once per session. -->
+        <p class="dev-note">Send the phone its WAP settings by SMS (the way operators did), accept them, then open <strong>Services &#9656; Home</strong> to browse over a real emulated CSD data call.</p>
+        <button id="btn-ota-settings" class="quick-btn" type="button"
+                title="Queue a Nokia OTA settings SMS. Accept it on the phone, then Services ▸ Home dials the data call. One per session — a known emulator defect blocks any second SMS until reboot.">Send WAP settings SMS</button>
+        <p id="ota-out" class="dev-note" role="status" aria-live="polite"></p>
       </div>
 
       <div class="dev-group">

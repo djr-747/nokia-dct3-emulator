@@ -7,6 +7,12 @@
 // tracks the PC during each step so a spin (the firmware stuck looping on one PC,
 // e.g. the 0x2eebee stack-guard reboot) is flagged with where it landed.
 //
+// --watch prints per-PC hit COUNTS per frame, and at end-of-run a `WATCH-SEQ` block listing every
+// hit in order with its step. Use the sequence whenever several watched PCs fire inside one frame
+// — counts cannot order them, and a long frame (a key held with @500, say) can easily contain a
+// whole protocol exchange. Up to 6 PCs; the event ring keeps the last 1024 hits and says so when
+// it overflows.
+//
 // Usage:
 //   node tools/nav.mjs <fw.fls> [--eeprom <file>] [--out <dir>] [--watch 0xPC[,0xPC]]
 //                       [--settle <frames>] [--per <frames>] -- <key> <key> ...
@@ -29,7 +35,8 @@
 import { createRequire } from 'module';
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { resolve } from 'path';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
+import { servePage } from './wapfetch.mjs';
 
 const require = createRequire(import.meta.url);
 const webDir = '/home/dan/projects/nokia-dct3-emu/web';
@@ -45,6 +52,16 @@ function doRamDump(tag) {
   ramoutDone = true;
   console.log(`RAM dumped (16MB) to ${ramout} at step ${(C.step() / 1e6).toFixed(1)}M (${tag}) — disfw --ram compatible`);
 }
+let msglogPc = 0;         // --msglog 0xPC: log (step, r0, r1, LR) at any PC — e.g. a send choke
+let msglogFilter = [];    // --msgfilter a,b,...: capture only when r1 is one of these (max 8)
+let callAt = null, callAtFired = false;   // --callat FN,R0,R1@STEPM: one-shot firmware call at a step
+// --ntbprobe STATUS@STEPM: allocate a message with the firmware's OWN allocator, fill it in as an
+// NTB msg 0x3F8 carrying STATUS at +6, and post it to task 29. Pointing the post at a flash
+// address instead does NOT work — the .fls offsets past the MCU code region are not the runtime
+// mapping, so the id halfword reads back as something other than 0x3F8 and the dispatch silently
+// takes its "ignored" arm. Allocating from the real heap also keeps the message freeable, which
+// matters because the 0x3F8 arm RETAINS the pointer and the next receive frees it.
+let ntbProbe = null, ntbPhase = 0, ntbPtr = 0;
 let sendlogMon = false;   // --sendlog: monitor MMI-poster (fw.mmi_send) messages + dump the ring
 // --env K=V (repeatable), applied before C.boot() so mad2_init sees them. The two that
 // matter for network work: SIMLOG=1 (every SIM APDU + SW) and ROM6_LOG=1 (the ROM-6
@@ -65,8 +82,10 @@ let capPc = 0, capHist = {}, capLastHits = 0;   // --cap 0xPC: histogram r0 at a
 let battAdc = null, chargerAdc = null;   // --batt / --charger: override vbatt adc[2] / charger adc[5]
 // Boot config toggles (null = leave web default). --sim/--faid 0|1. (--bypass and
 // --spike were REMOVED 2026-07-15 — boot is organic; both accepted and ignored.)
-// Defaults in main.c: sim=0 (absent). (--faid is accepted and IGNORED since the
-// skip_seclock FAID shim was removed 2026-07-26 — the security block is resolved
+// Defaults in main.c: sim=1 (INSERTED, since 2026-07-28 — was 0/absent; it now matches
+// mad2_init and the page's always-`checked` "SIM inserted" box, so headless boots the same
+// way the browser does). Pass --sim 0 for the old card-absent boot. (--faid is accepted and
+// IGNORED since the skip_seclock FAID shim was removed 2026-07-26 — the security block is resolved
 // by real EEPROM provisioning, not by poking the check's operand.)
 let cfgSim = null, cfgFaid = null, clockEvery = 0;
 // Phase 6 Instrument 1 (alloc/free leak-tracker). LEAKTRACE=1 arms the leak-tracker
@@ -130,6 +149,9 @@ let cfgRecover = 0;
 let checkWave0 = false;
 let pressEvery = 0, pressKey = 'c', pressFrom = 0, pressBatch = 4_000_000;
 let arm = null, endProbeAt = 0, settleCyc = 70_000_000;
+let wapGw = false, wapHome = null, wapProxy = null;
+let smsBinFile = null, smsBinPort = 49154, smsBinSrcPort = 0;
+const wapProxySrcPort = 49152;
 const keys = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -139,6 +161,18 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--stub') stubPcs = argv[++i].split(',').map(s => parseInt(s, 16) >>> 0);  // task-stub HLE: force-return handler entry PCs
   else if (a === '--wrwatch') wrwatchAddr = parseInt(argv[++i], 16) >>> 0;  // aggregate writer PCs of a RAM addr
   else if (a === '--ramwatch') ramwatch = argv[++i].split(',').map(s => parseInt(s, 16) >>> 0);  // sample RAM cells, log changes
+  // --wapgw: answer the phone's WAP requests from the real network. The emulated
+  // gateway parks each WTP transaction and we fetch + transcode it here.
+  // --wapgw [URL]: with a URL, the phone's first request (its configured home,
+  // which points at a gateway that no longer exists) is served from there
+  // instead; links thereafter fetch their own real URLs.
+  else if (a === '--smsbin') smsBinFile = resolve(process.cwd(), argv[++i]);   // binary SMS payload file
+  else if (a === '--smsport') smsBinPort = +argv[++i] || 49154;                 // its destination port
+  else if (a === '--smssrcport') smsBinSrcPort = +argv[++i] || 0;
+  else if (a === '--wapgw') { wapGw = true; if (argv[i+1] && !argv[i+1].startsWith('--')) wapHome = argv[++i]; }
+  // --wapproxy HOST:PORT: relay the phone's WSP datagrams to a REAL WAP gateway
+  // (e.g. 91.216.248.124:9201) instead of terminating them ourselves.
+  else if (a === '--wapproxy') { wapGw = true; const [h,p] = argv[++i].split(':'); wapProxy = { host: h, port: +p || 9201 }; }
   else if (a === '--lcdlog') lcdlog = true;   // log + decode the raw LCD command/data port stream
   else if (a === '--cap') capPc = parseInt(argv[++i], 16) >>> 0;   // histogram r0 at a PC (frame-sampled, aliases fast repeats)
   else if (a === '--batt') battAdc = parseInt(argv[++i], 16) >>> 0;         // override vbatt adc[2]
@@ -152,6 +186,17 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--recover') cfgRecover = +argv[++i]; // 1=auto-recover firmware resets, 0=warm-reboot (headless default 0)
   else if (a === '--idle') idle = +argv[++i];   // post-replay idle-watch frames (delayed crash)
   else if (a === '--ramout') { const t = argv[++i].split('@'); ramout = resolve(process.cwd(), t[0]); if (t[1]) ramoutStep = +t[1]; }   // FILE[@step]: dump 16MB RAM (disfw --ram)
+  else if (a === '--msglog') msglogPc = parseInt(argv[++i], 16) >>> 0;   // capture r0/r1/LR + step at a PC
+  else if (a === '--msgfilter') msglogFilter = argv[++i].split(',').map(v => parseInt(v, 16) >>> 0);  // only capture these r1 values
+  else if (a === '--ntbprobe') {                        // STATUS@STEPM — synth an NTB 0x3F8 message
+    const [st, at] = String(argv[++i]).split('@');
+    ntbProbe = { status: parseInt(st, 16) >>> 0, step: parseFloat(at) * 1e6 };
+  }
+  else if (a === '--callat') {                          // FN,R0,R1@STEPM — one-shot firmware call
+    const [spec, at] = String(argv[++i]).split('@');
+    const [fn, r0, r1] = spec.split(',').map(v => parseInt(v, 16) >>> 0);
+    callAt = { fn, r0, r1, step: parseFloat(at) * 1e6 };
+  }
   else if (a === '--sendlog') sendlogMon = true;   // arm the MMI-poster (fw.mmi_send) monitor + dump the ring
   else if (a === '--env') envSets.push(String(argv[++i]));       // K=V, repeatable — set BEFORE boot (SIMLOG=1, ROM6_LOG=1, ...)
   else if (a === '--simload') simLoad = resolve(process.cwd(), argv[++i]);   // mount a saved swSIM card before the run
@@ -267,6 +312,10 @@ const C = {
   lcdH:   M.cwrap('dct3_web_lcd_h', 'number', []),
   dbgWatch: M.cwrap('dct3_web_dbg_watch', null, ['number','number']),
   dbgCount: M.cwrap('dct3_web_dbg_count', 'number', ['number']),
+  dbgevW:    M.cwrap('dct3_web_dbgev_w', 'number', []),        // step-stamped watch hits, in order
+  dbgevSize: M.cwrap('dct3_web_dbgev_size', 'number', []),
+  dbgevSlot: M.cwrap('dct3_web_dbgev_slot', 'number', ['number']),
+  dbgevStep: M.cwrap('dct3_web_dbgev_step', 'number', ['number']),
   heapFailCount: M.cwrap('dct3_web_heap_fail_count', 'number', []),
   heapFailLr:    M.cwrap('dct3_web_heap_fail_lr', 'number', []),
   // Instrument 1: alloc/free leak-tracker (Phase 6). leakOn arms it (resets the
@@ -320,6 +369,16 @@ const C = {
   irqPending:    M.cwrap('dct3_web_irq_pending', 'number', []),
   fiqPending:    M.cwrap('dct3_web_fiq_pending', 'number', []),
   // send/enqueue logger ring (reused for the wedge snapshot's last-N task_send/recv).
+  msglogPc:      M.cwrap('dct3_web_msglog_pc', null, ['number']),
+  msglogFilter:  M.cwrap('dct3_web_msglog_filter', null, ['number']),
+  webCall:       M.cwrap('dct3_web_call', null, ['number', 'number', 'number']),
+  callResult:    M.cwrap('dct3_web_call_result', 'number', []),
+  msglogW:       M.cwrap('dct3_web_msglog_w', 'number', []),
+  msglogSize:    M.cwrap('dct3_web_msglog_size', 'number', []),
+  msglogAt:      M.cwrap('dct3_web_msglog_at', 'number', ['number']),
+  msglogA1:      M.cwrap('dct3_web_msglog_a1', 'number', ['number']),
+  msglogLrAt:    M.cwrap('dct3_web_msglog_lr_at', 'number', ['number']),
+  msglogStep:    M.cwrap('dct3_web_msglog_step', 'number', ['number']),
   sendlogOn:     M.cwrap('dct3_web_sendlog_on', null, ['number']),
   sendlogA1:     (() => { try { return M.cwrap('dct3_web_sendlog_a1', 'number', ['number']); } catch (e) { return null; } })(),
   sendlogA0:     (() => { try { return M.cwrap('dct3_web_sendlog_a0', 'number', ['number']); } catch (e) { return null; } })(),
@@ -354,6 +413,7 @@ const C = {
   // network pages to the camped phone. Driven by the `call` / `sms` pseudo-keys.
   incomingCall: M.cwrap('dct3_web_incoming_call', 'number', ['string']),
   incomingSms:  M.cwrap('dct3_web_incoming_sms', 'number', ['string','string']),
+  incomingSmsBin: M.cwrap('dct3_web_incoming_sms_bin', 'number', ['string','number','number','number','number']),
   // swSIM card persistence (--simsave / --simload): the same three calls the page uses.
   simWrites:      M.cwrap('dct3_web_sim_writes', 'number', []),
   simSnapshot:    M.cwrap('dct3_web_sim_snapshot', 'number', []),
@@ -367,6 +427,13 @@ const C = {
   pcringN:       M.cwrap('dct3_web_pcring_n', 'number', []),
   pcringAt:      M.cwrap('dct3_web_pcring_at', 'number', ['number']),
   pcringCpsr:    M.cwrap('dct3_web_pcring_cpsr', 'number', ['number']),
+  // --wapgw: the host half of the emulated WAP gateway (tools/wapfetch.mjs).
+  wapBridge:     M.cwrap('dct3_web_wap_bridge', null, ['number']),
+  wapPending:    M.cwrap('dct3_web_wap_pending', 'string', []),
+  wapDeliver:    M.cwrap('dct3_web_wap_deliver', null, ['number','number','number']),
+  wapRelayTake:  M.cwrap('dct3_web_wap_relay_take', 'number', []),
+  wapRelayBuf:   M.cwrap('dct3_web_wap_relay_buf', 'number', []),
+  wapRelayDeliver: M.cwrap('dct3_web_wap_relay_deliver', null, ['number','number']),
 };
 const MODES = {0x10:'usr',0x11:'fiq',0x12:'irq',0x13:'svc',0x17:'abt',0x1b:'und',0x1f:'sys'};
 
@@ -602,6 +669,11 @@ function pollResetEvents(where) {
 // --watch PCs use the firmware-level hit counters (exact, every instruction) so we
 // can see EXACTLY when a watched PC (e.g. the 0x2eebee spin) starts firing per step.
 watch.slice(0, 6).forEach((pc, i) => C.dbgWatch(i, pc));
+if (msglogPc) C.msglogPc(msglogPc);
+// Filter BEFORE the run: the interesting choke points (SELECTOR_LOOKUP_OBJ 0x3EF9A8,
+// TASK_MSG_POST_WAIT 0x2F8948) are shared by hundreds-to-thousands of call sites, so an
+// unfiltered capture overflows the ring and leaves only the tail.
+if (msglogPc && msglogFilter.length && C.msglogFilter) msglogFilter.slice(0, 8).forEach(v => C.msglogFilter(v));
 let watchPrev = watch.map(() => 0);
 
 // Load fw (and optional EEPROM overlay) like the browser.
@@ -658,6 +730,12 @@ const armInstruments = () => {
     console.log('SENDLOG armed — logging ALL send_message (fw.mmi_send) calls'); }
 };
 armInstruments();
+if (wapGw && C.wapBridge) {
+  C.wapBridge(wapProxy ? 2 : 1);
+  console.log(wapProxy
+    ? `WAPGW armed — relaying the phone's WSP datagrams to ${wapProxy.host}:${wapProxy.port} (we are only the IP transport)`
+    : `WAPGW armed — transcoding gateway${wapHome ? `, home -> ${wapHome}` : ''}`);
+}
 console.log(`config: sim=${cfgSim??'def'} faid=${cfgFaid??'def'}`);
 // Overlay an EEPROM file at the partition base. A full-partition raw blob lands verbatim;
 // a virgin partition image (native f0f0 framing, smaller than the window) is placed at its
@@ -729,10 +807,63 @@ function measurePress(label, key, settleCycWin) {
 
 // Run `frames` cycle-paced frames, sampling PC each frame; returns the dominant PC +
 // its share, plus per-watch hit deltas this step (exact, from the firmware counters).
+// --wapgw: the phone asked for a URL and the emulated gateway is holding the
+// transaction. Fetch it for real, transcode, hand it back. Blocking here is
+// deliberate — emulated time stops, so the phone's WTP timer cannot expire.
+function pumpWapGw() {
+  if (wapProxy) return pumpWapRelay();
+  const uri = C.wapPending && C.wapPending();
+  if (!uri) return;
+  // The phone's configured home points at a gateway that no longer exists, so
+  // --wapgw URL stands in for it — every time it is asked for, including the
+  // "#wpN" continuations our pagination appends.
+  let target = uri;
+  if (wapHome) {
+    const m = uri.match(/^https?:\/\/a\.com\/?(?:[?&]wpg=(\d+))?$/i);
+    if (m) target = m[1] ? wapHome + (wapHome.includes('?') ? '&' : '?') + 'wpg=' + m[1] : wapHome;
+  }
+  if (target !== uri) console.log(`[wapgw] phone asked for ${uri} — serving ${target}`);
+  const { ct, body } = servePage(target, s => console.log(s));
+  if (!body) { C.wapDeliver(ct, 0, 0); return; }
+  const p = M._malloc(body.length);
+  M.HEAPU8.set(body, p);
+  C.wapDeliver(ct, p, body.length);
+  M._free(p);
+}
+
+// --wapproxy host:port — we are only the IP transport. The phone's WSP session
+// is genuinely with that gateway; every datagram goes across untouched, and
+// blocking here freezes emulated time so its WTP timers cannot expire.
+function pumpWapRelay() {
+  const n = C.wapRelayTake ? C.wapRelayTake() : 0;
+  if (!n) return;
+  const req = Buffer.from(M.HEAPU8.subarray(C.wapRelayBuf(), C.wapRelayBuf() + n));
+  let lines = [];
+  try {
+    const out = execFileSync(process.execPath,
+      [new URL('./wapudp.mjs', import.meta.url).pathname,
+       wapProxy.host, String(wapProxy.port), req.toString('hex'), String(wapProxySrcPort)],
+      { encoding: 'utf8', timeout: 15000 });
+    lines = out.split('\n').filter(Boolean);
+  } catch (e) {
+    console.log(`[wapgw] relay round trip failed: ${e.message}`);
+  }
+  console.log(`[wapgw] ${req.length}B -> ${wapProxy.host}:${wapProxy.port}, ${lines.length} datagram(s) back`);
+  if (!lines.length) { C.wapRelayDeliver(0, 0); return; }
+  for (const hex of lines) {
+    const buf = Buffer.from(hex, 'hex');
+    const p = M._malloc(buf.length);
+    M.HEAPU8.set(buf, p);
+    C.wapRelayDeliver(p, buf.length);
+    M._free(p);
+  }
+}
+
 function runWatched(frames) {
   const hist = {};
   for (let i = 0; i < frames; i++) {
     C.runCyc(216667);
+    if (wapGw) pumpWapGw();
     const p = (C.pc() >>> 0).toString(16); hist[p] = (hist[p] || 0) + 1;
     if (lcdlog) {                                        // --lcdlog: step marks at frame boundaries
       const lw = C.lcdlogW();
@@ -741,6 +872,39 @@ function runWatched(frames) {
     if (capPc && C.capHits) {                            // --cap: sample last-captured r0 when new hits landed
       const ch = C.capHits() >>> 0;
       if (ch !== capLastHits) { const v = C.capVal() >>> 0; capHist[v] = (capHist[v] || 0) + (ch - capLastHits); capLastHits = ch; }
+    }
+    // --callat FN,R0,R1@STEPM: fire a firmware function once, the first frame at/after STEPM.
+    // A PROBE, not a fix: it lets us ask "if this message did arrive, what would the stack do?"
+    // without first having to find what organically produces it.
+    if (callAt && !callAtFired && C.step() >= callAt.step) {
+      callAtFired = true;
+      C.webCall(callAt.fn, callAt.r0, callAt.r1);
+      console.log(`CALLAT: fn=0x${callAt.fn.toString(16)} r0=0x${callAt.r0.toString(16)} ` +
+                  `r1=0x${callAt.r1.toString(16)} armed @step=${(C.step()/1e6).toFixed(2)}M`);
+    }
+    // --ramout FILE@STEP also has to be checked here, in the main key-driven frame loop — it used
+    // to be tested only inside the --idle watch loop, so a run without --idle silently produced no
+    // dump at all.
+    if (ramout && !ramoutDone && ramoutStep && C.step() >= ramoutStep) doRamDump(`step>=${ramoutStep}`);
+    // --ntbprobe: allocate → fill → post, one phase per frame so each firmware call completes.
+    if (ntbProbe && C.step() >= ntbProbe.step) {
+      if (ntbPhase === 0) { C.webCall(0x2F9240, 32, 0); ntbPhase = 1; }            // MALLOC(32)
+      else if (ntbPhase === 1) {
+        ntbPtr = C.callResult() >>> 0;
+        if (!ntbPtr) { console.log('NTBPROBE: MALLOC returned 0 — aborted'); ntbProbe = null; }
+        else {
+          const m = new Uint8Array(32);
+          m[0] = 0x03; m[1] = 0xF8;                       // big-endian msg id 0x03F8
+          m[6] = ntbProbe.status & 0xFF; m[7] = (ntbProbe.status >> 8) & 0xFF;
+          M.HEAPU8.set(m, C.ramPtr() + ntbPtr);
+          console.log(`NTBPROBE: msg 0x3F8 status=0x${ntbProbe.status.toString(16)} at 0x${ntbPtr.toString(16)}`);
+          ntbPhase = 2;
+        }
+      } else if (ntbPhase === 2) {
+        C.webCall(0x2F8F24, 29, ntbPtr);                  // SCHED_QUEUE_POST(task 29, msg)
+        console.log(`NTBPROBE: posted @step=${(C.step()/1e6).toFixed(2)}M`);
+        ntbPhase = 3; ntbProbe = null;
+      }
     }
     for (let k = 0; k < ramwatch.length; k++) {          // --ramwatch: byte-sample + log changes
       const v = C.ram(ramwatch[k]) & 0xff;
@@ -1266,6 +1430,19 @@ for (const tok of keys) {
   // Network-side pseudo-keys: no keypress — queue an MT call / MT SMS on the ROM-6
   // engine and then run the frames, so the screen after the gap shows what the phone
   // did with it. Originator/body come from --from / --text.
+  else if (k === 'smsbin') {
+    // Deliver a binary SMS to an application port — the envelope operator
+    // settings arrived in. Payload from --smsbin FILE, port from --smsport.
+    let ok = 0;
+    if (smsBinFile && C.incomingSmsBin) {
+      const buf = readFileSync(smsBinFile);
+      const p = M._malloc(buf.length); M.HEAPU8.set(buf, p);
+      ok = C.incomingSmsBin(mtFrom, p, buf.length, smsBinPort, smsBinSrcPort);
+      M._free(p);
+      console.log(`SMSBIN: ${buf.length}B from ${mtFrom} -> port ${smsBinPort} (queued=${ok})`);
+    } else console.log('SMSBIN: need --smsbin FILE');
+    step(label, null, f);
+  }
   else if (k === 'sms')  { const ok = C.incomingSms  ? C.incomingSms(mtFrom, mtText) : 0;
                            console.log(`  ↳ queue MT SMS from ${mtFrom} "${mtText}" → ${ok ? 'accepted' : 'REJECTED (not the ROM-6 engine, or queue full)'}`);
                            step(label, null, f); }
@@ -1281,6 +1458,43 @@ for (const tok of keys) {
   n++;
 }
 console.log(`done — ${n} screens in ${outDir} (NN_<key>.png)`);
+// --watch ordering: per-slot counts say how OFTEN each watched PC ran, never in what order.
+// When several watched handlers fire inside one long frame the counts cannot separate them, so
+// dump the step-stamped hit sequence too. Overflow reports the tail and says so.
+if (watch.length && C.dbgevW) {
+  const total = C.dbgevW() >>> 0, cap = C.dbgevSize() >>> 0;
+  if (total) {
+    const from = total > cap ? total - cap : 0;
+    if (total > cap) console.log(`WATCH-SEQ: ${total} hits, ring holds ${cap} — showing the last ${cap}`);
+    else console.log(`WATCH-SEQ: ${total} hits, in order`);
+    const rows = [];
+    for (let i = from; i < total; i++)
+      rows.push(`  step ${(C.dbgevStep(i) / 1e6).toFixed(2).padStart(9)}M  0x${(watch[C.dbgevSlot(i)] >>> 0).toString(16)}`);
+    console.log(rows.join('\n'));
+  } else console.log('WATCH-SEQ: no watched PC was reached');
+}
+// --msglog: every capture at the chosen PC, in order, with step + r0/r1 + caller LR. Aimed at
+// send chokes (e.g. the OSE cross-task send) where "who talked to whom, and when" is the question.
+if (msglogPc && C.msglogW) {
+  const total = C.msglogW() >>> 0, cap = C.msglogSize() >>> 0;
+  const filt = msglogFilter.length ? ` r1 in {${msglogFilter.map(v => '0x' + v.toString(16)).join(',')}}` : '';
+  // With a filter, zero captures means "the PC was reached but no r1 matched" — NOT "the PC was
+  // never executed". Those are completely different conclusions, so never print one for the other:
+  // run once without --msgfilter to establish that the PC fires at all before believing a zero.
+  if (!total) console.log(msglogFilter.length
+    ? `MSGLOG 0x${msglogPc.toString(16)}: 0 captures matching${filt} — this does NOT show the PC was unreached; re-run without --msgfilter to check that`
+    : `MSGLOG 0x${msglogPc.toString(16)}: never reached`);
+  else {
+    const from = total > cap ? total - cap : 0;
+    console.log(`MSGLOG 0x${msglogPc.toString(16)}${filt}: ${total} captures` +
+                (total > cap ? ` — ring holds ${cap}, showing the last ${cap}` : ', in order'));
+    const rows = [];
+    for (let i = from; i < total; i++)
+      rows.push(`  step ${(C.msglogStep(i) / 1e6).toFixed(2).padStart(9)}M  r0=0x${(C.msglogAt(i) >>> 0).toString(16).padStart(8, '0')}` +
+                `  r1=0x${(C.msglogA1(i) >>> 0).toString(16).padStart(8, '0')}  lr=0x${(C.msglogLrAt(i) >>> 0).toString(16)}`);
+    console.log(rows.join('\n'));
+  }
+}
 // Greppable run summary: surface any firmware reset so it's easy to find in long output.
 // Final flush in case a recovered reset landed between the last step and end-of-run.
 pollResetEvents('end-of-run');

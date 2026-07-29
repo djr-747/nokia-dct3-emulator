@@ -59,6 +59,12 @@ const ModelProfile model_6110 = {
         .hold_insns = 400000,
         .col_port = 0x30, .row_port = 0x31, .dir_port = 0x2F,
     },
+    // Factory identity — MINTED, pinned; see tools/dct3_identity.py and
+    //. COBBA s/n 00611042, IMEI 490154206110019.
+    .identity = {
+        .msid   = { 0x82, 0xC3, 0x68, 0xB2, 0x50, 0x86, 0xB3, 0xEB, 0x49, 0x07, 0x50, 0x69, 0xD6 },
+        .imei14 = "49015420611001",
+    },
     .led = {
         // Vibrates via an accessory vibra BATTERY pack (not an internal motor), same
         // channel as the 3310 (I/O 0x15 bit4 -> vibra_on).
