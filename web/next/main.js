@@ -995,8 +995,13 @@
       if (!C.incomingSmsBin) { say("This build has no binary-SMS injector", true); return; }
       if (!window.DCT3_OTA)  { say("otasettings.js failed to load", true); return; }
       try {
+        // Home is the phone's own built-in http://a.com: the hosted gateway
+        // answers it with a portal deck, and it is short enough to leave room
+        // for a connection name inside the one-SMS ceiling (133 B — see the
+        // concatenation defect). Without a gateway the emulator's built-in
+        // deck answers it just the same.
         var fitted = window.DCT3_OTA.buildSettingsFitted({
-          url: "http://google.com", proxy: "127.0.0.1", dial: "123", name: "Retrophone",
+          url: "http://a.com", proxy: "127.0.0.1", dial: "123", name: "Retro",
         });
         var bytes = fitted.body;
         var p = mod._malloc(bytes.length);
