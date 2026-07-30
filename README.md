@@ -26,7 +26,8 @@ code, and on the 5110 by the real C54x mask ROM running the DCT3 security cipher
 **Known deviation.** `EF_LOCI` is cleared from the SIM on every boot. ROM-4 implements
 registration only as a full Location Update, so a card holding a valid location camps without
 registering. Contacts and messages are unaffected. `SWSIM_KEEP_LOCI=1` disables the clear. This
-may account for the models below that reach standby without registering.
+may account for the models below that reach standby without registering. Everything else
+outstanding is under [Open items](#open-items).
 
 ---
 
@@ -377,6 +378,41 @@ hardware bring-up. Limits: only the direct convention is supported, so an invers
 rail through a series resistor — adequate for
 bench work, but a proper 3.0 V load switch and an open-drain buffer are wanted for anything
 beyond it.
+
+---
+
+## Open items
+
+Filed in the issue tracker:
+
+- Clock does not advance after being set, all models ([#1](../../issues/1)).
+- Charger connected: no animating charge bars, and the phone may show "Not Charging"
+  ([#2](../../issues/2)).
+- 2100: the Security-code screen rejects the EEPROM-baked code 12345 ([#3](../../issues/3)).
+
+Accessory and backlight modelling:
+
+- **Headset accessory detection is incomplete.** Standby shows "Headset" on the 5110, 5130, 5190,
+  6110, 6130, 6150, 6210, 6250 and 8810, i.e. the accessory reads as permanently connected.
+- **Backlight control lines are not mapped on the 3210, 7110 and 8810.** These models drive the
+  keypad and LCD backlights from a single control line; later models split the two for independent
+  control, which is what makes the rhythmic-backlight effects possible.
+
+Radio and SIM:
+
+- `EF_LOCI` is cleared on every boot, because ROM-4 implements registration only as a full
+  Location Update.
+- The 6130 reaches standby without registering, unlike the 6110 and 6150 on the same config.
+- The 5110 family (5110, 5130, 5190) reaches standby without registering.
+- Radio is untested on the 8855 and the 2100.
+- The real-SIM bridge supports only the direct convention; inverse-convention (`TS=0x3F`) cards
+  will not talk.
+
+Not modelled, and wanted:
+
+- IrDA ([#7](../../issues/7)).
+- A more generic SIM layer, e.g. onomondo or osmo-remsim ([#6](../../issues/6)).
+- A real GSM connection via Osmocom rather than the synthetic cell ([#5](../../issues/5)).
 
 ---
 
