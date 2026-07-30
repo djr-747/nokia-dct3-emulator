@@ -263,19 +263,25 @@ tool's handshake is landing.
 
 ## Persistence
 
-Non-volatile storage splits into two mutually exclusive hardware families. A handset has one or
-the other, never both:
+Every persisted non-SIM setting lives in one store per handset. Which medium that store uses
+splits the range into two mutually exclusive families — a handset has one or the other, never
+both — but the two hold the same class of data: settings, clock, factory identity (IMEI, FAID,
+SIMlock, security code) and RF calibration.
 
-| Family | Store | Holds | Models |
-|---|---|---|---|
-| External I²C 24Cxx EEPROM | a separate 2 KB device, no in-flash PMM partition | factory identity and RF calibration | 3210, 5110, 5110i, 5130, 5190, 6110, 6130, 6150, 6190, 8810 |
-| In-flash PMM partition | a partition inside the `.fls` image; the offset is per-model, not a constant | settings, clock, contacts, SMS, the J2ME game store | everything else |
+| Family | Store | Models |
+|---|---|---|
+| External I²C 24Cxx EEPROM | a separate 2 KB device, no in-flash PMM partition | 3210, 5110, 5110i, 5130, 5190, 6110, 6130, 6150, 6190, 8810 |
+| In-flash PMM partition | a partition inside the `.fls` image; the offset is per-model, not a constant | everything else |
 
 The I²C family is the ROM-4 models with one exception: the **7110 is ROM-4 but flash-PMM based**,
 so it sits in the second group.
 
-The SIM card filesystem (contacts, SMS, `Kc`, `FPLMN`) is a third store, independent of that split
-and present on every model.
+Capacity is what differs. 2 KB of EEPROM cannot hold what a PMM partition can, so the J2ME game
+store is PMM-only. Phonebook storage varies by model: some keep contacts in the PMM, others only
+on the SIM.
+
+The SIM card filesystem (contacts, SMS, `Kc`, `FPLMN`) is a separate store, independent of that
+split and present on every model.
 
 In the browser all of them persist automatically.
 
