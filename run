@@ -177,8 +177,8 @@ scenario "$SCEN"        || { echo "run: unknown scenario '$SCEN' (have: $SCENARI
 # 5110 (NSE-1, MAD2 V1-DCT3) — THE CANONICAL CONFIG:
 #   * DSP54_COSIM=1 is the WHOLE faithful recipe: real C54x core + real MCU upload, and
 #     every faithful sub-knob (COBBA codec model incl. BSP loopback + frame clock,
-#     CMDLEVEL, SELFTEST_MEAS, …) defaults ON under it. No other knobs. DSP54_X=0
-#     opts a single sub-knob out for A/B.
+#     CMDLEVEL, …) defaults ON under it. No other knobs. DSP54_X=0 opts a single
+#     sub-knob out for A/B.
 #   * EEPROM: prefers the baked firmware/nse-1-faid.bin (./run 5110 faid-bake) and falls
 #     back to the virgin NokiX blob. EITHER is made good at load (ext_eeprom.c finalize):
 #     tune checksum @0x11E recomputed + the DSP-fault latch rec 0x607 @0x29E provisioned

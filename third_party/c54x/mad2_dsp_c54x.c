@@ -234,8 +234,8 @@ static void cmdlevel_eval(Mad2 *m) {
 // via 0x4650). **The cmd-0x70 self-test reads COBBA regs 5 & 6 as 12-bit ADC values**
 // (0x4AEA/0x4AF5) — analog measurements (AGC/AFC/reference) — and the MCU validator range-
 // checks them. With no RF those read a nominal reference; a faithful COBBA returning in-band
-// values makes the self-test PASS organically (the real CONTACT SERVICE fix — SELFTEST_MEAS
-// patched the OUTPUT, this models the INPUT). Register-level model: latch addr from 0x2C,
+// values makes the self-test PASS organically (the real CONTACT SERVICE fix: model the
+// measurement INPUT, never patch the report OUTPUT). Register-level model: latch addr from 0x2C,
 // return the reg file on 0x2D with bit12=0 (ready, so the bring-up spin at 0x45F8 exits).
 // === COBBA serial protocol (RE'd 2026-06-11, dsp_prom.s54 0x465C/0x4610/0x4604) ===========
 // The DSP↔COBBA serial link is a register-addressed transfer over I/O ports 0x2C (select) and
@@ -265,16 +265,15 @@ static void cmdlevel_eval(Mad2 *m) {
 // (the nominal no-signal pass vector) flow into the subcmd-0x13 measurement report (header 0x340E,
 // MCU validator 0x258968).
 //
-// LIMITATION (un-paged overlay): COBBA does NOT fully replace DSP54_SELFTEST_MEAS for the through-
-// boot. The report that gates CONTACT SERVICE / reason-4 is the *subcmd-0x16* 52-byte report
-// (header 0x3532, validator 0x258B60). Its builder 0x4B73 copies 11 words from AR2 = the MDISND
-// command ring, which `call 0x250b` should repoint to a real measurement buffer — but 0x250b is a
-// RESIDENT NO-OP STUB in our image (the acquisition overlay is never demand-paged in). So the 0x16
-// report reads ring garbage (verified C9F4 CD44 … at 0x4B86) regardless of COBBA; COBBA's reg5/reg6
-// feed only the 0x13/0x258968 report. DSP54_SELFTEST_MEAS still stages the 0x16 report's wire bytes
-// directly. Closing this last gap needs the 0x250b acquisition overlay block (not on hand) — the
-// same gap as "Modelling option (B)". COBBA + SELFTEST_MEAS
-// coexist (PASS to "Security code"); COBBA-only (MEAS=0) -> reason-4 on the 0x16 ring report.
+// LIMITATION (un-paged overlay): COBBA's reg5/reg6 feed only the 0x13/0x258968 report. The
+// *subcmd-0x16* 52-byte report (header 0x3532, validator 0x258B60) is not covered: its builder
+// 0x4B73 copies 11 words from AR2 = the MDISND command ring, which `call 0x250b` should repoint to
+// a real measurement buffer — but 0x250b is a RESIDENT NO-OP STUB in our image (the acquisition
+// overlay is never demand-paged in), so the 0x16 report reads ring garbage (verified C9F4 CD44 …
+// at 0x4B86). Modelling it properly needs the 0x250b acquisition overlay block (not on hand).
+// Do NOT close the gap by staging the report's wire bytes: that buffer (0x1202..0x1207) is the one
+// the ROM's own SIMlock decode writes, so patching the output destroys the genuine local-security
+// record and holds the phone on the lock screen.
 #define COBBA_NREG 16
 static struct {
     int      init;
@@ -2130,81 +2129,6 @@ static void c54x_tick(Mad2 *m) {
                   if (g_log) { static unsigned n; if (++n <= 6) fprintf(stderr,
                       "[dsp54] TICKVEC: fired vec %d @dsp_steps=%lluk (per=%ld)\n",
                       tv_vec, (unsigned long long)(m->dsp_steps/1000), tv_per); } }
-          }
-        }
-        // DSP54_SELFTEST_MEAS=1 — model the NOMINAL idle measurement the DSP self-test packages.
-        // BACKGROUND (, exhaustively traced 2026-06-11): the MCU
-        // legitimately requests the cmd-0x70 / subcmd-0x16 diagnostic MEASUREMENT report at boot. The
-        // DSP builder 0x4B73 copies 11 words from AR2 (= 0x800+MDISND_tail, the ring) into the report
-        // and ships it; the MCU validator 0x258B60 then range/BCD-checks the measurement fields. At
-        // no-call standby there is NO live measurement source — proven by elimination: no DSP ISR
-        // writes the source (CELLWATCH), the repoint hook 0x250b is a resident no-op, and the 0x2286
-        // codec overlay is never entered by the (fully resident) self-test path. ⚠ CORRECTED by the
-        // first live end-to-end run: the builder tail (call 0x3900 + 2x 0x7f2d) DOES
-        // rewrite staging words 2+ in place (staged 0010/0/0/0/0160 left the DSP as BC4E/803B/E300/
-        // A5F2/4C1B; word0 0x3532 and word1 survive) — the old "writes 0x13DC, not the report"
-        // reading was wrong. On real HW that tail inserts/encodes the live measurement; in cosim it
-        // runs on ring garbage -> the report fails validation -> reason-4 retry reboot (dequeue
-        // armed) or the 8.63M timeout -> CONTACT SERVICE. This knob models what the un-stimulated
-        // analog front-end would yield at idle: the nominal no-signal reading, staged as FINAL WIRE
-        // BYTES after the transform. The validator's low-band accept (0x258BD8 -> 0x258BF6 ->
-        // 0x258CA2, no checksum for the short form buf[9]=0x32) needs only:
-        //   [0x1202]=0x0010 (buf[12]=0,buf[13]=0x10), [0x1206]=0x0160 (buf[20]&0xF=1,buf[21]=0x60),
-        //   [0x1203..1205]=0 (BCD-clean tail).  The other reports/cmd-13 pass then clear the verdict
-        //   (verdict C4->C0 @1.77M observed; no [0x10FDDE] 0x5A->0xA5 marker, no reason-4).
-        // ⚠ The values are the validator-correct nominal STAND-IN, NOT silicon-confirmed (we have no
-        // working self-test reference). Requires the self-test to actually execute (the MDISND dequeue
-        // armed — organic under DSP54_CMDLEVEL).
-        // Fires once per builder entry (re-arms on exit, so a self-test retry is also covered).
-        // Faithful default ON under cosim (2026-06-11, end-to-end validated with CMDLEVEL): models
-        // the analog front-end's NOMINAL idle reading. Without it the organically-drained report
-        // carries garbage -> the validator faithfully REJECTS -> the firmware's real one-shot retry
-        // reboot ([0x10FDDE] 0x5A/0xA5 marker protocol, reason-4 @0x258D2E) -> exposes the (open)
-        // warm-reboot DSP re-staging gap. With it, base = CONTACT SERVICE (8.63M timeout).
-        // ⚠ 2026-06-12: TICKVEC is RETIRED (see the TICKVEC block above) — it no longer changes the
-        // outcome now that the sleep loop self-pumps. SELFTEST_MEAS alone is also insufficient on the
-        // branch: it patches only the FIRST report (0x4BA8 in-tail enqueue ~1.5M); the organic DSP
-        // posts a SECOND self-test report (~3.2M) that this hook does NOT cover, so the validator
-        // clears verdict bit6 (MCU 0x22F082) -> CONTACT SERVICE. The faithful through-boot needs the
-        // COBBA measurement-INPUT model (regs 5/6 @0x4AEA/0x4AF5), not an output patch. See HANDOFF
-        // §4a-NEW.
-        // ⚠ DEFAULT FLIPPED TO OFF, 2026-07-29 — this stub is now HARMFUL, not merely a
-        // stand-in. It stages the sub-0x16 report's FINAL WIRE BYTES, which is the same buffer
-        // (0x1202..0x1207) the ROM's own SIMlock decode writes, so it OVERWRITES the genuine
-        // local-security record the mask ROM produces. That was invisible while the record was
-        // garbage — the whole reason the stub existed ("in cosim it runs on ring garbage").
-        // With the c54x ALU/control-flow fixes and the EEPROM SIMlock records provisioned
-        // (services/eeprom_provision.c), the ROM decodes a real record and the report no longer
-        // needs patching: the co-sim boots past "SIM card not accepted" to standby, the same
-        // screen the ROM-4 HLE reaches. Keeping it on holds the phone ON the lock screen.
-        // Now OPT-IN (DSP54_SELFTEST_MEAS=1) for A/B against the old behaviour.
-        { static int sm_init = 0, sm_on = 0, sm_armed = 1;
-          if (!sm_init) { sm_init = 1;
-              const char *e = getenv("DSP54_SELFTEST_MEAS");
-              sm_on = (e && *e) ? (atoi(e) != 0) : 0; }
-          if (sm_on && g_dsp_run) {
-              Dsp54Status st; dsp54_status(g_dsp, &st);
-              // Stage POST-TRANSFORM (corrected 2026-06-11, first end-to-end run): the builder's
-              // tail (call 0x3900 + 2x 0x7f2d + the [0x1207]/[0x120D] checksum-zeroing) REWRITES
-              // staging words 2+ — on real HW that pipeline inserts the live measurement; in cosim
-              // it runs on garbage and clobbered the old pre-copy AR2 pokes (wire bytes 12-21 came
-              // out BC4E/803B/... and the validator rejected -> marker [0x10FDDE]=0x5A -> reason-4).
-              // So stage the validator-correct NOMINAL wire fields into the finished report at
-              // 0x1202..0x1206, in the window after both transforms and before the MDIRCV enqueue
-              // (dcall 0x37CE @0x4BA8): wire buf[12,13]=00,10 / buf[14..19] BCD-clean zeros /
-              // buf[20,21]=01,60 (low-band accept 0x258BD8->0x258BF6->0x258CA2).
-              int in_tail = (st.pc >= 0x4B8C && st.pc <= 0x4BA7);  // post-7f2d .. pre-enqueue
-              if (in_tail && sm_armed) {
-                  sm_armed = 0;
-                  dsp54_data_poke(g_dsp, 0x1202, 0x0010);  // buf[12,13] low-band markers
-                  dsp54_data_poke(g_dsp, 0x1203, 0x0000);  // buf[14,15] BCD-clean
-                  dsp54_data_poke(g_dsp, 0x1204, 0x0000);  // buf[16,17]
-                  dsp54_data_poke(g_dsp, 0x1205, 0x0000);  // buf[18,19]
-                  dsp54_data_poke(g_dsp, 0x1206, 0x0160);  // buf[20]&0xF=1, buf[21]=0x60 (96)
-                  if (g_log) fprintf(stderr, "[dsp54] SELFTEST_MEAS: nominal idle measurement staged "
-                      "post-transform at [0x1202..0x1206] @dsp_steps=%lluk (pc=0x%04X)\n",
-                      (unsigned long long)(m->dsp_steps / 1000), st.pc);
-              } else if (!in_tail) { sm_armed = 1; }
           }
         }
         // DSP54_GOTEST=1 (diagnostic): the run-mode bootstrap (loader2 @0xF00) clears [0x872] in its

@@ -462,12 +462,6 @@ typedef struct Mad2 {
     uint8_t  dsp_siml_blkidx;        // 0x16 block index seen so far (0..9)
     uint8_t  dsp_siml_block[24];     // captured 24-byte 0x16 block payload (to echo in 0x35)
     uint8_t  dsp_siml_msid[13];      // captured MSID bytes from the 0x13 setup record
-    uint8_t  simaccept_done;        // SIMACCEPT one-shot: table patched this boot. Per-instance
-                                     // (NOT file-static) so mad2_init's memset re-arms it on every
-                                     // cold/warm reboot — the firmware re-inits the reject-all table.
-    uint64_t simaccept_next_cyc;    // earliest rtc_mono for the next SIMACCEPT table rescan (0 =
-                                     // scan on the next pump) — the reject-all record appears
-                                     // asynchronously, so un-found retries are paced, not per-step
     uint8_t  dsp_running;            // internal "DSP code running" latch (first real block acked)
     uint8_t  dsp_cb_armed_nz;        // current pump cycle was armed by a REAL block delivery
                                      // (nonzero cb_reply write), not the firmware's [cb_reply]=0
@@ -850,9 +844,6 @@ int dsp_rom_version(const Mad2* m, uint8_t* out);
 void mdi_gsm_tick(Mad2* m);
 uint64_t mdi_gsm_next_wake(Mad2* m);
 void mdi_gsm_advance_to(Mad2* m, uint64_t cycles);
-// SIMACCEPT RAM patch only (pure MCU-RAM edit, DSP-backend-independent) — safe to call above the
-// DSP-HLE quiet gate so it runs under DSP54_COSIM. Self-gated/one-shot; no-op unless SIMACCEPT=1.
-void mdi_gsm_simaccept(Mad2* m);
 // Decode the selected synthetic/default home PLMN. Kept for callers which do
 // not own a Mad2 instance.
 void mad2_sim_home_plmn(uint8_t out[3]);

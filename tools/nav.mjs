@@ -678,7 +678,7 @@ let watchPrev = watch.map(() => 0);
 
 // Load fw (and optional EEPROM overlay) like the browser.
 { const b = new Uint8Array(readFileSync(fw)); try { M.FS.unlink('/fw.fls'); } catch (e) {} M.FS.writeFile('/fw.fls', b); }
-// --env: set BEFORE boot — mad2_init latches several of these (SWSIM/SIMACCEPT/DSPSIML).
+// --env: set BEFORE boot — mad2_init latches several of these (SWSIM/GSMBRIDGE/DSPSIML).
 for (const kv of envSets) {
   const eq = kv.indexOf('=');
   const k = eq < 0 ? kv : kv.slice(0, eq), v = eq < 0 ? '1' : kv.slice(eq + 1);

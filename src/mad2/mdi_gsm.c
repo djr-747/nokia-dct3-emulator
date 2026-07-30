@@ -101,10 +101,6 @@ static int      g_cnf     = 1;  // channel-change-confirm (0x89) sub-feature (GS
 static int      g_cnf_done = 0; // one-shot: 0x89 CHANNEL_CHANGED_CNF delivered
 static int      g_meas    = 0;  // continuous 0x8A measurement stream (GSMBRIDGE_MEAS=1, opt-in test)
 static uint64_t g_meas_next = 0;// explicit deadline for the next 0x8A measurement
-static int      g_tune    = 0;  // ★ DIRTY channel-config handshake model (GSMBRIDGE_TUNE=1) — NOT
-                                // faithful: synthesizes the L1 pending-request [0x11161C] the firmware
-                                // would record on issuing the 0x02 config (which it never reaches),
-                                // so the 0x89 takes the SUCCESS path. Diagnostic: does camp cascade?
 static uint8_t  g_plmn[3] = {0x00,0xF1,0x10}; // refreshed from the active EF_IMSI/EF_AD
 
 // Sub-feature gate for the ONE master knob GSMBRIDGE: each faithful piece defaults ON when the
@@ -323,106 +319,16 @@ static int push_meas_result(Mad2* m, uint8_t meas) {
     return mdircv_push(m, MDI_MEAS_RESULT, body, 13);
 }
 
-// ── SIM-lock publish (parity with Noks Noks.Dct3 PublishDecodedSimLock) ───────────────
-// SIMACCEPT=1: locate the decoded SIM-lock table and publish it UNLOCKED so a real (non-test)
-// IMSI is accepted instead of "SIM card not accepted". The table is 5x24-byte records; rec0
-// ships reject-all: 8x 0xEE comparison field (byte[0..7]) + 0xFF lock-enable (byte[8]) + 0xFF
-// status (byte[17]). The evaluator (v5.79 0x286F68 / v4.18 0x27FA14, walking 0x10EB48 / 0x117B10)
-// rejects every real IMSI because 0xEE is a literal digit-14 no BCD IMSI matches and the record
-// is enabled. Clearing enable(+8) AND status(+17) disables the lock -> any IMSI accepted (POKE-
-// proven: 505/01 -> SIM-status 0x0FFC, standby). Version-agnostic via signature scan, matching
-// Noks TryFindDecodedSimLockOffset / ResolveDecodedSimLockOffset.
-//
-// DIRTY / NOT FAITHFUL: this is a RAM patch, NOT a faithful DSP decode of the encrypted SIM-lock
-// records (flash cipher shadow 0x3D0046). It exists to reach PARITY with Noks (the reference
-// emulator also patches RAM here — Dct3FirmwarePatches / WriteBackingBe — rather than modelling
-// the decode). Faithfulness (decode 0x3D0046 -> decoded table) is deferred. Faithful default OFF
-// on native (guarded boots stay byte-identical); ON in the web build (SIM accepted out of the box)
-// with a one-time UNFAITHFUL warning. SIMACCEPT=0 forces it off.
-static int g_unlock  = -1;   // SIMACCEPT cached (config; boot-invariant)
-static int g_ulog    = 0;    // SIMACCEPT_LOG cached
-// The one-shot "table patched this boot" latch lives in Mad2 (m->simaccept_done), NOT here —
-// mad2_init's memset re-arms it on every cold/warm reboot so the re-init'd table is re-patched.
-static void simaccept_publish(Mad2* m) {
-    // The faithful ROM6NEW/rom6 engine owns SIM-lock via its OWN local-security
-    // handshake (0x70/0x13/0x16/0x17 -> 0x74/0x34/0x35/0x36), letting the firmware's own
-    // decode write the unlocked table. Hard no-op under it so the faithful path is never
-    // masked by a RAM poke. On v5.x firmware (3310 v5.79, 3410 v5.46, 8850/8210 v5.31) the
-    // firmware commits the decoded record to its live table and clears the reject-all record
-    // organically -> SIM accepted with no poke. On v4.x firmware (3330 v4.50, 3310 v4.18)
-    // the decoded record routes to a block-echo handler whose only live-table write path is
-    // gated behind an un-settable service/reprogram flag ([0x11FD13]), so region_a cannot
-    // clear it — that needs a faithful v4.x provisioning model (streaming-commit / PMM->live
-    // decode), NOT a poke. See docs/sim-dsp-groundup/net/HANDOFF-.
-    // (The SIMACCEPT stand-in below stays available only for the legacy non-rom6 opt-in
-    // bring-up path, never the faithful engine / v6 web default.)
-    if (mad2_active_dsp(m) == &mad2_dsp_rom6) return;
-    // Explicit SIMACCEPT wins; else folded under the master GSMBRIDGE (GSMBRIDGE_UNLOCK sub, =0 opts
-    // out); else OFF on native (faithful). The web build turns it on (dct3_web_boot sets SIMACCEPT=1)
-    // so phones reach standby out of the box. SIMACCEPT=0 forces it off. UNFAITHFUL — warns once.
-    if (g_unlock < 0) {
-        int gsm = getenv("GSMBRIDGE") ? 1 : 0;
-        const char *e = getenv("SIMACCEPT");
-        if (!e || !*e) e = getenv("SIMUNLOCK");   // legacy alias (pre-simaccept rename)
-        g_unlock = (e && *e) ? (atoi(e) != 0)
-                             : (gsm && gsm_sub_on("GSMBRIDGE_UNLOCK") ? 1 : 0);
-        g_ulog   = (getenv("SIMACCEPT_LOG") || (gsm && getenv("GSMLOG"))) ? 1 : 0;
-        if (g_unlock) {
-            static int ul_warned = 0;
-            if (!ul_warned) { ul_warned = 1;
-                fprintf(stderr, "[simaccept] UNFAITHFUL: SIM-lock table published UNLOCKED by default "
-                                "(RAM patch, not a faithful decode of 0x3D0046); set SIMACCEPT=0 for the faithful path\n");
-            }
-        }
-    }
-    if (!g_unlock || m->simaccept_done || !m->mem || !m->dsp_running) return;
-    // Pace the rescan: this pump runs once per emulated instruction, but the band scan
-    // below is ~69k addresses. On firmware whose decoded table never materialises in
-    // this band (8210/3330 RAM maps differ), the un-found retry would otherwise re-scan
-    // EVERY instruction and stall the web run loop (tab freeze). Retry once per emulated
-    // second — still converges as soon as the firmware's async .data init publishes the
-    // record, without turning the miss case into a per-step full-band scan.
-    if (m->rtc_mono < m->simaccept_next_cyc) return;
-    m->simaccept_next_cyc = m->rtc_mono + 13000000ull;   // 1 s @ 13 MHz ARM clock
-    // Signature scan across the MCU RAM band for the reject-all rec0: 8 consecutive 0xEE
-    // (comparison field) with 0xFF at +8 (lock-enable active). Patch EVERY such record found
-    // (there is one per boot; loop keeps it robust across versions).
-    int patched = 0;
-    for (uint32_t a = 0x00108000u; a < 0x00119000u; ++a) {
-        uint32_t p = a & m->mem_mask;
-        int ee = 1;
-        for (int i = 0; i < 8; ++i) if (m->mem[(p + i) & m->mem_mask] != 0xEEu) { ee = 0; break; }
-        if (!ee || m->mem[(p + 8) & m->mem_mask] != 0xFFu) continue;   // not an active reject-all record
-        m->mem[(p + 8)  & m->mem_mask] = 0x00;   // clear lock-enable  -> record disabled
-        m->mem[(p + 17) & m->mem_mask] = 0x00;   // clear status/flag  -> not "restriction pending"
-        patched++;
-        if (g_ulog)
-            printf("[simaccept] decoded SIM-lock rec @0x%06X -> UNLOCKED (enable+status cleared) @step %llu\n",
-                   a, (unsigned long long)m->dsp_steps);
-    }
-    if (g_ulog && !patched)
-        printf("[simaccept] no reject-all SIM-lock record found in 0x108000..0x119000 @step %llu\n",
-               (unsigned long long)m->dsp_steps);
-    // The decoded table is initialized asynchronously by firmware.  Do not
-    // consume the one-shot merely because it did not exist on an earlier pump.
-    if (patched) m->simaccept_done = 1;
-}
-
-// Cosim-reachable entry for JUST the SIMACCEPT RAM patch. The full mdi_gsm_tick() below sits
-// under the DSP-HLE quiet gate in dsp_rom4_tick (silenced by DSP54_COSIM), but the SIMACCEPT
-// patch is a pure MCU-RAM edit with no dependency on the DSP backend, so expose it to run under
-// cosim too. Self-gated (no-op unless SIMACCEPT=1) + one-shot, so guarded boots stay byte-identical
-// and a later mdi_gsm_tick() call in the same tick just hits the m->simaccept_done latch.
-void mdi_gsm_simaccept(Mad2* m) { simaccept_publish(m); }
+// SIM-lock acceptance belongs to the rom4/rom6 local-security handshake
+// (0x70/0x13/0x16/0x17 -> 0x74/0x34/0x35/0x36), which lets the FIRMWARE's own decode write its
+// live table. Nothing in this file may patch that table.
 
 // Per-step GSM bridge pump. Called from dsp_rom4_tick (gated). Never touches FSM/status.
 void mdi_gsm_tick(Mad2* m) {
-    simaccept_publish(m);   // SIMACCEPT=1 opt-in (independent of GSMBRIDGE); self-gates + one-shot
-
     if (g_en < 0) {
-        // ONE master knob: GSMBRIDGE=1 turns on the whole network bring-up (SIM-unlock [in
-        // simaccept_publish] + RSSI scan answer + SCH + SI2/3/4 broadcast + the DSP-radio responder
-        // in dsp_rom4.c). Each faithful piece defaults ON; opt one out for A/B with <NAME>=0.
+        // ONE master knob: GSMBRIDGE=1 turns on the whole network bring-up (RSSI scan answer +
+        // SCH + SI2/3/4 broadcast + the DSP-radio responder in dsp_rom4.c). Each faithful piece
+        // defaults ON; opt one out for A/B with <NAME>=0.
         g_en = getenv("GSMBRIDGE") ? 1 : 0; g_log = getenv("GSMLOG") ? 1 : 0;
         g_noguard = getenv("GSMBRIDGE_NOGUARD") ? 1 : 0;
         const char* cad = getenv("GSMBRIDGE_SI_CAD");
@@ -438,8 +344,6 @@ void mdi_gsm_tick(Mad2* m) {
         // default, because on its own it aborts rather than advances registration.
         g_cnf  = getenv("GSMBRIDGE_CNF") ? (atoi(getenv("GSMBRIDGE_CNF")) != 0) : 0;
         g_meas = getenv("GSMBRIDGE_MEAS") ? (atoi(getenv("GSMBRIDGE_MEAS")) != 0) : 0;
-        g_tune = getenv("GSMBRIDGE_TUNE") ? (atoi(getenv("GSMBRIDGE_TUNE")) != 0) : 0;
-        if (g_tune) g_cnf = 1;   // TUNE needs the 0x89 delivered (with a valid pending req)
         const char* rt = getenv("GSMBRIDGE_RSSI_TYPE");
         g_rssi_type = (rt && *rt) ? (uint8_t)strtoul(rt, 0, 0) : MDI_RSSI_RESULTS;
         mad2_sim_current_plmn(m, g_plmn);
@@ -492,36 +396,10 @@ void mdi_gsm_tick(Mad2* m) {
     // BE halfword == 0x000B) is an MCU-side interlock (same discipline as L1_SCH_ARMED) — the
     // faithful trigger would be the DSP observing the 0x02 config, but that L1<->DSP path is
     // unmodelled. One-shot: the confirm is a single event; the FSM advances out of state 11.
-    // ★★ DIRTY second-loop break (GSMBRIDGE_TUNE): after the state-11 park is broken, continuously
-    // force the camp record 0x110424 fields the camp-suitability gate 0x23DFB0 checks — described
-    // [+27]=1 (0x11043F), status [+96] bit1+ clear (0x110484), PLMN [+92] = home (0x110480) — so the
-    // gate can pass (it's a closed loop: described is normally copied FROM the 0x3ED primitive the gate
-    // itself produces). Un-faithful diagnostic: does forcing both loops cascade to registration?
-    if (g_tune && g_cnf_done) {
-        m->mem[0x0011043Fu & m->mem_mask] = 1;                              // [r4+27] described
-        m->mem[0x00110484u & m->mem_mask] &= 1;                             // [r4+96] status (>>1)==0
-        m->mem[0x00110480u & m->mem_mask] = g_plmn[0];                      // [r4+92] PLMN
-        m->mem[0x00110481u & m->mem_mask] = g_plmn[1];
-        m->mem[0x00110482u & m->mem_mask] = g_plmn[2];
-    }
     if (g_stage == 1 && g_cnf && !g_cnf_done) {
         uint16_t st = (uint16_t)((m->mem[FSM_STATE & m->mem_mask] << 8)
                                  | m->mem[(FSM_STATE + 1) & m->mem_mask]);
         if (st == 0x000B) {
-            // ★ DIRTY: synthesize the L1 pending channel-change request at scratch 0x118400 so the
-            // 0x89 handler 0x2C3D4C takes the SUCCESS path (needs [0x11161C]->{[+0]!=0x409,
-            // [+2]==block[4]&1==0 for BCCH 0x50, [+3]==1}). Models what firmware L1 would record on
-            // issuing the 0x02 config (state 28, never reached). Un-faithful; GSMBRIDGE_TUNE only.
-            if (g_tune) {
-                uint32_t s = 0x00118400u & m->mem_mask;
-                for (int i = 0; i < 28; ++i) m->mem[(s + i) & m->mem_mask] = 0;
-                m->mem[(s + 0) & m->mem_mask] = 0x04; m->mem[(s + 1) & m->mem_mask] = 0x04; // marker 0x0404
-                m->mem[(s + 2) & m->mem_mask] = 0x00;                                       // parity == 0x50&1
-                m->mem[(s + 3) & m->mem_mask] = 0x01;                                       // pending flag
-                m->mem[(s + 23) & m->mem_mask] = m->mem[0x00110F94u & m->mem_mask];         // [0x110F94] snap
-                uint32_t p = 0x0011161Cu & m->mem_mask;                                     // [0x11161C]=ptr (BE)
-                m->mem[p] = 0x00; m->mem[p+1] = 0x11; m->mem[p+2] = 0x84; m->mem[p+3] = 0x00;
-            }
             if (push_channel_cnf(m)) {
                 g_cnf_done = 1;
                 if (g_log)
@@ -592,7 +470,6 @@ uint64_t mdi_gsm_next_wake(Mad2* m) {
         if (!g_noguard && m->mem[L1_SCH_ARMED & m->mem_mask] != 1) return UINT64_MAX;
         return m->rtc_mono;             // RSSI/SCH event, ring back-pressure decides delivery
     }
-    if (g_tune && g_cnf_done) return m->rtc_mono;
     if (g_cnf && !g_cnf_done) {
         uint16_t st = (uint16_t)((m->mem[FSM_STATE & m->mem_mask] << 8)
                                  | m->mem[(FSM_STATE + 1) & m->mem_mask]);

@@ -322,9 +322,8 @@ static void simlock_provision_5110(struct Mad2* m) {
     // data[0xB703] (= 0x54C2) at PROM 0x4B8E/0x4B92 before zeroing it, which is also why both
     // published LOCK defaults end in 54C2.
     //
-    // Verified end to end: with these records and DSP54_SELFTEST_MEAS=0 (i.e. NO output stub),
-    // the co-sim boots past "SIM card not accepted" to standby — lcd 1d1dee9b…, the same screen
-    // the HLE reaches.
+    // Verified end to end with no output stub patching the report: the co-sim boots past
+    // "SIM card not accepted" to standby — lcd 1d1dee9b…, the same screen the HLE reaches.
     static const uint8_t SIML_P1_PLAIN[12] = {
         0xFF,0xFF,0xFF,0xFF,0xFF,0x0F,0x00,0x00,0x00,0x78,0x54,0xC2 };
     static const uint8_t SIML_P2_PLAIN[12] = {

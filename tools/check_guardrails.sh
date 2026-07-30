@@ -85,8 +85,9 @@ for g in $GATES; do
         # RE-BLESSED 2026-07-29: this gate now reaches STANDBY (1d1dee9b…), the same screen as
         # the ROM-4 gate above — the co-sim SIM path the old comment was waiting on is fixed.
         # The SIMlock record is now produced by the real mask ROM decoding a provisioned EEPROM
-        # record, with NO output stub (DSP54_SELFTEST_MEAS defaults OFF; it used to overwrite
-        # that very record). The old "SIM card not accepted" hash was 23a09224….
+        # record, with no output stub patching the report (an earlier stub staged wire bytes into
+        # 0x1202..0x1207 and overwrote that very record; it is gone). The old "SIM card not
+        # accepted" hash was 23a09224….
         if tools/check_5110_boot.sh > /tmp/guard_5110_oracle.log 2>&1; then
             got=$(md5sum build/lcd.pgm | awk '{print $1}')
             if [ "$got" = "1d1dee9bd7e1c4e81b2e13f2f9324788" ]; then

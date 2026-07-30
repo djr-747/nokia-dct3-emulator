@@ -296,7 +296,7 @@ static uint32_t g_heapcurve_used[HEAPCURVE_N];   // [0x10484C] used-bytes (BE u3
 static uint32_t g_heapcurve_w = 0;               // total samples (ring idx = w % N)
 
 // Set an env knob from JS (e.g. "GSMBRIDGE"="1", "GSMLOG"="1"). The getenv-gated features — the
-// GSMBRIDGE network bring-up stack, SIMACCEPT, DSP54_COSIM, etc. — latch their config on their first
+// GSMBRIDGE network bring-up stack, DSP54_COSIM, etc. — latch their config on their first
 // tick, so JS must call this BEFORE dct3_web_boot(). emscripten's setenv/getenv share one env table.
 extern int setenv(const char* name, const char* value, int overwrite);  // POSIX; hidden under -std=c99
 EMSCRIPTEN_KEEPALIVE
@@ -444,21 +444,14 @@ int dct3_web_boot(void) {
     // (reset reason 4). No-op on an unpatched image (byte-identical).
     dct3_fix_mcu_checksum(g_core);
 
-    // Web build defaults: the SIM-lock unlock RAM patch + the GSMBRIDGE network bring-up stack,
-    // so a real SIM is accepted and the phone reaches standby + registers on the network out of
-    // the box (UNFAITHFUL HLE stand-ins; each logs a one-time console warning when active).
-    // GSMBRIDGE keeps its L1_SCH_ARMED safety interlock, so it only acts once the firmware is
-    // genuinely running a carrier search. overwrite=0 so an explicit prior
-    // dct3_web_setenv("SIMACCEPT"/"GSMBRIDGE","0") from JS still wins. Set BEFORE the first tick
-    // (which latches the SIMACCEPT/GSMBRIDGE gates).
+    // Web build default: the GSMBRIDGE network bring-up stack, so the phone reaches standby and
+    // registers on the network out of the box. GSMBRIDGE keeps its L1_SCH_ARMED safety interlock,
+    // so it only acts once the firmware is genuinely running a carrier search. overwrite=0 so an
+    // explicit prior dct3_web_setenv("GSMBRIDGE","0") from JS still wins. Set BEFORE the first
+    // tick (which latches the GSMBRIDGE gate).
     //
-    // DSPSIML is NOT set here (dropped 2026-07-28). It gates only the legacy responder in
-    // dsp/dsp_mailbox.c, which the C54x cosim alone calls — so in the web build it was inert
-    // and its one-time "UNFAITHFUL: SIML responder ON" line was a misleading console warning
-    // about a flag nothing read. The rom4/rom6 engines answer the SIML handshake (and the
-    // pinned per-model MSID) unconditionally; that is what actually makes the web build accept
-    // a SIM, and it is unchanged by this.
-    setenv("SIMACCEPT", "1", 0);
+    // Nothing needs setting for SIM acceptance: the rom4/rom6 engines answer the local-security
+    // handshake (and the pinned per-model MSID) unconditionally.
     setenv("GSMBRIDGE", "1", 0);
 
     memset(&g_mad2, 0, sizeof g_mad2);

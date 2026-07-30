@@ -305,10 +305,6 @@ int dsp_rom_version(const Mad2* m, uint8_t* out) {
 
 void dsp_mailbox_tick(Mad2* m) {
     m->dsp_steps++;   // free-running step counter (this tick runs once per emulated step)
-    // SIMACCEPT RAM patch: a pure MCU-RAM edit, independent of the DSP backend, so it runs even
-    // under cosim (above the quiet gate). Self-gated/one-shot -> no-op unless SIMACCEPT=1, so
-    // guarded/cosim boots stay byte-identical. Lets the SIM-lock test work with DSP54_COSIM=1.
-    mdi_gsm_simaccept(m);
     // Co-sim HLE quiet-gate (set in mad2.c under DSP54_COSIM; DSP54_HLE=1 re-enables): the real
     // C54x supplies every DSP->MCU signal, so the ENTIRE modelled tick below — block-ack pump +
     // IRQ4 raise, Cobba auto-consume, self-test responder, DSPMSG injector, keep-alive FIQ0
@@ -407,16 +403,6 @@ void dsp_mailbox_tick(Mad2* m) {
     //                     terminal block it decodes+matches the SIM-lock record -> emits {70,0x17}
     //   0x36 pass=0     : handler 0x287A68 sets unlock latch [0x10EB18]=1 + OSE-signals task 2
     // Priority 0x34 > 0x35 > 0x36; the self-test {0x0D} reply below fires once SIML drains.
-    // DIAGNOSTIC (DSPSIML_FORCE36=1): the real match->{70,0x17} needs a fabricated "unlocked"
-    // decoded SIM-lock block (deep crypto RE). To test the ENDGAME cheaply — does the firmware's
-    // own 0x36 handler (0x287A68: [0x10EB18]=1 + OSE-signal task 2) wake the subscribe cluster? —
-    // emit one {74,0x36} pass=0 ~2s after the self-test reply. 0x287A68 runs identically however
-    // we reach it, so the wake behaviour is validly tested. NOT faithful; endgame probe only.
-    if (m->dsp_siml_en && getenv("DSPSIML_FORCE36") && m->dsp_selftest_replied) {
-        static uint64_t force_at = 0; static int forced = 0;
-        if (!force_at) force_at = m->rtc_mono + 10000000ull;
-        else if (!forced && m->rtc_mono >= force_at) { m->dsp_siml_want36 = 1; forced = 1; }
-    }
     if (m->dsp_siml_en && m->mem &&
         (m->dsp_siml_want34 || m->dsp_siml_want35 || m->dsp_siml_want36 ||
          (m->dsp_st_req && !m->dsp_selftest_replied && !m->dsp_selftest_off))) {
