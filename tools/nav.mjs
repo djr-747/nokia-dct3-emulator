@@ -431,6 +431,7 @@ const C = {
   wapBridge:     M.cwrap('dct3_web_wap_bridge', null, ['number']),
   wapPending:    M.cwrap('dct3_web_wap_pending', 'string', []),
   wapDeliver:    M.cwrap('dct3_web_wap_deliver', null, ['number','number','number']),
+  wapDeliverCt:  M.cwrap('dct3_web_wap_deliver_ct', null, ['string','number','number']),
   wapRelayTake:  M.cwrap('dct3_web_wap_relay_take', 'number', []),
   wapRelayBuf:   M.cwrap('dct3_web_wap_relay_buf', 'number', []),
   wapRelayDeliver: M.cwrap('dct3_web_wap_relay_deliver', null, ['number','number']),
@@ -823,11 +824,14 @@ function pumpWapGw() {
     if (m) target = m[1] ? wapHome + (wapHome.includes('?') ? '&' : '?') + 'wpg=' + m[1] : wapHome;
   }
   if (target !== uri) console.log(`[wapgw] phone asked for ${uri} — serving ${target}`);
-  const { ct, body } = servePage(target, s => console.log(s));
+  const { ct, ctText, body } = servePage(target, s => console.log(s));
   if (!body) { C.wapDeliver(ct, 0, 0); return; }
   const p = M._malloc(body.length);
   M.HEAPU8.set(body, p);
-  C.wapDeliver(ct, p, body.length);
+  // A type with no well-known WSP token (a ringtone, say) has to go out as a
+  // textual content type; everything else keeps the one-byte form.
+  if (ctText && !ct && C.wapDeliverCt) C.wapDeliverCt(ctText, p, body.length);
+  else C.wapDeliver(ct || 0x14, p, body.length);
   M._free(p);
 }
 

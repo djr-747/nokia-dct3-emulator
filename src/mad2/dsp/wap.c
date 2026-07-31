@@ -7,6 +7,7 @@
 #include "mad2/dsp/wap.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // ── WTP PDU types (WAP-201 §8.3): octet0 = CON(1) | Type(4) | GTR TTR RID ──
@@ -221,6 +222,52 @@ void wap_deliver(WapGw* g, uint8_t ct, const uint8_t* body, unsigned len, int lo
         if (log) fprintf(stderr, "[rom6] WAP: host served \"%s\" — %u bytes, content-type 0x%02X\n",
                          g->pendingUri, len, ct);
     }
+    wap_stage_result(g, wsp, n);
+}
+
+// Same reply, but carrying a content type that has no well-known token —
+// ringtones (application/vnd.nokia.ringing-tone) and other vendor types.
+//
+// MEASURED, AND IT DOES NOT WORK ON THIS HANDSET. Both legal encodings were
+// tried against the 3410 v5.46 browser and both make it tear the session down
+// (WSP Disconnect, back to standby) rather than render:
+//   - general form (WSP §8.4.2.24): Value-length then the NUL-terminated media
+//     type, short-length when it fits 0..30 else the 0x1F length-quote;
+//   - constrained form: the bare NUL-terminated media type, no length.
+// The control that isolates it: send a deck that renders perfectly as the
+// well-known byte 0x14, changing ONLY the content-type encoding — it is
+// refused. So the browser's Reply parser takes the well-known short integer
+// and nothing else, whatever WSP permits and whatever the push-side decoder
+// (WSP_CONTENT_TYPE_DECODE 0x0036A944) accepts.
+//
+// Kept because it is correct per the spec and is the obvious starting point
+// for whoever works out what the browser really wants — but callers must not
+// reach for it by default; see WAPGW_TEXT_CT in tools/wapfetch.mjs.
+void wap_deliver_ct(WapGw* g, const char* ct, const uint8_t* body, unsigned len, int log) {
+    if (!g->pending) return;
+    if (!ct || !*ct) { wap_deliver(g, WSP_CT_WMLC, body, len, log); return; }
+
+    unsigned ctn = (unsigned)strlen(ct) + 1u;      // media type INCLUDING its NUL
+    uint8_t hdr[8];
+    unsigned hn = 0;
+    if (ctn <= 30u) hdr[hn++] = (uint8_t)ctn;
+    else { hdr[hn++] = 0x1Fu; hn += wap_uintvar(hdr + hn, ctn); }
+
+    // 2 PDU bytes + headers-length uintvar + the field itself + the body.
+    if (!len || 4u + hn + ctn + len > WAP_MAX_DGRAM) { wap_deliver(g, WSP_CT_WMLC, 0, 0, log); return; }
+
+    g->pending = 0;
+    uint8_t wsp[WAP_MAX_DGRAM];
+    unsigned n = 0;
+    wsp[n++] = WSP_REPLY;
+    wsp[n++] = WSP_STATUS_OK;
+    n += wap_uintvar(wsp + n, hn + ctn);           // headers length = the content-type field
+    memcpy(wsp + n, hdr, hn);  n += hn;
+    memcpy(wsp + n, ct, ctn);  n += ctn;           // strlen + NUL
+    memcpy(wsp + n, body, len); n += len;
+    g->requests++;
+    if (log) fprintf(stderr, "[rom6] WAP: host served \"%s\" — %u bytes, content-type \"%s\"\n",
+                     g->pendingUri, len, ct);
     wap_stage_result(g, wsp, n);
 }
 

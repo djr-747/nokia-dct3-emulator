@@ -299,6 +299,10 @@
         wapBridge:  optWrap("dct3_web_wap_bridge", null, ["number"]),
         wapPending: optWrap("dct3_web_wap_pending", "string"),
         wapDeliver: optWrap("dct3_web_wap_deliver", null, ["number", "number", "number"]),
+        // Textual content type, for what WSP never assigned a number to —
+        // Nokia ringtones and the like. Images and tones only work because
+        // the reply can name its own type instead of always claiming wmlc.
+        wapDeliverCt: optWrap("dct3_web_wap_deliver_ct", null, ["string", "number", "number"]),
         // NVRAM persistence surface. The flash NVRAM partition lives inside the
         // flat memory at ramPtr()+eepromOff(); early-MAD2 serial-bus models
         // (5110/…) keep theirs in a separate external I2C 24Cxx buffer instead.
@@ -946,6 +950,13 @@
     // probe below arms the bridge automatically with no client change.
     // ?wapgw=<url> overrides the phone's home URL and forces the bridge on.
     // -------------------------------------------------------------
+    // WSP well-known content types (WAP-230) — the ones the 3410 advertises.
+    // A type that is not here still ships, as a textual content type.
+    var WSP_CT = {
+      "text/plain": 0x03, "application/vnd.wap.wmlc": 0x14,
+      "application/vnd.wap.wmlscriptc": 0x15, "image/gif": 0x1d,
+      "image/jpeg": 0x1e, "image/png": 0x20, "image/vnd.wap.wbmp": 0x21,
+    };
     var wapArmed = false, wapBusy = false;
     var wapHome = new URLSearchParams(location.search).get("wapgw") || "";
     function wapArm(why) {
@@ -965,14 +976,25 @@
       wapBusy = true;
       var q = "/wapgw?uri=" + encodeURIComponent(uri) + (wapHome ? "&home=" + encodeURIComponent(wapHome) : "");
       console.log("[DCT3] WAP: phone asked for " + uri);
+      var replyCt = "";
       fetch(q)
-        .then(function (r) { console.log("[DCT3] WAP: /wapgw -> " + r.status); return r.ok ? r.arrayBuffer() : null; })
+        .then(function (r) {
+          console.log("[DCT3] WAP: /wapgw -> " + r.status);
+          // The gateway now answers with whatever it fetched — a wbmp logo, a
+          // ringtone — not always a deck, so the reply has to carry that type
+          // through to the phone rather than always claiming wmlc.
+          replyCt = (r.headers.get("content-type") || "").split(";")[0].trim();
+          return r.ok ? r.arrayBuffer() : null;
+        })
         .then(function (buf) {
           if (!buf) { C.wapDeliver(0x14, 0, 0); return; }
           var bytes = new Uint8Array(buf);
           var p = mod._malloc(bytes.length);
           mod.HEAPU8.set(bytes, p);
-          C.wapDeliver(0x14, p, bytes.length);
+          var wk = WSP_CT[replyCt];
+          if (wk !== undefined) C.wapDeliver(wk, p, bytes.length);
+          else if (replyCt && C.wapDeliverCt) C.wapDeliverCt(replyCt, p, bytes.length);
+          else C.wapDeliver(0x14, p, bytes.length);
           mod._free(p);
         })
         .catch(function () { C.wapDeliver(0x14, 0, 0); })

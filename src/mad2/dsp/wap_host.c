@@ -92,7 +92,26 @@ static void wap_host_fetch(WapGw* g, const char* uri) {
 
     static uint8_t body[WAP_HOST_MAX_OUT];
     unsigned n = wap_run(cmd, body, sizeof body);
-    wap_deliver(g, 0x14, body, n, 1);            // n == 0 makes the gateway answer 500
+
+    // The helper prefixes "ct: <media type>\n" — the body is not always a WML
+    // deck now (an image or a ringtone comes back as itself), and the reply has
+    // to carry the real type or the phone refuses it. Split the header off;
+    // if it is missing, treat the whole output as a deck, which keeps an older
+    // helper working.
+    char ct[128] = "";
+    unsigned off = 0;
+    if (n > 4 && memcmp(body, "ct: ", 4) == 0) {
+        uint8_t* nl = memchr(body, '\n', n);
+        if (nl) {
+            unsigned len = (unsigned)(nl - body) - 4u;
+            if (len >= sizeof ct) len = sizeof ct - 1u;
+            memcpy(ct, body + 4, len);
+            ct[len] = 0;
+            off = (unsigned)(nl - body) + 1u;
+        }
+    }
+    if (!n) { wap_deliver(g, 0x14, 0, 0, 1); return; }   // 500
+    wap_deliver_ct(g, ct, body + off, n - off, 1);
 }
 
 static void wap_host_relay(WapGw* g, const uint8_t* req, unsigned len) {

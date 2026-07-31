@@ -2056,6 +2056,15 @@ void dct3_web_wap_deliver(int ct, const uint8_t* body, int len) {
                 len > 0 ? (unsigned)len : 0u, getenv("ROM6_LOG") != 0);
 }
 
+// Deliver with a textual content type, for the types that have no well-known
+// token — Nokia ringtones, and anything else the upstream serves that the
+// WSP table never assigned a number to. len 0 still means "failed" (500).
+EMSCRIPTEN_KEEPALIVE
+void dct3_web_wap_deliver_ct(const char* ct, const uint8_t* body, int len) {
+    wap_deliver_ct(&g_mad2.rom6.csdPpp.wap, ct, body,
+                   len > 0 ? (unsigned)len : 0u, getenv("ROM6_LOG") != 0);
+}
+
 // Current keypad matrix column byte for a row (mad2 state, not RAM) — bit set =
 // that column is pressed. Plus the special-scan cols via row 8.
 EMSCRIPTEN_KEEPALIVE

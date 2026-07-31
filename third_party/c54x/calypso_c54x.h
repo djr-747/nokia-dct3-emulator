@@ -211,6 +211,11 @@ typedef struct C54xState {
      * `delayed_pc`. */
     uint16_t delayed_pc;
     uint8_t  delay_slots;
+    /* XC n,cond: instructions still under the XC's control. Per SPRU172C an
+     * interrupt arriving between XC and the instruction(s) it controls is NOT
+     * processed until after them — same rule as branch delay slots. Counted
+     * down per executed instruction; interrupt entry is blocked while nonzero. */
+    uint8_t  xc_guard;
 
     /* Memory */
     uint16_t prog[C54X_PROG_SIZE];   /* Program memory */

@@ -81,6 +81,9 @@ void        wap_relay_deliver(WapGw* g, const uint8_t* pay, unsigned len, int lo
 // Supply the fetched body; builds the deferred reply datagram. ct is a WSP
 // well-known content-type value (0x14 = application/vnd.wap.wmlc).
 void        wap_deliver(WapGw* g, uint8_t ct, const uint8_t* body, unsigned len, int log);
+// As above for a content type with no well-known token (vendor types such as
+// application/vnd.nokia.ringing-tone). Empty ct falls back to wmlc.
+void        wap_deliver_ct(WapGw* g, const char* ct, const uint8_t* body, unsigned len, int log);
 // Drain a datagram the gateway has ready to send. Returns its length or 0.
 unsigned    wap_take_out(WapGw* g, uint8_t* buf, unsigned max);
 

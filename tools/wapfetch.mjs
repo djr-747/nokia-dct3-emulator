@@ -19,6 +19,28 @@ import { compileWml } from './wmlc.mjs';
 
 export const WSP_CT_WMLC = 0x14;   // application/vnd.wap.wmlc
 
+// WSP well-known content types (WAP-230) the 3410 advertises in its Connect
+// Accept: wmlc, wmlscriptc, wbmp, gif, text/plain. Anything NOT in this table
+// still ships — it goes out as a textual content type instead (see
+// wap_deliver_ct), which is the only way to serve a vendor type like
+// application/vnd.nokia.ringing-tone, since WSP never assigned it a number.
+export const WSP_CT = {
+  'text/plain':                     0x03,
+  'text/vnd.wap.wml':               0x08,
+  'application/vnd.wap.wmlc':       0x14,
+  'application/vnd.wap.wmlscriptc': 0x15,
+  'image/gif':                      0x1d,
+  'image/jpeg':                     0x1e,
+  'image/png':                      0x20,
+  'image/vnd.wap.wbmp':             0x21,
+};
+
+// Content we must not "transcode": it is already what the phone asked for.
+// Anything textual/markup goes through the WML path; everything else — images,
+// ringtones, whatever a WAP site serves — is handed over byte for byte.
+export const isOpaqueType = (ct) =>
+  !!ct && !/^text\/|\bhtml\b|\bxml\b|vnd\.wap\.wml($|[^c])/i.test(ct);
+
 // ── WBXML (WAP-192 §14), WML 1.1 code page 0 ──
 const T = { wml: 0x3f, card: 0x27, p: 0x20, br: 0x26, a: 0x1c, big: 0x25, b: 0x24 };
 // Attribute-start tokens, WML 1.1 code page 0. The three href forms sit at
@@ -214,6 +236,32 @@ export function fetchForPhone(uri, log = () => {}) {
   if (!buf.length) return { ct: WSP_CT_WMLC, body: null };
   // Already-compiled WBXML from a real WAP site: pass it straight through.
   if (ct.includes('vnd.wap.wmlc')) return { ct: WSP_CT_WMLC, body: buf };
+  // Anything that is not markup is content the phone asked for by URL — a wbmp
+  // logo, a GIF, an RTTTL ringtone — and transcoding it would be nonsense.
+  // Hand the bytes over untouched under their own content type. Before this,
+  // every reply claimed to be a WML deck no matter what had been fetched,
+  // which is why images and tone downloads could not work at all.
+  const bare = ct.split(';')[0].trim();
+  if (isOpaqueType(bare)) {
+    const wk = WSP_CT[bare];
+    if (wk !== undefined) {
+      log(`[wapgw] passing ${bare} through untranscoded — ${buf.length}B`);
+      return { ct: wk, ctText: bare, body: buf };
+    }
+    // No well-known token, so the type could only go out as text — and this
+    // browser refuses a textual content type outright, dropping the whole
+    // session (measured; see wap_deliver_ct). Losing the browser is far worse
+    // than not showing the file, so say so on screen instead. WAPGW_TEXT_CT=1
+    // sends it anyway, for anyone picking that investigation back up.
+    if (process.env.WAPGW_TEXT_CT) {
+      log(`[wapgw] WAPGW_TEXT_CT: sending ${bare} as a textual content type (expect a Disconnect)`);
+      return { ct: 0, ctText: bare, body: buf };
+    }
+    log(`[wapgw] ${bare} has no well-known WSP token — reporting it instead of dropping the session`);
+    return { ct: WSP_CT_WMLC, body: compileDeck('Not supported', [
+      { t: 'text', v: `This phone cannot be sent "${bare}" over WAP.` },
+    ]) };
+  }
   // Decode with the charset the server declared (or the document's own <meta>)
   // before touching the text. Reading UTF-8 bytes as Latin-1 and passing them
   // through would emit mojibake and, worse, split multi-byte sequences.
@@ -230,7 +278,7 @@ export function fetchForPhone(uri, log = () => {}) {
   // this path when the compiled deck fits one datagram; otherwise fall
   // through, because the node path is the one that can paginate.
   if (ct.includes('vnd.wap.wml') || /<wml[\s>]/i.test(text.slice(0, 512))) {
-    const deck = compileWml(text);
+    const deck = compileWml(text, url);
     if (deck && deck.length <= DECK_LIMIT) {
       log(`[wapgw] compiled WML directly — ${deck.length}B deck (forms preserved)`);
       return { ct: WSP_CT_WMLC, body: deck };
@@ -258,7 +306,9 @@ export function splitPage(uri) {
 const pageCache = new Map();
 
 // Serve one page of a URI, fetching (and caching) the underlying document as
-// needed. Returns {ct, body} ready for the emulator, body null on failure.
+// needed. Returns {ct, ctText, body} ready for the emulator, body null on
+// failure. ctText is set only for types with no well-known WSP token, and the
+// caller must then deliver via the textual-content-type path.
 export function servePage(uri, log = () => {}, limit = DECK_LIMIT) {
   const { base, page } = splitPage(uri);
 
@@ -266,7 +316,9 @@ export function servePage(uri, log = () => {}, limit = DECK_LIMIT) {
   if (!entry) {
     const got = fetchForPhone(base, log);
     if (got.body === null) return { ct: WSP_CT_WMLC, body: null };
-    if (got.body) return { ct: got.ct, body: got.body };      // pre-compiled: no pagination
+    // Pre-compiled deck, or opaque content passed through: either way it is
+    // already exactly what the phone should receive, so no pagination.
+    if (got.body) return { ct: got.ct, ctText: got.ctText, body: got.body };
     entry = { title: got.title, pages: paginate(got.title, got.nodes, limit), url: got.url };
     pageCache.set(base, entry);
     log(`[wapgw] transcoded into ${entry.pages.length} deck${entry.pages.length > 1 ? 's' : ''}`);

@@ -159,8 +159,24 @@ function textItems(raw) {
   return out;
 }
 
-function encodeAttr(name, value) {
+// href/src have to be made absolute, because the phone does not know where the
+// deck came from. With the home-URL substitution (`--wapgw <url>`) it believes
+// it is browsing http://a.com, so a relative src="logo.wbmp" is resolved
+// against a.com and fetches a stranger's 403 instead of the image. The HTML
+// path has always absolutised; WML source needs the same treatment.
+//
+// A value carrying a $(variable) is left alone: URL parsing would percent-encode
+// the "$(" and break the substitution the phone is meant to perform.
+const URL_ATTRS = new Set(['href', 'src']);
+function absolutise(value, baseUrl) {
+  if (!baseUrl || !value || value.includes('$(')) return value;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith('#')) return value;
+  try { return new URL(value, baseUrl).href; } catch { return value; }
+}
+
+function encodeAttr(name, value, baseUrl) {
   const lname = name.toLowerCase();
+  if (URL_ATTRS.has(lname)) value = absolutise(value, baseUrl);
   let best = null;
   for (const e of ATTRS) {
     if (e.n !== lname) continue;
@@ -222,7 +238,7 @@ function parse(src) {
 // the browser would do.
 const collapse = (s) => s.replace(/\s+/g, ' ');
 
-function emit(node, out) {
+function emit(node, out, baseUrl) {
   for (const kid of node.kids) {
     if (kid.text !== undefined) {
       const t = collapse(kid.text);
@@ -232,23 +248,23 @@ function emit(node, out) {
       continue;
     }
     const tok = T[kid.tag];
-    if (tok === undefined) { emit(kid, out); continue; }   // unknown element: keep the children
+    if (tok === undefined) { emit(kid, out, baseUrl); continue; }   // unknown element: keep the children
     const attrs = [];
     for (const [n, v] of kid.attrs) {
-      const enc = encodeAttr(n, v);
+      const enc = encodeAttr(n, v, baseUrl);
       if (enc) attrs.push(...enc);
     }
     const hasKids = kid.kids.length > 0;
     out.push(tok | (hasKids ? CONTENT : 0) | (attrs.length ? ATTRS_F : 0));
     if (attrs.length) { out.push(...attrs, END); }
-    if (hasKids) { emit(kid, out); out.push(END); }
+    if (hasKids) { emit(kid, out, baseUrl); out.push(END); }
   }
 }
 
 // Compile WML source to a WBXML deck. Returns a Buffer, or null when the
 // source has no <wml> root (i.e. it is not WML at all — the caller should fall
 // back to transcoding it as HTML).
-export function compileWml(src) {
+export function compileWml(src, baseUrl) {
   const root = parse(src);
   const findWml = (n) => {
     for (const k of n.kids || []) {
@@ -266,7 +282,7 @@ export function compileWml(src) {
   // UTF-8 under this declaration — one invalid sequence fails the document.
   const out = [0x01, 0x04, 0x6a, 0x00];
   const body = [];
-  emit({ kids: [wml] }, body);
+  emit({ kids: [wml] }, body, baseUrl);
   return Buffer.from(out.concat(body));
 }
 

@@ -166,5 +166,11 @@ void ccont_byte(Mad2* m, uint8_t b) {
         m->ccont_have_addr = 0;
         m->ccont_writes++;
         if (m->verbose > 0) { m->verbose--; printf("    [ccont] wr  reg %02X = %02X\n", m->ccont_addr & 0x0F, b); }
+        // CCLOG=1: every CCONT write with the MCU PC + step, so a register change can be
+        // correlated against DSP/run-mode events (e.g. "which write turns the frame clock on").
+        { static int cw = -1; if (cw < 0) cw = getenv("CCLOG") ? 1 : 0;
+          if (cw) printf("[cclog] WR  reg%02X = %02X  pc=%06X step=%llu\n",
+                         m->ccont_addr & 0x0F, b, m->cur_io_pc,
+                         (unsigned long long)m->dsp_steps); }
     }
 }

@@ -31,6 +31,7 @@
 
 #include "mad2/mad2.h"
 #include "mad2/dsp/mdi_trace.h"
+#include "mad2/cobba.h"
 #include "dct3_dsp54.h"
 #include "calypso_c54x.h"   // C54X_DATA_SIZE (image buffer bound)
 #include <stdlib.h>
@@ -225,6 +226,40 @@ static void cmdlevel_eval(Mad2 *m) {
     g_cmdlevel_state = level;
 }
 
+// === DSP54_SLOTTIMER — the CTSI frame/slot timer behind host-cmd request bit3 ============
+// RE-grounded 2026-07-30 (follow-up). The GSM frame
+// machinery in the DSP is all there and all gated on ONE event: [0x195C] bit1, the "frame
+// tick" flag that the frame-wait primitive 0x407C sleeps on (idle 1 @0x408C) and that the
+// whole burst/measurement engine (0x409C-0x41B6: ports 0x38-0x3C, the RX I/Q reads) runs
+// downstream of. The ONLY setters are the host-cmd ISR's request-bit3 handler (resident
+// 0x364A-0x367C, overlay-patched copy 0x25CE-0x25FA): it reloads the NEXT delay into DSP
+// port 0x0F (pa15) and sets the flag. Delays are quarter-symbol ticks (13MHz/12 = 1.083MHz):
+// port 0x0E is written 4999+1 = 5000 qs = one 1250-symbol TDMA frame; the idle reload is
+// 15000 = 3 frames; scheduled mode ([0x195B] bit9) walks per-slot deltas from the DROM
+// table data[0xB007+n] with handlers from data[0xB000+n]. So the hardware contract is a
+// one-shot countdown: write N to pa15 -> bit3 asserts in the host-cmd request latch N
+// quarter-symbols later -> INT2 (the CMDLEVEL comparator) -> the ISR acks (pa1 write 0x1C,
+// existing ack-clear contract), reloads pa15 and sets [0x195C] bit1. Self-sustaining once
+// started; started organically by the frame-wait's own pa15 arm (observed val=0 = expire
+// immediately).
+//   Without this timer the cosim gets exactly TWO frame events per boot — the MCU's
+// initially-latched port1 bit3 serviced twice, then ack-cleared forever (pmap: two 0x25DA
+// reloads, then ports 0x38-0x3C never touched, no d2m GSM reports — the handoff's finding).
+// Faithful default under DSP54_COSIM (DSP54_SLOTTIMER=0 opts out for A/B).
+// DSP54_SLOTTIMER_SCALE overrides host cycles per quarter-symbol tick (default 12: the
+// host clock models the 13MHz ARM cycle domain).
+static int g_slottimer = -1;              // knob cache (-1 = unread)
+static long g_slottimer_scale = 12;       // host cycles per quarter-symbol tick
+static uint64_t g_slottimer_deadline;     // host-cycle expiry; 0 = disarmed
+static uint16_t g_slottimer_framelen;     // last port 0x0E write (frame length, informational)
+static unsigned long long g_slottimer_fires;
+static void slottimer_lazy(void) {
+    if (g_slottimer >= 0) return;
+    g_slottimer = dsp54_faithful("DSP54_SLOTTIMER");
+    const char *s = getenv("DSP54_SLOTTIMER_SCALE");
+    if (s && *s) { long v = strtol(s, 0, 0); if (v > 0) g_slottimer_scale = v; }
+}
+
 // === Fake COBBA-GJ codec/RF-interface serial register file ==============================
 // COBBA is the baseband↔RF + audio analog ASIC (service manual): A/D-D/A of the I/Q RX/TX
 // paths, the analog TXC/AFC to RF + AGC from RF, AND the audio codec (mic/ear, keypad-tone/
@@ -365,6 +400,34 @@ static void cobba_mfi_write(uint16_t mmr, uint16_t val) {
 // constants and the default rv=0 fall-through stay 0 (= "we silently fake this").
 extern int g_c54x_pmap_handled;
 
+// === DSP54_RFMODEL — synthetic RF/COBBA RX sample source on port 0x27 ====================
+// The signal model lives in src/mad2/cobba.c (the stream is physically the COBBA RX ADC
+// output; the bridge owns only the port dispatch + the synthesizer tap).
+//
+// TUNED CHANNEL: taken from the RF SYNTHESIZER PROGRAMMING, not from a scratch cell.
+// Three scratch-cell heuristics were tried and all failed (mode cell [0xAC], plausibility,
+// read-site PC —); the PLL word is the only source
+// that cannot be stale, because it IS what moves the radio. The DSP builds a 32-bit
+// divider word in ROM fn 0x3FFB (RX) / 0x4006 (TX) and ships it as a low/high pair on
+// ports 0x31 / 0x32 — directly from 0x4020/0x4025 when the caller passes AR2=49, or
+// queued at 0x402A for the RF sequencer to replay at 0x370C / 0xA23A. Both land here.
+// The packing + offset live in DSP DARAM ([0x216A] config, [0x216B] RX offset) and are
+// peeked live so the decode follows whatever the firmware itself is using.
+static uint16_t g_synth_lo;                 // last port-0x31 word (low half of the pair)
+
+// RX SAMPLE-STREAM ENABLE — DSP port 0x03 bit0 (the COBBA/RF control latch).
+// RE'd from the mask ROM: the RX-mode setter 0x4414 ends with `A = port(3); A |= 5;
+// port(3) = A` at 0x44A7-0x44AD (arm), and the end-of-window handler 0x44B6 — called from
+// the vec16 ISR the moment the block countdown [0xAF] reaches 0 (0x33F1, mode 2) and from
+// the RSSI ramp-complete (0x32C1) — opens with `A = port(3); A &= 0xFFFE; port(3) = A`
+// (disarm) before reprogramming the AGC DACs on ports 0x0A/0x0B. Init clears the whole
+// latch (`port(3) = 0` at 0x456A). So bit0 IS "the receiver is streaming samples", and
+// the DSP itself closes it when a capture window ends.
+// NOTE the value written carries bit0 unambiguously (|5 sets it, &~1 clears it) whatever
+// the read returned, so latching writes is exact even though our port-3 READ is aliased to
+// an HPI word rather than this latch.
+static uint16_t g_rxstream_on;              // port 0x03 bit0 (0 = receiver off)
+
 static uint16_t c54x_port_read(void *opaque, uint16_t pa) {
     Mad2 *m = (Mad2*)opaque;
     port_lazy();
@@ -398,8 +461,23 @@ static uint16_t c54x_port_read(void *opaque, uint16_t pa) {
                if (g_p2d_toggle || g_p2d_val) g_c54x_pmap_handled = 1; }   // explicit knob only
         (void)cob_2d;
     }
-    else if (pa == 0x27) { rv = cob ? cob_in : (g_p27_on ? g_p27_val : 0);   // codec RX FIFO
-        if (cob || g_p27_on) g_c54x_pmap_handled = 1; }
+    else if (pa == 0x27) {                                                  // codec RX FIFO
+        if (cobba_rf_enabled()) {                                           // RF/COBBA RX stream
+            // Fallback channel tap while the synth path is dormant (DSP54_RF_CHTAP=synth
+            // ignores this): [0xE12] is the RSSI sweep's per-pass channel, [0x1867] the
+            // hunted ARFCN, selected by the mode cell [0xAC].
+            uint16_t ch = 0;
+            if (g_dsp) {
+                uint16_t md = dsp54_data_peek(g_dsp, 0xAC);
+                ch = (md == 1u || md == 2u || md == 9u)
+                     ? dsp54_data_peek(g_dsp, 0x1867)
+                     : dsp54_data_peek(g_dsp, 0x0E12);
+            }
+            rv = cobba_rf_sample(ch);
+            g_c54x_pmap_handled = 1;
+        }
+        else { rv = cob ? cob_in : (g_p27_on ? g_p27_val : 0);
+               if (cob || g_p27_on) g_c54x_pmap_handled = 1; } }
     else if (pa == 0x21 && cob) { rv = cob_in; g_c54x_pmap_handled = 1; }   // codec ADC sample (mic in)
     // COBBA parallel datapath reads (MFI; see the g_cobba_par block). All return 0 with the
     // model OFF — identical to the historical unmodelled behaviour.
@@ -510,6 +588,24 @@ static void c54x_port_write(void *opaque, uint16_t pa, uint16_t val) {
     if (g_log) fprintf(stderr, "[dsp54] PORTW pa=0x%02X val=0x%04X\n", pa, val);
     if (pa == 0x20 || pa == 0x21) { pcm_capture(m, pa, val);   // codec DXR -> PCM tap
         if (g_pcm.f1) g_c54x_pmap_handled = 1; }               // consumed only when PCMCAP is on
+    // CTSI slot timer (see the DSP54_SLOTTIMER block): pa15 = one-shot countdown in
+    // quarter-symbol ticks -> host-cmd request bit3 at expiry. val=0 observed at the
+    // frame-wait's own arm (0x4088) = expire on the next tick. pa14 = frame length
+    // (written 4999 once at init); latched for inspection only.
+    { slottimer_lazy();
+      if (g_slottimer && pa == 0x0F) {
+          uint64_t ticks = val ? (uint64_t)val : 1u;
+          // Pace in m->rtc_mono (the emulated 13MHz hardware clock) — the same domain the
+          // COBBA frame clock uses; dsp_steps is an instruction counter and g_host_cycle's
+          // advance is backend-dependent, both drift against real time.
+          g_slottimer_deadline = m->rtc_mono + ticks * (uint64_t)g_slottimer_scale;
+          g_c54x_pmap_handled = 1;
+          if (g_log) { static unsigned n; if (++n <= 8) fprintf(stderr,
+              "[dsp54] SLOTTIMER armed: pa15=%u qs (deadline @rtc %llu, now %llu)  dsp_pc=0x%04X\n",
+              val, (unsigned long long)g_slottimer_deadline,
+              (unsigned long long)m->rtc_mono, comm_dsp_pc()); }
+      }
+      if (g_slottimer && pa == 0x0E) { g_slottimer_framelen = val; g_c54x_pmap_handled = 1; } }
     // COBBA serial register-select: the select word on port 0x2C is (reg | 0x10) for a READ
     // (0x465C) or (reg & ~0x10) for a WRITE (0x4604). Low nibble = register address, bit4 = R/W.
     // Latch addr + direction; a WRITE select commits the value last written to port 0x2D into
@@ -531,6 +627,24 @@ static void c54x_port_write(void *opaque, uint16_t pa, uint16_t val) {
     // COBBA parallel datapath write latch (ports 0x30-0x3C: TXC/AFC DAC pair 0x31/0x32, TX
     // burst 0x39, strobes 0x3C, mode/rate 0x30/0x34). Latch + capped log; the store itself
     // remains a sink (no RF model consumes it) so OFF==ON behaviourally except inspection.
+    // RF synthesizer word (see the DSP54_RFMODEL block above): ports 0x31/0x32 carry the
+    // low/high halves of the PLL divider word. Latch the low half; the high half completes
+    // the pair and retunes the modelled receiver.
+    if (cobba_rf_enabled()) {
+        if (pa == 0x03) {
+            uint16_t old = g_rxstream_on;
+            g_rxstream_on = (uint16_t)(val & 1u);   // COBBA RX stream enable
+            if (getenv("DSP54_RFLOG") && old != g_rxstream_on)
+                fprintf(stderr, "[rf] rxstream %u->%u mode=%u dsp_pc=%04x cycle=%llu\n",
+                        old, g_rxstream_on,
+                        g_dsp ? dsp54_data_peek(g_dsp, 0xAC) : 0,
+                        comm_dsp_pc(), (unsigned long long)g_host_cycle);
+        }
+        if (pa == 0x31) g_synth_lo = val;
+        else if (pa == 0x32 && g_dsp)
+            cobba_rf_synth(g_synth_lo, val,
+                           dsp54_data_peek(g_dsp, 0x216A), dsp54_data_peek(g_dsp, 0x216B));
+    }
     if (pa >= 0x30 && pa <= 0x3F) { cobba_par_lazy();
         if (g_cobba_par.on) {
             g_cobba_par.latch[pa - 0x30] = val;
@@ -566,6 +680,14 @@ static void c54x_port_write(void *opaque, uint16_t pa, uint16_t val) {
             if (g_cmdlevel) {
                 uint16_t req = dsp54_hpi_read(g_dsp, g_port1_addr);
                 uint16_t clr = (uint16_t)(val & (HOSTCMD_DISPATCH_MASK & ~0x0002u));
+                // bit3 = the CTSI slot-timer line (DSP54_SLOTTIMER): a hardware latch like
+                // bit1, cleared only by its handler's own pa1 ack (0x362F writes 0x001C) —
+                // NOT by the exit pulse's global EOI. Without this exclusion, any ISR pass
+                // that services a different request while bit3 is still mask-pended (e.g. a
+                // ring post, observed edge#12 p1=0x800A p2=0xFBFD) EOIs the frame tick away
+                // un-serviced, and the tick chain dies until the next unrelated pa15 write.
+                slottimer_lazy();
+                if (g_slottimer) clr &= (uint16_t)~0x0008u;
                 if (req & clr) dsp54_hpi_write(g_dsp, g_port1_addr, (uint16_t)(req & ~clr));
             }
         }
@@ -1868,7 +1990,18 @@ static void c54x_tick(Mad2 *m) {
                       snd & 0xFF, (unsigned long long)(m->dsp_steps/1000)); } }
           }
         }
-        // DSP54_FRAMETICK=1 (EXPLICIT opt-in — NOT faithful-default yet, it changes the cosim boot):
+        // === DSP54_FRAMETICK — the CTSI frame-sync interrupt INT0 (vec16) ==================
+        // FAITHFUL DEFAULT under DSP54_COSIM since 2026-07-30 (DSP54_FRAMETICK=0 opts out).
+        // This is the stimulus the GSM layer runs on: without it the DSP completes its
+        // identity/self-test exchange and then idles forever, which is why the co-sim never
+        // produced a single GSM report. With it the real mask ROM sweeps the MCU's SEARCH_LIST
+        // and posts ALL_RSSI_RESULTS (d2m 0x8B) + NO_PSW_FOUND (d2m 0x8A).
+        //   PERIOD: taken from the firmware's OWN frame-length register — DSP port 0x0E, which
+        //   it programs to 4999 (+1 = 5000 quarter-symbols = 1250 symbols = one 4.615 ms TDMA
+        //   frame) and later retunes to 1350 in the radio sequencer. Times DSP54_SLOTTIMER_SCALE
+        //   host cycles per quarter-symbol (12 at 13 MHz). DSP54_FRAMEPER overrides for A/B.
+        //   ARM: CCONT register 0x06 bit1 — see the gate comment below.
+        // DSP54_FRAMETICK=1 (legacy explicit form; the block below is now default-on):
         // the DSP's autonomous poll cadence is the external MAD2 frame-sync interrupt INT0 (vec16 ->
         // frame ISR 0x3204, which reads the frame-status port pa33). MADos confirms mdi_send rings NO
         // doorbell (ref/Nok-MADos-master/hw/mdi.c) — the MCU just advances the MDISND tail and the DSP
@@ -1877,18 +2010,86 @@ static void c54x_tick(Mad2 *m) {
         // DSP54_FRAMEPER hardware cycles (default 50000). Kept OFF by default so the tested config stays
         // byte-identical; promote to faithful-default only once it's proven to drive consumption.
         { static int ft_init = 0, ft_on = 0; static long ft_per = 50000; static unsigned long long ft_next = 0;
-          if (!ft_init) { ft_init = 1; ft_on = getenv("DSP54_FRAMETICK") ? 1 : 0;
+          if (!ft_init) { ft_init = 1; ft_on = dsp54_faithful("DSP54_FRAMETICK");
               const char *p = getenv("DSP54_FRAMEPER"); if (p && *p) ft_per = strtol(p, 0, 0);
-              if (ft_per < 1) ft_per = 1; }
+              else ft_per = 0;                      /* 0 = derive from the frame-length reg */
+              if (ft_per < 0) ft_per = 0; }
+          /* Derive the period from the LIVE frame-length register each time we re-arm, so a
+           * retune (the sequencer drops it 4999 -> 1350) changes the cadence like real HW. */
+          long ft_cur = ft_per;
+          if (!ft_cur) { slottimer_lazy();
+              uint32_t qs = g_slottimer_framelen ? (uint32_t)g_slottimer_framelen + 1u : 5000u;
+              // Capture modes ([0xAC] = 1 PSW hunt / 2 SCH capture / 9 hunt arm): on real
+              // HW INT0 in these modes is the COBBA RX sample-block interrupt — the serial
+              // RX FIFO strobes one ISR per 16-complex block at 2x symbol rate = 8 symbols
+              // = 32 quarter-symbols. The frame-length cadence is only the idle/RSSI pace.
+              // Without block pacing the PSW hunt starves: its 17-block metric primer never
+              // completes and the FCCH detector never evaluates a single metric (measured).
+              // Gated on the RF model (DSP54_RFMODEL): the block interrupt only means
+              // anything when there is an RX sample stream behind port 0x27 to block up,
+              // and the whole RF path is opt-in so the default cadence stays byte-identical.
+              // ...AND only while the receiver is actually streaming: DSP port 0x03 bit0
+              // (see g_rxstream_on). A capture window is one-shot — the RX-mode setter arms
+              // the stream, the ISR counts [0xAF] blocks down, and at 0 the DSP clears bit0
+              // itself. Without that gate the block strobe kept firing after the window
+              // closed and the mode-2 (SCH capture) FIR at 0x33C9 kept storing 16 words per
+              // ISR through its LINEAR output pointer [0xB1] — measured: [0xAF] wrapped
+              // 0 -> 0xFFFF at DSP insn 301843 and [0xB1] walked from 0x121E into the stack
+              // at 0x1EC3, overwriting the vec16 return address with a sample value, so the
+              // RETE at 0x340F branched to PC 0x0002 and the DSP ran away. That crash — not
+              // any signal-model effect — is what killed cell search under DSP54_RFMODEL=1.
+              // DSP54_RF_RXGATE=0 restores the ungated cadence for A/B.
+              if (g_dsp && cobba_rf_enabled()) { uint16_t md = dsp54_data_peek(g_dsp, 0xAC);
+                  static int rxg = -1;
+                  if (rxg < 0) { const char *e = getenv("DSP54_RF_RXGATE"); rxg = (e && *e) ? atoi(e) : 1; }
+                  if ((md == 1u || md == 2u || md == 9u) && (!rxg || g_rxstream_on)) qs = 32u; }
+              ft_cur = (long)qs * g_slottimer_scale; }
+          if (ft_cur < 1) ft_cur = 1;
+          // Codec-active gate (2026-07-30, same contract as the vec20 frame clock below): the
+          // vec16 FIR frame ISR must NOT run during boot (measured: ungated ticks from run-mode
+          // entry derail the boot before the radio config is even sent). On real HW the codec
+          // frame sync is serviced once the codec path is up; here that is [0xAA] != 0 — set by
+          // the audio-mode cmd (0x4428) for tones AND by the radio-startup sequencer (0x9A6)
+          // whose 0x9AB wait needs exactly this ISR's ramp-complete signal (orm #1,[0x6BC]
+          // @0x32BE). DSP54_FRAMETICK_FORCE=1 restores the old ungated firing for A/B.
           if (ft_on && g_dsp_run) {
-              if (ft_next == 0) ft_next = g_host_cycle + (unsigned long long)ft_per;
+              static int ff = -1; if (ff < 0) ff = getenv("DSP54_FRAMETICK_FORCE") ? 1 : 0;
+              // GATE: CCONT register 0x06 bit1. The firmware inits CCONT reg6
+              // to 0x54 at boot (same value MADos writes) and then, ~119k steps AFTER the
+              // DSP's warm reset into run mode, does a masked read-modify-write setting bit1
+              // (0x54 -> 0x56) — once, never cleared. MADos writes only 0x54 and never sets
+              // it, and MADos runs no GSM L1: the bit is needed only for GSM operation.
+              // CCONT is the power/regulator/RTC ASIC and cannot itself generate a 4.615 ms
+              // frame, which is divided from the 13 MHz VCTCXO inside MAD2's CTSI — so this
+              // reads as the ENABLE/clock gate that CTSI's frame timing depends on, and it
+              // is the firmware's own "frames may now run" signal. Using it as the arm is
+              // both better grounded and better behaved than the old [0xAA]/[0xAC] gate
+              // ([0xAA] is a hold-off countdown the ISR zeroes on the first frame, so
+              // gating on it starved the tick after one fire).
+              int ft_active = ff || ((m->ccont[0x06] & 0x02) != 0);
+              if (!ft_active) { ft_next = 0; }
+              else if (ft_next == 0) ft_next = g_host_cycle + (unsigned long long)ft_cur;
               else if (g_host_cycle >= ft_next) {
-                  uint64_t events = 1u + (g_host_cycle - ft_next) / (uint64_t)ft_per;
-                  ft_next += events * (uint64_t)ft_per;
+                  uint64_t events = 1u + (g_host_cycle - ft_next) / (uint64_t)ft_cur;
+                  ft_next += events * (uint64_t)ft_cur;
+                  /* RF air time does not stop when the one-shot COBBA RX stream is
+                   * disabled. cobba_rf_sample() advances it while samples are flowing;
+                   * between capture windows advance it from the hardware frame clock.
+                   * Freezing the model clock here made every new hunt resume at the same
+                   * GSM phase and eventually count a stale metric to the 500-event abort. */
+                  if (cobba_rf_enabled() && !g_rxstream_on) {
+                      uint64_t qs = (uint64_t)ft_cur / (uint64_t)g_slottimer_scale;
+                      uint64_t adv = events * qs;
+                      while (adv > UINT32_MAX) {
+                          cobba_rf_advance(UINT32_MAX);
+                          adv -= UINT32_MAX;
+                      }
+                      cobba_rf_advance((uint32_t)adv);
+                  }
                   dsp54_host_interrupt(g_dsp, 16);   // INT0 = MAD2 frame sync (vec16 -> 0x3204)
                   if (g_log) { static unsigned n; if (++n <= 8) fprintf(stderr,
-                      "[dsp54] FRAMETICK: INT0 (vec16 frame) @cycle=%llu (period=%ld)\n",
-                      (unsigned long long)g_host_cycle, ft_per); }
+                      "[dsp54] FRAMETICK: INT0 (vec16 frame) @cycle=%llu (period=%ld cycles)\n",
+                      (unsigned long long)g_host_cycle, ft_cur); }
               }
           }
         }
@@ -2032,6 +2233,24 @@ static void c54x_tick(Mad2 *m) {
         // PERF: gated on the once-per-tick window-dirty read above — a quiescent tick leaves the
         // line inputs unchanged, so the eval would be a pure no-op (state already settled).
         if (win_dirty) cmdlevel_eval(m);
+        // DSP54_SLOTTIMER expiry: assert host-cmd request bit3 in the port1 latch and let the
+        // CMDLEVEL comparator deliver the INT2 edge. The ISR's pa1 ack (0x362F writes 0x001C)
+        // clears the bit via the existing ack-clear contract, and its handler reloads pa15,
+        // which re-arms us — the self-sustaining frame tick.
+        { slottimer_lazy();
+          if (g_slottimer && g_dsp_run && g_slottimer_deadline && m->rtc_mono >= g_slottimer_deadline) {
+              g_slottimer_deadline = 0;
+              g_slottimer_fires++;
+              port_lazy();
+              uint16_t req = dsp54_hpi_read(g_dsp, g_port1_addr);
+              if (!(req & 0x0008u)) dsp54_hpi_write(g_dsp, g_port1_addr, (uint16_t)(req | 0x0008u));
+              cmdlevel_eval(m);
+              if ((g_log || g_commlog > 0) && g_slottimer_fires <= 16)
+                  fprintf(stderr, "[dsp54] SLOTTIMER fire#%llu: host-cmd req bit3 @dsp_steps=%lluk rtc=%llu\n",
+                          g_slottimer_fires, (unsigned long long)(m->dsp_steps/1000),
+                          (unsigned long long)m->rtc_mono);
+          }
+        }
         // DSP54_CMDPOLL=1 (EXPLICIT opt-in, default OFF): the host-command channel INT2 (vec18 ->
         // 0x3598/0x35B9) is NOT MCU-pulsed (the command poster 0x272018 writes only [0x30000]+
         // [0x20008]; 0x3598 is IVT-only). So INT2 must be a SEPARATE periodic source — a tick that
