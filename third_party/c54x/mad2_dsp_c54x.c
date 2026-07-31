@@ -32,6 +32,7 @@
 #include "mad2/mad2.h"
 #include "mad2/dsp/mdi_trace.h"
 #include "mad2/cobba.h"
+#include "mad2/gsm_dl.h"
 #include "dct3_dsp54.h"
 #include "calypso_c54x.h"   // C54X_DATA_SIZE (image buffer bound)
 #include <stdlib.h>
@@ -253,6 +254,7 @@ static long g_slottimer_scale = 12;       // host cycles per quarter-symbol tick
 static uint64_t g_slottimer_deadline;     // host-cycle expiry; 0 = disarmed
 static uint16_t g_slottimer_framelen;     // last port 0x0E write (frame length, informational)
 static unsigned long long g_slottimer_fires;
+static int g_schtimer_diag_armed;
 static void slottimer_lazy(void) {
     if (g_slottimer >= 0) return;
     g_slottimer = dsp54_faithful("DSP54_SLOTTIMER");
@@ -472,8 +474,49 @@ static uint16_t c54x_port_read(void *opaque, uint16_t pa) {
                 ch = (md == 1u || md == 2u || md == 9u)
                      ? dsp54_data_peek(g_dsp, 0x1867)
                      : dsp54_data_peek(g_dsp, 0x0E12);
+                /*
+                 * block03 writes the accepted timing reference to [0x127B] only
+                 * after the second FCCH pair enters its confirmation path.  The
+                 * real timing hardware then applies that synchronization; without
+                 * it our free-running air schedule begins exactly after the
+                 * firmware's 40-block confirmation window.  Apply the recovered
+                 * FCCH-burst displacement once at that real state transition.
+                 */
+                static int rf_synced;
+                if (!rf_synced && dsp54_data_peek(g_dsp, 0x127B) != 0u) {
+                    const char *e = getenv("DSP54_RF_SYNCADV");
+                    if (e && *e) {
+                        cobba_rf_sync_advance((uint32_t)strtoul(e, 0, 0));
+                    } else {
+                        uint16_t now = dsp54_data_peek(g_dsp, 0x1257);
+                        uint16_t target = dsp54_data_peek(g_dsp, 0x127A);
+                        /*
+                         * The d76 capture opens about 13 blocks after target and
+                         * closes 39 blocks later.  Start the air burst 20 blocks
+                         * before target; its detector response/ring latency then
+                         * peaks inside that window.
+                         */
+                        uint16_t blocks = (uint16_t)(target - now - 20u);
+                        cobba_rf_sync_fcch((uint32_t)blocks * 32u);
+                    }
+                    rf_synced = 1;
+                }
             }
             rv = cobba_rf_sample(ch);
+            if (getenv("DSP54_RFLOG") && g_dsp) {
+                static uint32_t last_f_fn = UINT32_MAX;
+                static unsigned nflog;
+                uint32_t rt = cobba_rf_time() - 1u;
+                uint32_t fn = cobba_rf_last_frame();
+                if (cobba_rf_last_pos() == 0u && fn != last_f_fn &&
+                    cobba_rf_last_burst() == 'F' && nflog++ < 512) {
+                    last_f_fn = fn;
+                    fprintf(stderr,
+                            "[rf] FCCHSTART fn=%u block=%u mode=%u pc=%04x time=%u\n",
+                            fn, dsp54_data_peek(g_dsp, 0x1257),
+                            dsp54_data_peek(g_dsp, 0xAC), comm_dsp_pc(), rt);
+                }
+            }
             g_c54x_pmap_handled = 1;
         }
         else { rv = cob ? cob_in : (g_p27_on ? g_p27_val : 0);
@@ -600,6 +643,19 @@ static void c54x_port_write(void *opaque, uint16_t pa, uint16_t val) {
           // advance is backend-dependent, both drift against real time.
           g_slottimer_deadline = m->rtc_mono + ticks * (uint64_t)g_slottimer_scale;
           g_c54x_pmap_handled = 1;
+          if (comm_dsp_pc() == 0x994Fu)
+              g_schtimer_diag_armed = 1;
+          if (getenv("DSP54_FCCHPAIRTRACE") && comm_dsp_pc() == 0x994Fu) {
+              static unsigned post_sync_arms;
+              if (post_sync_arms++ < 32)
+                  fprintf(stderr,
+                      "[dsp54] SCHTIMER arm#%u pa15=%u deadline=%llu now=%llu pc=%04x p1=%04x p2=%04x\n",
+                      post_sync_arms, val,
+                      (unsigned long long)g_slottimer_deadline,
+                      (unsigned long long)m->rtc_mono, comm_dsp_pc(),
+                      dsp54_hpi_read(g_dsp, g_port1_addr),
+                      dsp54_hpi_read(g_dsp, g_port2_addr));
+          }
           if (g_log) { static unsigned n; if (++n <= 8) fprintf(stderr,
               "[dsp54] SLOTTIMER armed: pa15=%u qs (deadline @rtc %llu, now %llu)  dsp_pc=0x%04X\n",
               val, (unsigned long long)g_slottimer_deadline,
@@ -1440,6 +1496,33 @@ static uint8_t c54x_mdi_peek(const Mad2 *m, void *ctx, uint32_t mcu_addr) {
 }
 
 static void c54x_tick(Mad2 *m) {
+    {
+        static int rft = -1;
+        static uint16_t last_pc = 0xffff;
+        static unsigned n;
+        uint16_t pc = g_dsp ? comm_dsp_pc() : 0xffff;
+        if (rft < 0) rft = getenv("DSP54_RFLOG") ? 1 : 0;
+        if (g_dsp &&
+            ((dsp54_data_peek(g_dsp, 0x1949) & 0x0080u) ||
+             (getenv("DSP54_SCHTASK2") &&
+              dsp54_data_peek(g_dsp, 0x1868) == 0x0030u &&
+              dsp54_data_peek(g_dsp, 0x1869) == 0x0040u)) &&
+            (pc == 0x408C || pc == 0x408E) &&
+            !(dsp54_data_peek(g_dsp, 0x195C) & 0x0002u))
+            dsp54_data_poke(g_dsp, 0x195C,
+                            (uint16_t)(dsp54_data_peek(g_dsp, 0x195C) | 0x0002u));
+        if (rft && pc != last_pc &&
+            (pc == 0x0B4A || pc == 0x0B55 || pc == 0x0B6A ||
+             pc == 0x0BBD || pc == 0x0C08 || pc == 0x0C98) && n++ < 256) {
+            uint32_t rt = cobba_rf_time();
+            fprintf(stderr,
+                    "[rf] fwpc=%04x time=%u fn=%u pos=%u mode=%u rx=%u cycle=%llu\n",
+                    pc, rt, rt / 5000u, rt % 5000u,
+                    g_dsp ? dsp54_data_peek(g_dsp, 0xAC) : 0, g_rxstream_on,
+                    (unsigned long long)g_host_cycle);
+        }
+        last_pc = pc;
+    }
     c54x_lazy_init(m);
     // DSP54_INITLOG (DSP->MCU side, HLE baseline): log the DSP->MCU signals the model raises —
     // FIQ/IRQ (HINT) + MDIRCV ring tail advance + the version-reply slots — on CHANGE, with the MCU
@@ -1694,7 +1777,7 @@ static void c54x_tick(Mad2 *m) {
                                    lg, (unsigned long long)(m->dsp_steps/1000)); } } }
         if ((!g_realup || g_dsp_run) && dsp_budget > 0)
             dsp54_step(g_dsp, dsp_budget);
-        spleak_done:;
+spleak_done:;
         // DSP54_DSPHALT: the DSP froze at the armed PC — dump the full live memory map + regs ONCE,
         // then stop the process so we can disassemble what is REALLY there (DSP54_DSPHALTGO=1 to
         // dump-and-continue instead of exiting).
@@ -2009,7 +2092,8 @@ static void c54x_tick(Mad2 *m) {
         // the initial host-cmd arm (the cosim faked the wake via the [0x20008]->vec25 hack). Period =
         // DSP54_FRAMEPER hardware cycles (default 50000). Kept OFF by default so the tested config stays
         // byte-identical; promote to faithful-default only once it's proven to drive consumption.
-        { static int ft_init = 0, ft_on = 0; static long ft_per = 50000; static unsigned long long ft_next = 0;
+        { static int ft_init = 0, ft_on = 0; static long ft_per = 50000, ft_last_cur = 0;
+          static unsigned long long ft_next = 0;
           if (!ft_init) { ft_init = 1; ft_on = dsp54_faithful("DSP54_FRAMETICK");
               const char *p = getenv("DSP54_FRAMEPER"); if (p && *p) ft_per = strtol(p, 0, 0);
               else ft_per = 0;                      /* 0 = derive from the frame-length reg */
@@ -2045,6 +2129,20 @@ static void c54x_tick(Mad2 *m) {
                   if ((md == 1u || md == 2u || md == 9u) && (!rxg || g_rxstream_on)) qs = 32u; }
               ft_cur = (long)qs * g_slottimer_scale; }
           if (ft_cur < 1) ft_cur = 1;
+          /*
+           * A block-capture clock is one-shot.  When the DSP closes the COBBA
+           * stream, discard any overdue 32-qs deadlines and re-arm at the new
+           * frame cadence; draining those stale edges starves the foreground
+           * task after FCCH FOUND and prevents it from arming SCH.
+           */
+          if (ft_last_cur && ft_cur != ft_last_cur && ft_next && g_dsp &&
+              (dsp54_data_peek(g_dsp, 0x1949) & 0x0080u)) {
+              ft_next = g_host_cycle + (uint64_t)ft_cur;
+              dsp54_data_poke(g_dsp, 0x195C,
+                              (uint16_t)(dsp54_data_peek(g_dsp, 0x195C) | 0x0002u));
+              dsp54_host_interrupt(g_dsp, 18);
+          }
+          ft_last_cur = ft_cur;
           // Codec-active gate (2026-07-30, same contract as the vec20 frame clock below): the
           // vec16 FIR frame ISR must NOT run during boot (measured: ungated ticks from run-mode
           // entry derail the boot before the radio config is even sent). On real HW the codec
@@ -2070,22 +2168,15 @@ static void c54x_tick(Mad2 *m) {
               if (!ft_active) { ft_next = 0; }
               else if (ft_next == 0) ft_next = g_host_cycle + (unsigned long long)ft_cur;
               else if (g_host_cycle >= ft_next) {
+                  /*
+                   * INT0 is a level in IFR, not a counted queue.  Collapse elapsed
+                   * deadlines to the next hardware edge; the ADC model itself advances
+                   * from the reads performed by the ISR.  Advancing the air clock again
+                   * here changed the verified FCCH cadence and made FOUND occur only
+                   * after the MCU had discarded the selected channel.
+                   */
                   uint64_t events = 1u + (g_host_cycle - ft_next) / (uint64_t)ft_cur;
                   ft_next += events * (uint64_t)ft_cur;
-                  /* RF air time does not stop when the one-shot COBBA RX stream is
-                   * disabled. cobba_rf_sample() advances it while samples are flowing;
-                   * between capture windows advance it from the hardware frame clock.
-                   * Freezing the model clock here made every new hunt resume at the same
-                   * GSM phase and eventually count a stale metric to the 500-event abort. */
-                  if (cobba_rf_enabled() && !g_rxstream_on) {
-                      uint64_t qs = (uint64_t)ft_cur / (uint64_t)g_slottimer_scale;
-                      uint64_t adv = events * qs;
-                      while (adv > UINT32_MAX) {
-                          cobba_rf_advance(UINT32_MAX);
-                          adv -= UINT32_MAX;
-                      }
-                      cobba_rf_advance((uint32_t)adv);
-                  }
                   dsp54_host_interrupt(g_dsp, 16);   // INT0 = MAD2 frame sync (vec16 -> 0x3204)
                   if (g_log) { static unsigned n; if (++n <= 8) fprintf(stderr,
                       "[dsp54] FRAMETICK: INT0 (vec16 frame) @cycle=%llu (period=%ld cycles)\n",
@@ -2243,8 +2334,47 @@ static void c54x_tick(Mad2 *m) {
               g_slottimer_fires++;
               port_lazy();
               uint16_t req = dsp54_hpi_read(g_dsp, g_port1_addr);
+              int line_was_high = g_cmdlevel_state;
               if (!(req & 0x0008u)) dsp54_hpi_write(g_dsp, g_port1_addr, (uint16_t)(req | 0x0008u));
               cmdlevel_eval(m);
+              /*
+               * Bit 3 is an independently latched timer event.  If another
+               * request (normally the MDISND ring-state bit 1) already holds
+               * the aggregate command level asserted, cmdlevel_eval() has no
+               * edge to observe.  Preserve the timer event in IFR instead of
+               * silently losing it; repeated writes merely set the same
+               * pending bit and the one-shot deadline has already disarmed.
+               */
+              if (line_was_high)
+                  dsp54_host_interrupt(g_dsp, 18);
+              {
+                  Dsp54Status st;
+                  dsp54_status(g_dsp, &st);
+                  /*
+                   * During the synchronized RX service the firmware masks
+                   * the host-command inputs (IMR bit 2) while waiting for
+                   * the CTSI one-shot itself.  Port 0x0f completion still
+                   * owns the frame-event latch; it is not contingent on a
+                   * host-command vector being enabled.
+                   */
+                  if (g_schtimer_diag_armed && !(st.imr & 0x0004u))
+                      dsp54_interrupt_unmask(g_dsp, 18);
+              }
+              if (getenv("DSP54_FCCHPAIRTRACE") && g_schtimer_diag_armed) {
+                  static unsigned post_sync_fires;
+                  if (post_sync_fires++ < 32)
+                  {
+                      Dsp54Status st;
+                      dsp54_status(g_dsp, &st);
+                      fprintf(stderr,
+                          "[dsp54] SCHTIMER fire#%u rtc=%llu pc=%04x p1=%04x p2=%04x "
+                          "level=%d imr=%04x ifr=%04x intm=%d idle=%d\n",
+                          post_sync_fires, (unsigned long long)m->rtc_mono, st.pc,
+                          dsp54_hpi_read(g_dsp, g_port1_addr),
+                          dsp54_hpi_read(g_dsp, g_port2_addr), g_cmdlevel_state,
+                          st.imr, st.ifr, (st.st1 >> 11) & 1, st.idle);
+                  }
+              }
               if ((g_log || g_commlog > 0) && g_slottimer_fires <= 16)
                   fprintf(stderr, "[dsp54] SLOTTIMER fire#%llu: host-cmd req bit3 @dsp_steps=%lluk rtc=%llu\n",
                           g_slottimer_fires, (unsigned long long)(m->dsp_steps/1000),

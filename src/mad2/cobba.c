@@ -48,7 +48,6 @@ static struct {
     uint32_t lcg;
     uint32_t lastch;
     unsigned phase, parity, nlog;
-    int bg_step;
     // FCCH burst gating (DSP54_RF_FCCH=1): the tone is emitted only during slot 0 of
     // frames whose FN mod 51 carries FCCH ({0,10,20,30,40}); everywhere else the carrier
     // transmits constant-amplitude noise (a BCCH carrier never stops transmitting). The
@@ -70,7 +69,9 @@ static struct {
     // every model frame to 4 real frames, so the burst spacing the detector pairs on
     // could never land in the +-9-block window.)
     int      fcch_on, rpf, fcch_step, fcch_len;
-    uint32_t nreads, fn;
+    uint32_t nreads, fn, interval_reads, sync_advance, forced_fcch;
+    uint32_t last_sched_pos;
+    char     last_burst;
     // Synthesizer tap (cobba_rf_synth): the ARFCN the RF PLL was last programmed to.
     // 0xFFFF = never programmed. `synthtap` (DSP54_RF_CHTAP=synth) makes it authoritative;
     // OFF (default) the bridge's cell tap still supplies the channel — see the header note
@@ -99,6 +100,7 @@ static void rf_lazy(void) {
     if ((v = getenv("DSP54_RF_CHTAP"))   && *v) g_rf.synthtap = (*v == 's');
     if ((v = getenv("DSP54_RF_FCCH"))  && *v) g_rf.fcch_on   = atoi(v);
     if ((v = getenv("DSP54_RF_RPF"))   && *v && atoi(v) > 0) g_rf.rpf = atoi(v);
+    if ((v = getenv("DSP54_RF_OFFSET")) && *v) g_rf.nreads = (uint32_t)strtoul(v, 0, 0);
     g_rf.fcch_len = 592;
     if ((v = getenv("DSP54_RF_FCCHLEN")) && *v && atoi(v) > 0) g_rf.fcch_len = atoi(v);
     g_rf.fcch_step = 2;                    // +1/4 turn per symbol (see the FCCH note)
@@ -118,12 +120,56 @@ static void rf_lazy(void) {
 }
 
 int cobba_rf_enabled(void) { rf_lazy(); return g_rf.on; }
+uint32_t cobba_rf_time(void) { rf_lazy(); return g_rf.nreads; }
+void cobba_rf_sync_advance(uint32_t quarter_symbols) {
+    rf_lazy();
+    g_rf.sync_advance = quarter_symbols;
+    const char *v = getenv("DSP54_RF_SYNCLEN");
+    if (v && *v && atoi(v) > 0) g_rf.fcch_len = atoi(v);
+    if (g_rf.log_on)
+        fprintf(stderr, "[rf] synchronized air schedule +%u qs at read=%u fcch_len=%d\n",
+                quarter_symbols, g_rf.nreads, g_rf.fcch_len);
+}
+void cobba_rf_sync_fcch(uint32_t quarter_symbols_until_burst) {
+    rf_lazy();
+    /*
+     * The confirmation table starts on the frame-30 FCCH: its following gaps are
+     * 10,11,10,10,10,10,11 frames, exactly the sequence block03 schedules.  Put
+     * that burst at the firmware's recovered timing reference instead of applying
+     * a run-specific absolute displacement to the free-running air clock.
+     */
+    const uint32_t mf_reads = 51u * (uint32_t)g_rf.rpf;
+    const uint32_t frame30 = 30u * (uint32_t)g_rf.rpf;
+    uint32_t future = (g_rf.nreads + quarter_symbols_until_burst) % mf_reads;
+    uint32_t advance = (frame30 + mf_reads - future) % mf_reads;
+    cobba_rf_sync_advance(advance);
+}
+void cobba_rf_inject_fcch(uint32_t quarter_symbols) {
+    rf_lazy();
+    g_rf.forced_fcch = quarter_symbols;
+    g_rf.phase = 0;
+    g_rf.parity = 0;
+}
+char cobba_rf_last_burst(void) { return g_rf.last_burst; }
+uint32_t cobba_rf_last_frame(void) { return g_rf.fn; }
+uint32_t cobba_rf_last_pos(void) { return g_rf.last_sched_pos; }
 
 void cobba_rf_advance(uint32_t quarter_symbols) {
     rf_lazy();
     if (g_rf.on && g_rf.fcch_on) {
         uint32_t old_fn = g_rf.nreads / (uint32_t)g_rf.rpf;
-        g_rf.nreads += quarter_symbols;
+        /*
+         * One RF sample read represents one quarter-symbol, but not every enabled
+         * receiver mode reads continuously.  In RSSI/search modes the DSP may consume
+         * only one short block during a full-frame hardware interval.  Reconcile those
+         * reads against elapsed air time at the next frame tick; merely testing the
+         * COBBA stream-enable bit made GSM time stall whenever a sparse reader left the
+         * stream enabled.
+         */
+        uint32_t unread = quarter_symbols > g_rf.interval_reads
+                        ? quarter_symbols - g_rf.interval_reads : 0u;
+        g_rf.nreads += unread;
+        g_rf.interval_reads = 0;
         uint32_t new_fn = g_rf.nreads / (uint32_t)g_rf.rpf;
         if (g_rf.log_on) {
             for (uint32_t fn = old_fn + 1u; fn <= new_fn && g_rf.nlog < 4096; fn++) {
@@ -226,10 +272,14 @@ uint16_t cobba_rf_sample(uint16_t cell_arfcn) {
     }
     int step = g_rf.tone_step;
     if (g_rf.fcch_on) {
-        uint32_t pos = g_rf.nreads % (uint32_t)g_rf.rpf;   // read index within the frame
-        g_rf.fn = g_rf.nreads / (uint32_t)g_rf.rpf;
+        uint32_t sched_read = g_rf.nreads + g_rf.sync_advance;
+        uint32_t pos = sched_read % (uint32_t)g_rf.rpf;   // read index within the frame
+        g_rf.fn = sched_read / (uint32_t)g_rf.rpf;
         g_rf.nreads++;
+        g_rf.interval_reads++;
         char bt = gsm_ts0_sched(g_rf.fn % 51u);
+        g_rf.last_burst = bt;
+        g_rf.last_sched_pos = pos;
         if (g_rf.log_on && pos == 0 && g_rf.nlog < 4096) {
             g_rf.nlog++;
             fprintf(stderr, "[rf] frame fn=%u ts0=%c read=%u\n",
@@ -248,7 +298,11 @@ uint16_t cobba_rf_sample(uint16_t cell_arfcn) {
         // -1/4 turn per symbol; against a -90 deg/symbol derotator that alternates +-1 and
         // sums to zero — measured: [0x1344] never incremented once in a 300M run.)
         // DSP54_RF_FCCHSTEP=<k> overrides for A/B.
-        if (bt == 'F' && pos < (uint32_t)g_rf.fcch_len) step = g_rf.fcch_step;
+        if (g_rf.forced_fcch) {
+            step = g_rf.fcch_step;
+            g_rf.forced_fcch--;
+        }
+        else if (bt == 'F' && pos < (uint32_t)g_rf.fcch_len) step = g_rf.fcch_step;
         else if (bt == 'S' && pos < 592u) {
             // SCH sync burst: MSK phase-path modulation of the real coded SB bits at
             // 2 samples/symbol, in the same rotation sense as the FCCH tone above —
@@ -263,19 +317,10 @@ uint16_t cobba_rf_sample(uint16_t cell_arfcn) {
             if (sym < 148u) step = (2 * sb_step[sym]) & 15;
             else step = -1;                                // guard tail -> noise below
         }
-        else {
-            /* A live GSM carrier is constant-envelope GMSK, not independent
-             * full-power white I/Q components. Use random data bits with the
-             * same +/-90-degree-per-symbol MSK phase path between scheduled
-             * FCCH/SCH bursts. One symbol is four component reads. */
-            if ((pos & 3u) == 0u) {
-                g_rf.lcg = g_rf.lcg * 1103515245u + 12345u;
-                g_rf.bg_step = (g_rf.lcg & 0x80000000u) ? 2 : 14;
-            }
-            step = g_rf.bg_step;
-        }
+        else step = -1;
     }
     if (step < 0) {                     // white-noise source (A/B reference)
+        if (g_rf.fcch_on) amp = rf_amp_for_dbm(g_rf.noise_dbm);
         g_rf.lcg = g_rf.lcg * 1103515245u + 12345u;
         int32_t u = (int32_t)(g_rf.lcg >> 16) - 32768;
         return (uint16_t)(int16_t)((u * (int32_t)amp) >> 15);

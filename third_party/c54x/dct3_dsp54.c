@@ -405,6 +405,17 @@ void dsp54_host_interrupt(Dsp54 *d, int vec) {
     c54x_interrupt_ex(d->s, vec, imr_bit);
 }
 
+void dsp54_interrupt_unmask(Dsp54 *d, int vec) {
+    if (!d || !d->s || vec < 16 || vec >= 32) return;
+    d->s->imr |= (uint16_t)(1u << (vec - 16));
+}
+
+int dsp54_interrupt_busy(const Dsp54 *d, int vec) {
+    if (!d || !d->s || vec < 16 || vec >= 32) return 1;
+    int imr_bit = vec - 16;
+    return !!((d->s->ifr & (1u << imr_bit)) || (d->s->st1 & ST1_INTM));
+}
+
 void dsp54_set_port_io(Dsp54 *d,
                        uint16_t (*port_read)(void *, uint16_t),
                        void     (*port_write)(void *, uint16_t, uint16_t),

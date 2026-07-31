@@ -176,11 +176,12 @@
              Known emulator defect: after one binary SMS nothing further is
              deliverable until reboot — send it once per session. -->
         <p class="dev-note">Send the phone its WAP settings by SMS (the way operators did), accept them, then open <strong>Services &#9656; Home</strong> to browse over a real emulated CSD data call.</p>
-        <!-- Disclosure, deliberately in the UI and not only in the docs: pages
-             the phone fetches are retrieved for it by a third-party WML proxy,
-             in the clear. A visitor cannot consent to that if we only write it
-             down in the repo. -->
-        <p class="dev-note"><strong>Note:</strong> pages you open are fetched by a third-party WAP proxy (15pmm01.com) over plain HTTP &mdash; no encryption, and that operator can see what you browse. It&rsquo;s 2003 technology; don&rsquo;t send anything private through it.</p>
+        <!-- Disclosure, deliberately in the UI and not only in the docs: the
+             gateway fetches pages on the visitor's behalf, so it sees every
+             address they open. It no longer passes through a third party —
+             that hop was removed — but "this site sees it" still deserves
+             saying out loud rather than only in the repo. -->
+        <p class="dev-note"><strong>Note:</strong> pages are fetched for the phone by this site&rsquo;s own gateway, which therefore sees every address you open. The phone&rsquo;s side of the connection is 2003 technology with no encryption at all, so treat anything you type on it as public.</p>
         <button id="btn-ota-settings" class="quick-btn" type="button"
                 title="Queue a Nokia OTA settings SMS. Accept it on the phone, then Services ▸ Home dials the data call. One per session — a known emulator defect blocks any second SMS until reboot.">Send WAP settings SMS</button>
         <p id="ota-out" class="dev-note" role="status" aria-live="polite"></p>

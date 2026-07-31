@@ -71,6 +71,11 @@ void     dsp54_hpi_write(Dsp54 *d, uint32_t mcu_addr, uint16_t val);
 
 /* Pulse a DSP interrupt (e.g. the host-command vector). vec = C54x interrupt #. */
 void   dsp54_host_interrupt(Dsp54 *d, int vec);
+/* Enable the IMR source selected by vec. Used when an external MAD timing
+ * source remains armed across a DSP service-mode mask rewrite. */
+void   dsp54_interrupt_unmask(Dsp54 *d, int vec);
+/* True while this source is pending or the CPU is already servicing an interrupt. */
+int    dsp54_interrupt_busy(const Dsp54 *d, int vec);
 
 /* DIAGNOSTIC: force the DSP program counter (e.g. jump into the superloop head 0x3000 to
  * A/B whether the frame chain runs once reached — not a faithful path; bring-up probe only). */

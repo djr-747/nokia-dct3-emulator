@@ -22,6 +22,7 @@ static int g_boot_trace = 0;
  * NOT Calypso peripherals. When set, PORTR/PORTW route to the host (MCU) side. */
 uint16_t (*nokia_port_read_hook)(uint16_t pa, uint16_t pc) = 0;
 void     (*nokia_port_write_hook)(uint16_t pa, uint16_t val, uint16_t pc) = 0;
+extern void cobba_rf_inject_fcch(uint32_t quarter_symbols);
 
 /* DSP->host HINT doorbell edge counter. In this Nokia DSP wiring, toggling BSCR
  * (data MMR 0x0029) bit3 is the "service me" doorbell to the MCU (-> IRQ4, handler
@@ -4203,6 +4204,30 @@ static uint16_t resolve_smem(C54xState *s, uint16_t opcode, bool *indirect)
         uint16_t offset = opcode & 0x7F;
         return (dp(s) << 7) | offset;
     }
+}
+
+/* Resolve a 32-bit long-memory operand. Lmem occupies two adjacent data words,
+ * so the unit +/- and circular +/- post/pre-modifiers advance by two words.
+ * resolve_smem() supplies the effective address and first word of modification;
+ * apply the second word here. */
+static uint16_t resolve_lmem(C54xState *s, uint16_t opcode, bool *indirect)
+{
+    int mod = (opcode >> 3) & 0x0F;
+    int nar = opcode & 0x07;
+    uint16_t addr = resolve_smem(s, opcode, indirect);
+    if (!*indirect) return addr & 0xFFFE;
+    switch (mod) {
+    case 0x1: s->ar[nar]--; break; /* *AR-  */
+    case 0x2: s->ar[nar]++; break; /* *AR+  */
+    case 0x3:                       /* *+AR  */
+        s->ar[nar]++;
+        addr = s->ar[nar];
+        break;
+    case 0x8: s->ar[nar] = c54x_circ_ref(s->ar[nar], -1, s->bk); break;
+    case 0xA: s->ar[nar] = c54x_circ_ref(s->ar[nar], +1, s->bk); break;
+    default: break;
+    }
+    return addr & 0xFFFE;
 }
 
 /* SP ledger for IRQ-asymmetry diag (web 2026-05-23).
@@ -8599,7 +8624,7 @@ static int c54x_exec_one(C54xState *s)
             if (op8 == 0x4E || op8 == 0x4F) {
                 /* DST src, Lmem — store accumulator to long memory.
                  * Lmem = even-aligned 32-bit pair: mem[L]=high, mem[L+1]=low */
-                addr = resolve_smem(s, op, &ind) & 0xFFFE;
+                addr = resolve_lmem(s, op, &ind);
                 int64_t v = *acc_dst;
                 data_write(s, addr,         (uint16_t)((v >> 16) & 0xFFFF));
                 data_write(s, (addr+1)&0xFFFF, (uint16_t)(v & 0xFFFF));
@@ -8640,7 +8665,7 @@ static int c54x_exec_one(C54xState *s)
          * (the same layout the already-correct DST at 0x4E/0x4F writes). */
         {
             int sub = (op >> 9) & 0x7;                 /* 0x50..0x5F in pairs */
-            addr = resolve_smem(s, op, &ind) & 0xFFFE;
+            addr = resolve_lmem(s, op, &ind);
             int64_t lmem = (int64_t)(int32_t)(((uint32_t)data_read(s, addr) << 16)
                                               | data_read(s, (addr + 1) & 0xFFFF));
             int c16 = (s->st1 & ST1_C16) ? 1 : 0;
@@ -10774,11 +10799,27 @@ int c54x_run(C54xState *s, int n_insns)
                 static int fpt = -1;
                 static unsigned fpn;
                 if (fpt < 0) fpt = getenv("DSP54_FCCHPAIRTRACE") ? 1 : 0;
-                if (fpt && (s->pc == 0x0B16 || s->pc == 0x0B2E) && fpn++ < 256) {
+                if (s->pc == 0x0D76 && data_read(s, 0x127B) != 0u)
+                    cobba_rf_inject_fcch(40u * 32u);
+                if (fpt && (s->pc == 0x0B16 || s->pc == 0x0B2E ||
+                            s->pc == 0x0B4A || s->pc == 0x0B55 ||
+                            s->pc == 0x0B6A || s->pc == 0x0B78 ||
+                            s->pc == 0x0BBD || s->pc == 0x0C08 ||
+                            s->pc == 0x0C33 || s->pc == 0x0C38 ||
+                            s->pc == 0x0C5B || s->pc == 0x0C63 ||
+                            s->pc == 0x0C6B || s->pc == 0x0C7E ||
+                            s->pc == 0x0C8D || s->pc == 0x0C98 ||
+                            s->pc == 0x0C9B || s->pc == 0x44B6 ||
+                            s->pc == 0x44BE ||
+                            s->pc == 0x0D76 || s->pc == 0x313F ||
+                            s->pc == 0x314D || s->pc == 0x3153)
+                        && fpn++ < 512) {
                     fprintf(stderr,
                             "[c54x] FCCHPAIR #%u pc=%04x insn=%u blk=%u prev=%u,%u,%u,%u "
                             "acc=%04x:%04x npeak=%u flags=%04x state=%u count=%u "
-                            "a=%010llx b=%010llx st0=%04x\n",
+                            "aux=%u,%u,%u,%u mode=%u win=%u rxptr=%u,%u max=%u "
+                            "a=%010llx b=%010llx st0=%04x "
+                            "ar=%04x,%04x,%04x,%04x,%04x,%04x,%04x,%04x\n",
                             fpn, s->pc, (unsigned)s->insn_count,
                             data_read(s, 0x1257),
                             data_read(s, 0x1258), data_read(s, 0x1259),
@@ -10786,8 +10827,161 @@ int c54x_run(C54xState *s, int n_insns)
                             data_read(s, 0x1263), data_read(s, 0x1262),
                             data_read(s, 0x1264), data_read(s, 0x1266),
                             data_read(s, 0x126A), data_read(s, 0x1344),
+                            data_read(s, 0x1265), data_read(s, 0x126B),
+                            data_read(s, 0x127A), data_read(s, 0x127B),
+                            data_read(s, 0x00AC), data_read(s, 0x00AF),
+                            data_read(s, 0x06B7), data_read(s, 0x06B8),
+                            data_read(s, 0x198D),
                             (unsigned long long)(s->a & 0xFFFFFFFFFFULL),
-                            (unsigned long long)(s->b & 0xFFFFFFFFFFULL), s->st0);
+                            (unsigned long long)(s->b & 0xFFFFFFFFFFULL), s->st0,
+                            s->ar[0], s->ar[1], s->ar[2], s->ar[3],
+                            s->ar[4], s->ar[5], s->ar[6], s->ar[7]);
+                }
+                if (fpt && (data_read(s, 0x1949) & 0x0080u)) {
+                    static unsigned postn;
+                    if ((s->pc == 0x0C9B || s->pc == 0x44B6 ||
+                         s->pc == 0x44BE || s->pc == 0x313F ||
+                         s->pc == 0x314D || s->pc == 0x3153 ||
+                         s->pc == 0x407C || s->pc == 0x408B ||
+                         s->pc == 0x408C || s->pc == 0x408E ||
+                         s->pc == 0x4093 || s->pc == 0x3598 ||
+                         s->pc == 0x35B9 || s->pc == 0x364A ||
+                         s->pc == 0x367C) &&
+                        postn++ < 64)
+                        fprintf(stderr,
+                                "[c54x] FCCHPOST #%u pc=%04x insn=%u mode=%u rxwin=%u flags=%04x\n",
+                                postn, s->pc, (unsigned)s->insn_count,
+                                data_read(s, 0x00AC), data_read(s, 0x00AF),
+                                data_read(s, 0x1949));
+                }
+                if (fpt) {
+                    static unsigned schn;
+                    static unsigned schsvcn;
+                    static int sch_armed;
+                    static int sch_state_valid;
+                    static uint16_t sch_last_mode, sch_last_win;
+                    static int sch_desc_valid;
+                    static uint16_t sch_desc_last[10];
+                    if (s->pc == 0x3153) {
+                        sch_armed = 1;
+                        if (getenv("DSP54_SCHTASK2"))
+                            data_write(s, 0x06E3,
+                                       (uint16_t)(data_read(s, 0x06E3) | 0x0002u));
+                    }
+                    if (sch_armed &&
+                        (s->pc == 0x3153 || s->pc == 0x315C ||
+                         s->pc == 0x316B || s->pc == 0x316D ||
+                         s->pc == 0x3173 || s->pc == 0x317C ||
+                         s->pc == 0x317F || s->pc == 0x3182 ||
+                         s->pc == 0x318A || s->pc == 0x390A ||
+                         s->pc == 0x5E62 || s->pc == 0x545D ||
+                         s->pc == 0x5461 || s->pc == 0x5463 ||
+                         s->pc == 0x5465 || s->pc == 0x5467 ||
+                         s->pc == 0x5469 || s->pc == 0x5E8E ||
+                         s->pc == 0x5E90 || s->pc == 0x5EED ||
+                         s->pc == 0x5EEF || s->pc == 0x5EF0 ||
+                         s->pc == 0x5F06 || s->pc == 0x98B7 ||
+                         s->pc == 0x9903 || s->pc == 0x990D ||
+                         s->pc == 0x994F || s->pc == 0x9954 ||
+                         s->pc == 0x9956 || s->pc == 0x407C ||
+                         s->pc == 0x408C || s->pc == 0x408E ||
+                         s->pc == 0x4093 || s->pc == 0x3598 ||
+                         s->pc == 0x35B9 || s->pc == 0x362F ||
+                         s->pc == 0x364A || s->pc == 0x367C) &&
+                        schn++ < 128)
+                        fprintf(stderr,
+                                "[c54x] SCHPATH #%u pc=%04x insn=%u task=%04x flags=%04x "
+                                "mode=%u win=%u ch=%u type=%u,%u fn=%04x svc=%04x aux=%04x "
+                                "imr=%04x ifr=%04x st1=%04x\n",
+                                schn, s->pc, (unsigned)s->insn_count,
+                                data_read(s, 0x06E3), data_read(s, 0x1949),
+                                data_read(s, 0x00AC), data_read(s, 0x00AF),
+                                data_read(s, 0x1867), data_read(s, 0x1868),
+                                data_read(s, 0x1869), data_read(s, 0x07FB),
+                                data_read(s, 0x1835), data_read(s, 0x194A),
+                                s->imr, s->ifr, s->st1);
+                    /*
+                     * Keep the high-frequency idle/wait PCs above on their own
+                     * quota.  These are the low-frequency slot handlers and RX
+                     * setup calls that decide whether SCH capture (mode 2) is
+                     * ever armed.
+                     */
+                    if (sch_armed &&
+                        (s->pc == 0x367D || s->pc == 0x3689 ||
+                         s->pc == 0x368D || s->pc == 0x3695 ||
+                         s->pc == 0x4414 || s->pc == 0x442A ||
+                         s->pc == 0x4EF7 || s->pc == 0x99D5 ||
+                         s->pc == 0x9AA8 || s->pc == 0x9B6A ||
+                         s->pc == 0x9B8A || s->pc == 0x9BA7 ||
+                         s->pc == 0x9BBB || s->pc == 0x9D20 ||
+                         s->pc == 0xA0C2 || s->pc == 0xA0FD) &&
+                        schsvcn++ < 512)
+                        fprintf(stderr,
+                                "[c54x] SCHSVC #%u pc=%04x insn=%u a=%010llx b=%010llx "
+                                "mode=%u win=%u task=%04x svcidx=%u "
+                                "194a=%04x 194c=%04x 194e=%04x 194f=%04x 1950=%04x "
+                                "195b=%04x 19fe=%04x 19ff=%04x 192c=%04x 192f=%04x "
+                                "ar0=%04x ar1=%04x ar2=%04x\n",
+                                schsvcn, s->pc, (unsigned)s->insn_count,
+                                (unsigned long long)(s->a & 0xFFFFFFFFFFULL),
+                                (unsigned long long)(s->b & 0xFFFFFFFFFFULL),
+                                data_read(s, 0x00AC), data_read(s, 0x00AF),
+                                data_read(s, 0x06E3), data_read(s, 0x07FC),
+                                data_read(s, 0x194A), data_read(s, 0x194C),
+                                data_read(s, 0x194E), data_read(s, 0x194F),
+                                data_read(s, 0x1950), data_read(s, 0x195B),
+                                data_read(s, 0x19FE), data_read(s, 0x19FF),
+                                data_read(s, 0x192C), data_read(s, 0x192F),
+                                s->ar[0], s->ar[1], s->ar[2]);
+                    if (sch_armed) {
+                        static const uint16_t desc_addr[10] = {
+                            0x17A8, 0x1835, 0x1836, 0x194A, 0x194B,
+                            0x194C, 0x194E, 0x194F, 0x1950, 0x195B
+                        };
+                        uint16_t mode = data_read(s, 0x00AC);
+                        uint16_t win = data_read(s, 0x00AF);
+                        if (!sch_desc_valid) {
+                            for (unsigned i = 0; i < 10; i++)
+                                sch_desc_last[i] = data_read(s, desc_addr[i]);
+                            sch_desc_valid = 1;
+                        } else {
+                            for (unsigned i = 0; i < 10; i++) {
+                                uint16_t cur = data_read(s, desc_addr[i]);
+                                if (cur != sch_desc_last[i]) {
+                                    fprintf(stderr,
+                                            "[c54x] SCHDESC addr=%04x %04x->%04x "
+                                            "writer=%04x nowpc=%04x insn=%u "
+                                            "state=%u cur=%04x next=%04x mode=%u win=%u\n",
+                                            desc_addr[i], sch_desc_last[i], cur,
+                                            topgate_valid ? topgate_last_pc : 0xffff,
+                                            s->pc, (unsigned)s->insn_count,
+                                            data_read(s, 0x17A8),
+                                            data_read(s, 0x1835),
+                                            data_read(s, 0x1836), mode, win);
+                                    sch_desc_last[i] = cur;
+                                }
+                            }
+                        }
+                        if (!sch_state_valid) {
+                            sch_last_mode = mode;
+                            sch_last_win = win;
+                            sch_state_valid = 1;
+                        } else if (mode != sch_last_mode || win != sch_last_win) {
+                            fprintf(stderr,
+                                    "[c54x] SCHSTATE pc=%04x insn=%u mode=%u->%u win=%u->%u "
+                                    "a=%010llx b=%010llx task=%04x 194c=%04x "
+                                    "194e=%04x 194f=%04x 1950=%04x 195b=%04x\n",
+                                    s->pc, (unsigned)s->insn_count,
+                                    sch_last_mode, mode, sch_last_win, win,
+                                    (unsigned long long)(s->a & 0xFFFFFFFFFFULL),
+                                    (unsigned long long)(s->b & 0xFFFFFFFFFFULL),
+                                    data_read(s, 0x06E3), data_read(s, 0x194C),
+                                    data_read(s, 0x194E), data_read(s, 0x194F),
+                                    data_read(s, 0x1950), data_read(s, 0x195B));
+                            sch_last_mode = mode;
+                            sch_last_win = win;
+                        }
+                    }
                 }
             }
 

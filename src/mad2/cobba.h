@@ -25,10 +25,17 @@ int cobba_rf_enabled(void);
 // the boot-time queue template), so a synth-only channel would never leave the noise floor.
 uint16_t cobba_rf_sample(uint16_t cell_arfcn);
 
-// Advance the continuously running RF/GSM air-time clock while the receiver sample
-// stream is disabled. `quarter_symbols` uses the same one-read-per-quarter-symbol
+// Reconcile receiver reads with the continuously running RF/GSM air-time clock at a
+// hardware timing event. `quarter_symbols` uses the same one-read-per-quarter-symbol
 // timebase as cobba_rf_sample().
 void cobba_rf_advance(uint32_t quarter_symbols);
+uint32_t cobba_rf_time(void);
+void cobba_rf_sync_advance(uint32_t quarter_symbols);
+void cobba_rf_sync_fcch(uint32_t quarter_symbols_until_burst);
+void cobba_rf_inject_fcch(uint32_t quarter_symbols);
+char cobba_rf_last_burst(void);
+uint32_t cobba_rf_last_frame(void);
+uint32_t cobba_rf_last_pos(void);
 
 // RF synthesizer programming tap — the physically faithful "what frequency is the radio
 // on" signal. The 5110 DSP builds a 32-bit PLL word in ROM fn 0x3FFB (RX) / 0x4006 (TX)
