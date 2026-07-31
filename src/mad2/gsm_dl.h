@@ -11,6 +11,7 @@
 // rate-1/2 conv -> 78 coded bits. Output: the full 148-symbol SB burst bit pattern
 // (3 tail, 39 data, 64 extended training seq, 39 data, 3 tail).
 void gsm_sch_burst(uint32_t fn, unsigned bsic, uint8_t out_bits[148]);
+void gsm_sch_uncoded(uint32_t fn, unsigned bsic, uint8_t out_bits[35]);
 
 // BCCH (or any CCCH) block: 184 info bits -> FIRE(40) -> 4 tail -> conv 1/2 -> 456
 // bits -> interleave over 4 bursts of 114. out_bits[4][114] in transmit order.

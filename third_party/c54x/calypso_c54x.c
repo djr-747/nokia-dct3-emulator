@@ -23,6 +23,12 @@ static int g_boot_trace = 0;
 uint16_t (*nokia_port_read_hook)(uint16_t pa, uint16_t pc) = 0;
 void     (*nokia_port_write_hook)(uint16_t pa, uint16_t val, uint16_t pc) = 0;
 extern void cobba_rf_inject_fcch(uint32_t quarter_symbols);
+extern uint32_t cobba_rf_time(void);
+extern char cobba_rf_last_burst(void);
+extern uint32_t cobba_rf_last_frame(void);
+extern uint32_t cobba_rf_last_pos(void);
+extern void gsm_sch_burst(uint32_t fn, unsigned bsic, uint8_t out[148]);
+extern void gsm_sch_uncoded(uint32_t fn, unsigned bsic, uint8_t out[35]);
 
 /* DSP->host HINT doorbell edge counter. In this Nokia DSP wiring, toggling BSCR
  * (data MMR 0x0029) bit3 is the "service me" doorbell to the MCU (-> IRQ4, handler
@@ -2496,6 +2502,19 @@ static void stkw_rec(C54xState *s, uint16_t addr, uint16_t val)
 
 static void data_write(C54xState *s, uint16_t addr, uint16_t val)
 {
+    /* Post-SCH construction of the serving-cell event table.  This is kept
+     * separate from CELLWATCH so boot-time traffic cannot consume its quota. */
+    if (getenv("DSP54_SCHEDTABLE") && s->insn_count > 240000000u &&
+        addr >= 0x0910u && addr <= 0x0930u) {
+        static unsigned schedtable_n;
+        if (schedtable_n++ < 4096)
+            fprintf(stderr,
+                    "[c54x] SCHEDTABLE #%u [%04x] %04x->%04x pc=%04x "
+                    "op=%04x insn=%u ar=%04x,%04x,%04x,%04x\n",
+                    schedtable_n, addr, data_read(s, addr), val, s->pc,
+                    prog_fetch(s, s->pc), (unsigned)s->insn_count,
+                    s->ar[0], s->ar[1], s->ar[2], s->ar[3]);
+    }
     /* DSP54_CELLWATCH=0xLO:0xHI — log every DSP-side store into a DARAM range (who
      * clobbers live code). MCU window writes are logged separately in mad2_dsp_c54x. */
     {
@@ -3324,7 +3343,17 @@ static void data_write_locked(C54xState *s, uint16_t addr, uint16_t val)
                 fprintf(stderr, "\n");
             }
             return;
-        case MMR_ST1:  s->st1 = val; return;
+        case MMR_ST1:
+            if (getenv("DSP54_C16TRACE_WHOLE") && s->insn_count > 240000000u &&
+                ((s->st1 ^ val) & ST1_C16)) {
+                fprintf(stderr,
+                        "[c54x] C16TRACE whole-ST1 pc=%04x op=%04x prev=%04x "
+                        "st1=%04x->%04x sp=%04x insn=%u\n",
+                        s->pc, prog_fetch(s, s->pc), g_prev_pc,
+                        s->st1, val, s->sp, s->insn_count);
+            }
+            s->st1 = val;
+            return;
         case MMR_AL:   s->a = (s->a & ~0xFFFF) | val; return;
         case MMR_AH:   s->a = (s->a & ~((int64_t)0xFFFF << 16)) | ((int64_t)val << 16); return;
         case MMR_AG:   s->a = (s->a & 0xFFFFFFFF) | ((int64_t)(val & 0xFF) << 32); return;
@@ -4378,9 +4407,167 @@ static bool c54x_cond_true_impl(C54xState *s, uint8_t cc)
     return true;
 }
 
+/* ROL/ROR operate on the 32-bit accumulator body, not on the 40-bit value.
+ * SPRU172C 4-142/4-144: the incoming C enters bit 0/31, the outgoing body
+ * bit enters C, and accumulator guard bits 39:32 are cleared. */
+static void c54x_ror_acc(C54xState *s, int64_t *acc)
+{
+    uint32_t body = (uint32_t)*acc;
+    uint32_t cin = (s->st0 & ST0_C) ? 1u : 0u;
+    if (body & 1u) s->st0 |= ST0_C;
+    else           s->st0 &= ~ST0_C;
+    *acc = (int64_t)((body >> 1) | (cin << 31));
+}
+
+static void c54x_rol_acc(C54xState *s, int64_t *acc)
+{
+    uint32_t body = (uint32_t)*acc;
+    uint32_t cin = (s->st0 & ST0_C) ? 1u : 0u;
+    if (body & 0x80000000u) s->st0 |= ST0_C;
+    else                    s->st0 &= ~ST0_C;
+    *acc = (int64_t)((body << 1) | cin);
+}
+
+/*
+ * Encoded instruction length for XC's false path.  XC counts instructions,
+ * not program words; resolving an Smem operand here would be wrong because
+ * resolve_smem() also mutates address registers.
+ */
+static unsigned c54x_xc_insn_words(C54xState *s, uint16_t pc)
+{
+    uint16_t op = prog_fetch(s, pc);
+    uint8_t hi8 = (uint8_t)(op >> 8);
+    unsigned smem_lk =
+        ((op & 0x80u) && (((op >> 3) & 0x0fu) >= 0x0cu)) ? 1u : 0u;
+
+    if (hi8 >= 0x70 && hi8 <= 0x71) return 2u + smem_lk; /* MVKD/MVDK */
+    if (hi8 >= 0x72 && hi8 <= 0x73) return 2u;           /* MVDM/MVMD */
+    if (hi8 >= 0x74 && hi8 <= 0x76) return 2u + smem_lk; /* port/ST #lk */
+    if (hi8 == 0x77) return 2u;                          /* STM #lk,MMR */
+    if (hi8 == 0x7c || hi8 == 0x7d) return 2u + smem_lk; /* MVPD/MVDP */
+
+    if (smem_lk) {
+        /* These forms carry both an Smem address and a literal. */
+        if (hi8 == 0x60 || hi8 == 0x61 ||
+            hi8 == 0x68 || hi8 == 0x69)
+            return 3u;
+        return 2u;
+    }
+
+    /* F0..F3 low-half encodings carry #lk/pmad; upper-half are short ALU ops. */
+    if (hi8 >= 0xf0 && hi8 <= 0xf3 && (op & 0x80u) == 0) return 2u;
+    if (hi8 >= 0xf8 && hi8 <= 0xfb) return 2u;
+    if (hi8 == 0xeb || hi8 == 0xed || hi8 == 0xef) return 2u;
+    return 1u;
+}
+
 static int c54x_exec_one(C54xState *s)
 {
     uint16_t op = prog_fetch(s, s->pc);
+    /* Diagnostic only: the post-SCH channel configuration currently omits
+     * the fourth BCCH event from the global event table (2,3,4,30).  Register
+     * frame 5 at the selector boundary so the downstream resident xCCH path
+     * can be validated independently.  Retire once the op02/event builder is
+     * fixed. */
+    if (getenv("DSP54_BCCH4") && s->pc == 0x63f3u &&
+        data_read(s, 0x0915u) == 4u && data_read(s, 0x091fu) == 30u &&
+        data_read(s, 0x1836u) == 0x0050u) {
+        data_write(s, 0x091fu, 5u);
+        fprintf(stderr,
+                "[c54x] BCCH4 diagnostic event 30->5 fn=%04x insn=%u\n",
+                data_read(s, 0x0915u), (unsigned)s->insn_count);
+    }
+    if (getenv("DSP54_TIMEUPD") && s->insn_count > 250700000u &&
+        s->pc >= 0x4828u && s->pc <= 0x4840u &&
+        data_read(s, 0x0915u) <= 5u) {
+        static unsigned timeupd_n;
+        if (timeupd_n++ < 4096)
+            fprintf(stderr,
+                    "[c54x] TIMEUPD #%u pc=%04x op=%04x A=%010llx "
+                    "B=%010llx C=%u TC=%u AR1=%04x/%04x AR2=%04x/%04x "
+                    "0913..16=%04x,%04x,%04x,%04x\n",
+                    timeupd_n, s->pc, op,
+                    (unsigned long long)(s->a & 0xffffffffffULL),
+                    (unsigned long long)(s->b & 0xffffffffffULL),
+                    !!(s->st0 & ST0_C), !!(s->st0 & ST0_TC),
+                    s->ar[1], data_read(s, s->ar[1]),
+                    s->ar[2], data_read(s, s->ar[2]),
+                    data_read(s, 0x0913), data_read(s, 0x0914),
+                    data_read(s, 0x0915), data_read(s, 0x0916));
+    }
+    /* BCCH schedule selector: for a 0x50/0x51 channel, 0x63f3..0x63fc
+     * compares the current 51-multiframe index against 2,3,4,5 and sets
+     * bit 0x40 in [194b].  Keep this probe opt-in while validating the
+     * repeat/XC/conditional-branch execution around that compact loop. */
+    if (getenv("DSP54_BCCHSEL") &&
+        (s->pc == 0x63f3 || s->pc == 0x63f5 || s->pc == 0x63f6 ||
+         s->pc == 0x63f8 || s->pc == 0x63f9 || s->pc == 0x63fb ||
+         s->pc == 0x6413)) {
+        static unsigned bcchsel_n;
+        uint16_t fn = data_read(s, 0x0915);
+        /* The command is installed long before the useful 51-frame edge.
+         * Restrict the probe to the BCCH neighborhood so its quota survives
+         * the intervening CCCH windows. */
+        if ((fn <= 8u || fn >= 49u) && bcchsel_n++ < 4096)
+            fprintf(stderr,
+                    "[c54x] BCCHSEL #%u pc=%04x op=%04x A=%010llx B=%010llx "
+                    "ST0=%04x C=%u BRC=%04x RSA=%04x REA=%04x "
+                    "AR0=%04x v0=%04x AR1=%04x v1=%04x fn=%04x flags=%04x\n",
+                    bcchsel_n, s->pc, op,
+                    (unsigned long long)(s->a & 0xffffffffffULL),
+                    (unsigned long long)(s->b & 0xffffffffffULL),
+                    s->st0, !!(s->st0 & ST0_C), s->brc, s->rsa, s->rea,
+                    s->ar[0], data_read(s, s->ar[0]),
+                    s->ar[1], data_read(s, s->ar[1]),
+                    fn, data_read(s, 0x194b));
+    }
+    /* Focused, read-only trace for the resident SCH field unpacker. */
+    {
+        static int enabled = -1;
+        static unsigned n;
+        if (enabled < 0) enabled = getenv("DSP54_SCHUNPACK") ? 1 : 0;
+        if (enabled && s->insn_count > 200000000u && n < 512 &&
+            (s->pc == 0x4909 || s->pc == 0x490c ||
+             s->pc == 0x490e || s->pc == 0x4910 ||
+             s->pc == 0x4911 || s->pc == 0x4912 || s->pc == 0x4914 ||
+             s->pc == 0x4916 || s->pc == 0x491b ||
+             s->pc == 0x4950)) {
+            fprintf(stderr,
+                    "[c54x] SCHUNPACK pc=%04x op=%04x A=%010llx B=%010llx "
+                    "C=%u T=%04x AR0=%04x AR2=%04x AR3=%04x AR4=%04x "
+                    "m0e=%04x m10=%04x m11=%04x\n",
+                    s->pc, op,
+                    (unsigned long long)(s->a & 0xffffffffffULL),
+                    (unsigned long long)(s->b & 0xffffffffffULL),
+                    !!(s->st0 & ST0_C), s->t, s->ar[0], s->ar[2],
+                    s->ar[3], s->ar[4], s->data[0x000e],
+                    s->data[0x0010], s->data[0x0011]);
+            n++;
+        }
+    }
+    {
+        static unsigned n;
+        if (getenv("DSP54_TIMECONV") && n < 256 &&
+            ((s->pc >= 0x58ea && s->pc <= 0x5928) ||
+             (s->pc >= 0x491b && s->pc <= 0x4950))) {
+            fprintf(stderr,
+                    "[c54x] TIMECONV pc=%04x op=%04x A=%010llx B=%010llx "
+                    "T=%04x ST0=%04x ST1=%04x BRC=%04x C=%u C16=%u "
+                    "SP=%04x RET=%04x PREV=%04x AR1=%04x AR2=%04x AR3=%04x "
+                    "AR4=%04x AR7=%04x m912=%04x m913=%04x m914=%04x "
+                    "m915=%04x m916=%04x\n",
+                    s->pc, op,
+                    (unsigned long long)(s->a & 0xffffffffffULL),
+                    (unsigned long long)(s->b & 0xffffffffffULL),
+                    s->t, s->st0, s->st1, s->brc, !!(s->st0 & ST0_C),
+                    !!(s->st1 & ST1_C16), s->sp, s->data[s->sp], g_prev_pc,
+                    s->ar[1], s->ar[2],
+                    s->ar[3], s->ar[4], s->ar[7], s->data[0x0912],
+                    s->data[0x0913], s->data[0x0914], s->data[0x0915],
+                    s->data[0x0916]);
+            n++;
+        }
+    }
     /* F06B=1: trace the 0xF05E table-init routine (IMR-clobber site) — AR5 (dest ptr that
      * drifts to 0), AR2/AR4 (source ptrs), B (the add-b,a increment), at entry + the loop +
      * the clobber store. Pins WHERE AR5 first goes wrong post-warm-boot. */
@@ -5212,9 +5399,11 @@ static int c54x_exec_one(C54xState *s)
                 }
             }
             if (!cond) {
-                /* Skip n instructions — count consumed words for skipped insns */
-                /* Each skipped insn is 1 word (simplified — multi-word insns rare after XC) */
-                return 1 + n_insns;
+                uint16_t cursor = (uint16_t)(s->pc + 1u);
+                for (int i = 0; i < n_insns; i++)
+                    cursor = (uint16_t)(cursor +
+                        c54x_xc_insn_words(s, cursor));
+                return (uint16_t)(cursor - s->pc);
             }
             /* Condition true: the next n_insns instructions execute normally BUT
              * remain under the XC's control — SPRU172C: an interrupt between XC
@@ -5667,10 +5856,7 @@ static int c54x_exec_one(C54xState *s)
             if ((op & 0xFEFF) == 0xF490) {
                 int src = (op >> 8) & 1;
                 int64_t *acc = src ? &s->b : &s->a;
-                uint16_t c = (s->st0 & ST0_C) ? 1 : 0;   /* carry = ST0 bit 11, NOT bit 8 (= DP MSB) */
-                uint16_t lsb = *acc & 1;
-                *acc = sext40(((uint64_t)(*acc & 0xFFFFFFFFFFULL) >> 1) | ((uint64_t)c << 39));
-                if (lsb) s->st0 |= ST0_C; else s->st0 &= ~ST0_C;
+                c54x_ror_acc(s, acc);
                 return consumed + s->lk_used;
             }
 
@@ -5678,10 +5864,7 @@ static int c54x_exec_one(C54xState *s)
             if ((op & 0xFEFF) == 0xF491) {
                 int src = (op >> 8) & 1;
                 int64_t *acc = src ? &s->b : &s->a;
-                uint16_t c = (s->st0 & ST0_C) ? 1 : 0;   /* carry = ST0 bit 11, NOT bit 8 (= DP MSB) */
-                uint16_t msb = (*acc >> 39) & 1;
-                *acc = sext40(((*acc << 1) & 0xFFFFFFFFFFULL) | c);
-                if (msb) s->st0 |= ST0_C; else s->st0 &= ~ST0_C;
+                c54x_rol_acc(s, acc);
                 return consumed + s->lk_used;
             }
 
@@ -5794,10 +5977,30 @@ static int c54x_exec_one(C54xState *s)
             }
 
             if ((op & 0xFCE0) == 0xF460) {
-                /* SFTA src,shift,dst — arithmetic shift accumulator */
+                /* SFTA src,shift,dst — arithmetic shift accumulator.
+                 *
+                 * C54x arithmetic shifts leave the last bit shifted out in C.
+                 * The resident SCH CRC at 0x526e relies on exactly this:
+                 *     sfta a,-1
+                 *     xc 1,c
+                 *     xor b,a
+                 * Without the carry update every polynomial step used stale C
+                 * and a known-valid SCH word ended at 0x379 instead of 0x3ff.
+                 */
                 int src = (op >> 9) & 1, dst = (op >> 8) & 1;   /* bit9=SRC, bit8=DST (objdump GT 2026-06-10: f517=add a,-9,b) */
                 int shift = op & 0x1F; if (shift > 15) shift -= 32;
                 int64_t sv = sext40(src ? s->b : s->a);
+                if (shift < 0) {
+                    unsigned n = (unsigned)-shift;
+                    uint64_t raw = (uint64_t)sv & 0xFFFFFFFFFFULL;
+                    if ((raw >> (n - 1u)) & 1u) s->st0 |= ST0_C;
+                    else                         s->st0 &= ~ST0_C;
+                } else if (shift > 0) {
+                    unsigned n = (unsigned)shift;
+                    uint64_t raw = (uint64_t)sv & 0xFFFFFFFFFFULL;
+                    if ((raw >> (40u - n)) & 1u) s->st0 |= ST0_C;
+                    else                          s->st0 &= ~ST0_C;
+                }
                 if (shift >= 0) sv <<= shift; else sv >>= (-shift);
                 if (dst) s->b = sext40(sv); else s->a = sext40(sv);
                 return consumed + s->lk_used;
@@ -5992,20 +6195,14 @@ static int c54x_exec_one(C54xState *s)
                 if ((op & 0xFEFF) == 0xF490) {
                     int src = (op >> 8) & 1;
                     int64_t *acc = src ? &s->b : &s->a;
-                    uint16_t c = (s->st0 & ST0_C) ? 1 : 0;   /* carry = ST0 bit 11, NOT bit 8 (= DP MSB) */
-                    uint16_t lsb = *acc & 1;
-                    *acc = sext40(((uint64_t)(*acc & 0xFFFFFFFFFFULL) >> 1) | ((uint64_t)c << 39));
-                    if (lsb) s->st0 |= ST0_C; else s->st0 &= ~ST0_C;
+                    c54x_ror_acc(s, acc);
                     return consumed + s->lk_used;
                 }
                 /* F491/F591: ROL src (mask FEFF, 1 word) */
                 if ((op & 0xFEFF) == 0xF491) {
                     int src = (op >> 8) & 1;
                     int64_t *acc = src ? &s->b : &s->a;
-                    uint16_t c = (s->st0 & ST0_C) ? 1 : 0;   /* carry = ST0 bit 11, NOT bit 8 (= DP MSB) */
-                    uint16_t msb = (*acc >> 39) & 1;
-                    *acc = sext40(((*acc << 1) & 0xFFFFFFFFFFULL) | c);
-                    if (msb) s->st0 |= ST0_C; else s->st0 &= ~ST0_C;
+                    c54x_rol_acc(s, acc);
                     return consumed + s->lk_used;
                 }
                 /* F488/F588: MACA T,src[,dst] (mask FCFF, 1 word) */
@@ -6216,6 +6413,14 @@ static int c54x_exec_one(C54xState *s)
                 int bit = op & 0x0F;
                 int set = (op >> 8) & 1;
                 int st = (op >> 5) & 1;
+                if (getenv("DSP54_C16TRACE") && st == 1 && bit == 7 &&
+                    s->insn_count > 240000000u) {
+                    fprintf(stderr,
+                            "[c54x] C16TRACE %s pc=%04x prev=%04x st1=%04x "
+                            "sp=%04x ret=%04x insn=%u\n",
+                            set ? "SET" : "CLEAR", s->pc, g_prev_pc, s->st1,
+                            s->sp, s->data[s->sp], s->insn_count);
+                }
                 if (st == 0) { if (set) s->st0 |= (1<<bit); else s->st0 &= ~(1<<bit); }
                 else         { if (set) s->st1 |= (1<<bit); else s->st1 &= ~(1<<bit); }
                 return consumed + s->lk_used;
@@ -6873,6 +7078,13 @@ static int c54x_exec_one(C54xState *s)
                 /* F6Bx: RSBX -- reset bit in ST1 (bit 9=1, bit 8=0).
                  * Per tic54x-opc.c: RSBX 0xF4B0 mask 0xFDF0 covers F6Bx. */
                 int bit = op & 0x0F;
+                if (getenv("DSP54_C16TRACE") && bit == 7) {
+                    fprintf(stderr,
+                            "[c54x] C16TRACE CLEAR pc=%04x prev=%04x st1=%04x "
+                            "sp=%04x ret=%04x insn=%u\n",
+                            s->pc, g_prev_pc, s->st1, s->sp,
+                            s->data[s->sp], s->insn_count);
+                }
                 rsbx_intm_check(s, op);  /* probe candidat 1 doc §7 */
                 s->st1 &= ~(1 << bit);
                 return consumed + s->lk_used;
@@ -7091,6 +7303,13 @@ static int c54x_exec_one(C54xState *s)
         if ((op & 0xFFF0) == 0xF7B0) {
             int bit = op & 0x0F;
             bool is_intm = (bit == 11);
+            if (getenv("DSP54_C16TRACE") && bit == 7) {
+                fprintf(stderr,
+                        "[c54x] C16TRACE SET pc=%04x prev=%04x st1=%04x "
+                        "sp=%04x ret=%04x insn=%u\n",
+                        s->pc, g_prev_pc, s->st1, s->sp,
+                        s->data[s->sp], s->insn_count);
+            }
             s->st1 |= (1 << bit);
             if (is_intm)
                 C54_LOG("*** SSBX INTM (F7BB) *** PC=0x%04x ST1=0x%04x insn=%u",
@@ -7659,8 +7878,8 @@ static int c54x_exec_one(C54xState *s)
             case 0xE5: /* SAT B */ if (s->st0 & ST0_OVB) s->b = (s->b < 0) ? (int64_t)0xFF80000000LL : 0x7FFFFFFFLL; break;
             case 0xE8: /* ABS A */ s->a = (s->a < 0) ? -s->a : s->a; s->a = sext40(s->a); break;
             case 0xE9: /* ABS B */ s->b = (s->b < 0) ? -s->b : s->b; s->b = sext40(s->b); break;
-            case 0xEA: /* ROR A */ { uint16_t c = s->st0 & ST0_C ? 1 : 0; if (s->a & 1) s->st0 |= ST0_C; else s->st0 &= ~ST0_C; s->a = (s->a >> 1) | ((int64_t)c << 39); s->a = sext40(s->a); } break;
-            case 0xEB: /* ROL A */ { uint16_t c = s->st0 & ST0_C ? 1 : 0; if (s->a & ((int64_t)1<<39)) s->st0 |= ST0_C; else s->st0 &= ~ST0_C; s->a = (s->a << 1) | c; s->a = sext40(s->a); } break;
+            case 0xEA: /* ROR A */ c54x_ror_acc(s, &s->a); break;
+            case 0xEB: /* ROL A */ c54x_rol_acc(s, &s->a); break;
             default:
                 /* EXP A/B etc — return 0 for now */
                 break;
@@ -8386,6 +8605,38 @@ static int c54x_exec_one(C54xState *s)
         int dst = (op >> 8) & 1;
         int sub = (op >> 9) & 0x07;  /* 0..7 */
         uint16_t val = data_read(s, addr);
+        /*
+         * 06xx/07xx are ADDC Smem,A/B, not an ADD sub-form.
+         * SPRU172C p.4-8 and SPRU131G 4.1.1: Smem is always zero-extended,
+         * C is an input, and arithmetic carry is defined at bit 32 (the
+         * accumulator guard bits are not the carry boundary). Nokia's unpacker uses ROR;
+         * XC 2,C; ADDC to assemble the received frame-number fields.
+         */
+        if ((op & 0xfe00u) == 0x0600u) {
+            const uint64_t mask40 = 0xffffffffffULL;
+            int64_t old = dst ? s->b : s->a;
+            uint64_t lhs = (uint64_t)old & mask40;
+            uint64_t rhs = (uint64_t)val +
+                           ((s->st0 & ST0_C) ? 1u : 0u);
+            uint64_t raw = lhs + rhs;
+            int64_t result = sext40((int64_t)(raw & mask40));
+            uint32_t old32 = (uint32_t)old;
+            uint32_t result32 = (uint32_t)raw;
+            bool ov = (~(old32 ^ (uint32_t)rhs) &
+                       (old32 ^ result32) & 0x80000000u) != 0;
+            if ((uint64_t)old32 + rhs > 0xffffffffULL)
+                s->st0 |= ST0_C;
+            else
+                s->st0 &= ~ST0_C;
+            if (dst) {
+                if (ov) s->st0 |= ST0_OVB;
+                s->b = (ov && (s->st1 & ST1_OVM)) ? sat32(result) : result;
+            } else {
+                if (ov) s->st0 |= ST0_OVA;
+                s->a = (ov && (s->st1 & ST1_OVM)) ? sat32(result) : result;
+            }
+            return consumed + s->lk_used;
+        }
         int64_t v;
         bool is_sub = (sub & 0x4) != 0;
         bool is_unsigned = (sub == 1 || sub == 5);  /* ADDS / SUBS */
@@ -8542,14 +8793,21 @@ static int c54x_exec_one(C54xState *s)
          *   0x4E-0x4F  DST src,Lmem             (mask 0xFE00) */
         {
             uint8_t op8 = hi8;            /* (op >> 8) & 0xFF */
-            int dst_b = op8 & 0x01;        /* bit8 = src/dst select (A=0, B=1) */
+            int dst_b = op8 & 0x01;        /* bit8 = DST select (A=0, B=1) */
             int64_t *acc_dst = dst_b ? &s->b : &s->a;
 
             if (op8 >= 0x40 && op8 <= 0x43) {
-                /* SUB Smem << 16, src, dst — sub of shifted Smem from acc */
+                /* SUB Smem,16,SRC[,DST] — bit9 selects the source accumulator,
+                 * bit8 the destination.  The old code used DST as the arithmetic
+                 * base, so every cross-accumulator form (0x41/0x42) silently
+                 * retained stale destination bits.  The BCCH frame selector's
+                 * 0x4181 (`sub *ar1,16,a,b`) then compared frame 2..5 against
+                 * stale B instead of A and could never assert its 0x40 flag. */
                 addr = resolve_smem(s, op, &ind);
                 int64_t val = (int64_t)(int16_t)data_read(s, addr) << 16;
-                *acc_dst = sext40(*acc_dst - val);
+                int src_b = (op >> 9) & 1;
+                int64_t src = src_b ? s->b : s->a;
+                *acc_dst = sext40(src - val);
                 return consumed + s->lk_used;
             }
             if (op8 == 0x44 || op8 == 0x45) {
@@ -9179,12 +9437,18 @@ static int c54x_exec_one(C54xState *s)
             data_write(s, addr, v);
             return consumed + s->lk_used;
         }
-        /* 8Dxx: MVDD Smem, Smem */
+        /* 8Dxx: ST TRN, Smem (one word).
+         * SPRU172C / binutils tic54x-opc.c:
+         *   { "st", 1,2,2, 0x8D00, 0xFF00, {OP_TRN,OP_Smem} }
+         * MVDD is 0xE500, not 0x8D00.  The old two-word fake consumed the
+         * following instruction.  In the SCH decoder, 0x8D96 at 0x8A66 is
+         * the last word of an RPTB and is immediately followed by
+         * `RSBX C16`; eating that clear left the foreground in dual-16 mode,
+         * so the resident GSM time divider's DSUB produced a packed pair
+         * instead of a signed 32-bit difference and corrupted the BCCH FN. */
         if (hi8 == 0x8D) {
             addr = resolve_smem(s, op, &ind);
-            op2 = prog_fetch(s, s->pc + 1);
-            consumed = 2;
-            data_write(s, op2, data_read(s, addr));
+            data_write(s, addr, s->trn);
             return consumed + s->lk_used;
         }
         /* AUDIT FIX 2026-05-15 fin journée : 0x83 misclassifié comme WRITA
@@ -10861,12 +11125,45 @@ int c54x_run(C54xState *s, int n_insns)
                     static int sch_state_valid;
                     static uint16_t sch_last_mode, sch_last_win;
                     static int sch_desc_valid;
+                    static int sch_desc_forced;
                     static uint16_t sch_desc_last[10];
                     if (s->pc == 0x3153) {
                         sch_armed = 1;
                         if (getenv("DSP54_SCHTASK2"))
                             data_write(s, 0x06E3,
                                        (uint16_t)(data_read(s, 0x06E3) | 0x0002u));
+                    }
+                    if (sch_armed && s->pc == 0x3162 &&
+                        getenv("DSP54_SCHSTATE5"))
+                        data_write(s, 0x17A8, 5u);
+                    if (sch_armed && s->pc == 0x99D5 &&
+                        (getenv("DSP54_SCHDESC40") || getenv("DSP54_DESC")) &&
+                        data_read(s, 0x194C) == 0u &&
+                        ((!getenv("DSP54_DESC") &&
+                          strcmp(getenv("DSP54_SCHDESC40"), "once") != 0) ||
+                         !sch_desc_forced++)) {
+                        static int desc_code_dumped;
+                        const char *desc = getenv("DSP54_DESC");
+                        uint16_t type =
+                            desc ? (uint16_t)strtoul(desc, 0, 0) : 0x0040u;
+                        if (desc && !desc_code_dumped++) {
+                            fprintf(stderr, "[c54x] DESCCODE dispatch");
+                            for (unsigned a = 0x99C0; a <= 0x9A30; a++)
+                                fprintf(stderr, " %04x:%04x", a,
+                                        prog_fetch(s, (uint16_t)a));
+                            fprintf(stderr, " setup");
+                            for (unsigned a = 0xA090; a <= 0xA130; a++)
+                                fprintf(stderr, " %04x:%04x", a,
+                                        prog_fetch(s, (uint16_t)a));
+                            fprintf(stderr, " rx");
+                            for (unsigned a = 0x43E0; a <= 0x4460; a++)
+                                fprintf(stderr, " %04x:%04x", a,
+                                        prog_fetch(s, (uint16_t)a));
+                            fputc('\n', stderr);
+                        }
+                        data_write(s, 0x194C, type);
+                        if (desc)
+                            data_write(s, 0x1869, type);
                     }
                     if (sch_armed &&
                         (s->pc == 0x3153 || s->pc == 0x315C ||
@@ -10933,6 +11230,163 @@ int c54x_run(C54xState *s, int n_insns)
                                 data_read(s, 0x19FE), data_read(s, 0x19FF),
                                 data_read(s, 0x192C), data_read(s, 0x192F),
                                 s->ar[0], s->ar[1], s->ar[2]);
+                    /*
+                     * 0x9903 walks a zero-terminated callback list in data ROM.
+                     * Log the list cursor and target around serving-channel setup:
+                     * this identifies which earlier callback leaves the frame delta
+                     * consumed by 0x9b8a, without perturbing the scheduler.
+                     */
+                    if (sch_armed && (s->pc == 0x9903 || s->pc == 0x9905)) {
+                        static unsigned schedcbn;
+                        if (schedcbn++ < 384)
+                            fprintf(stderr,
+                                    "[c54x] SCHEDCB #%u pc=%04x insn=%u list=%04x "
+                                    "entry=%04x a=%010llx fn=%04x target=%04x "
+                                    "fnhi=%04x targethi=%04x desc=%04x flags=%04x\n",
+                                    schedcbn, s->pc, (unsigned)s->insn_count,
+                                    s->ar[5], data_read(s, s->ar[5]),
+                                    (unsigned long long)(s->a & 0xFFFFFFFFFFULL),
+                                    data_read(s, 0x0915), data_read(s, 0x06F2),
+                                    data_read(s, 0x0916), data_read(s, 0x06F3),
+                                    data_read(s, 0x194C), data_read(s, 0x194A));
+                    }
+                    if (sch_armed &&
+                        (s->pc == 0x4C6F || s->pc == 0x4CAE ||
+                         s->pc == 0x4CB3 || s->pc == 0x4CBC ||
+                         s->pc == 0x4D34 || s->pc == 0x4D81 ||
+                         s->pc == 0x9AD0 || s->pc == 0x9AD5)) {
+                        static unsigned xcch_decode_n;
+                        if (xcch_decode_n++ < 96)
+                            fprintf(stderr,
+                                    "[c54x] XCCHDEC #%u pc=%04x a=%010llx b=%010llx "
+                                    "sp=%04x ar=%04x,%04x,%04x,%04x,%04x,%04x "
+                                    "1201=%04x 1202=%04x 194c=%04x 194f=%04x 195b=%04x\n",
+                                    xcch_decode_n, s->pc,
+                                    (unsigned long long)(s->a & 0xFFFFFFFFFFULL),
+                                    (unsigned long long)(s->b & 0xFFFFFFFFFFULL), s->sp,
+                                    s->ar[0], s->ar[1], s->ar[2], s->ar[3],
+                                    s->ar[4], s->ar[5], data_read(s, 0x1201),
+                                    data_read(s, 0x1202), data_read(s, 0x194c),
+                                    data_read(s, 0x194f), data_read(s, 0x195b));
+                    }
+                    if (sch_armed && s->pc == 0x4c6fu &&
+                        data_read(s, 0x194cu) == 0x0050u &&
+                        getenv("DSP54_XCCHSOFTDUMP")) {
+                        static unsigned softdump_n;
+                        if (softdump_n++ < 4) {
+                            fprintf(stderr, "[c54x] XCCHSOFT #%u 1ae0", softdump_n);
+                            for (unsigned i = 0; i < 64; i++)
+                                fprintf(stderr, " %04x", data_read(s, 0x1ae0u + i));
+                            fprintf(stderr, " 1280");
+                            for (unsigned i = 0; i < 64; i++)
+                                fprintf(stderr, " %04x", data_read(s, 0x1280u + i));
+                            fputc('\n', stderr);
+                        }
+                    }
+                    if (sch_armed &&
+                        (s->pc == 0x3996 || s->pc == 0x39b0 ||
+                         s->pc == 0x39d9 || s->pc == 0x39e2 ||
+                         s->pc == 0x39ea || s->pc == 0x3a09)) {
+                        static unsigned cfg_n;
+                        if (cfg_n++ < 64)
+                            fprintf(stderr,
+                                    "[c54x] CHCFG #%u pc=%04x insn=%u AR2=%04x "
+                                    "w=%04x,%04x,%04x,%04x,%04x,%04x "
+                                    "1fa=%04x 1fc=%04x 1833=%04x target=%04x "
+                                    "cur=%04x desc=%04x flags=%04x\n",
+                                    cfg_n, s->pc, (unsigned)s->insn_count,
+                                    s->ar[2], data_read(s, s->ar[2]),
+                                    data_read(s, s->ar[2] + 1),
+                                    data_read(s, s->ar[2] + 2),
+                                    data_read(s, s->ar[2] + 3),
+                                    data_read(s, s->ar[2] + 4),
+                                    data_read(s, s->ar[2] + 5),
+                                    data_read(s, 0x01fa), data_read(s, 0x01fc),
+                                    data_read(s, 0x1833), data_read(s, 0x06f2),
+                                    data_read(s, 0x0915), data_read(s, 0x194c),
+                                    data_read(s, 0x194a));
+                    }
+                    if (sch_armed && s->pc == 0x4F07 &&
+                        getenv("DSP54_SCHBITS")) {
+                        static unsigned schbits_n;
+                        if (schbits_n++ < 4) {
+                            fprintf(stderr, "[c54x] SCHBITS #%u", schbits_n);
+                            for (unsigned i = 0; i < 78; i++)
+                                fprintf(stderr, " %04x", data_read(s, 0x1A00u + i));
+                            fputc('\n', stderr);
+                        }
+                    }
+                    if (sch_armed && s->pc == 0x4F07 &&
+                        getenv("DSP54_SCHSOFT")) {
+                        static int schsoft_code_dumped;
+                        uint8_t burst[148];
+                        gsm_sch_burst(cobba_rf_last_frame(), 5u, burst);
+                        int setting = atoi(getenv("DSP54_SCHSOFT"));
+                        int invert = setting < 0;
+                        int amplitude = setting < 0 ? -setting : setting;
+                        if (!amplitude)
+                            amplitude = 127;
+                        if (!schsoft_code_dumped++) {
+                            fprintf(stderr, "[c54x] SCHSOFT code");
+                            for (unsigned a = 0x4EF7; a <= 0x4F30; a++)
+                                fprintf(stderr, " %04x:%04x", a, prog_fetch(s, (uint16_t)a));
+                            fprintf(stderr, " crc");
+                            for (unsigned a = 0x50FE; a <= 0x5160; a++)
+                                fprintf(stderr, " %04x:%04x", a, prog_fetch(s, (uint16_t)a));
+                            fprintf(stderr, " traceback");
+                            for (unsigned a = 0x5260; a <= 0x52C0; a++)
+                                fprintf(stderr, " %04x:%04x", a, prog_fetch(s, (uint16_t)a));
+                            fputc('\n', stderr);
+                        }
+                        for (unsigned i = 0; i < 78; i++) {
+                            unsigned bi = i < 39u ? 3u + i : 106u + i - 39u;
+                            int bit = burst[bi] ^ invert;
+                            data_write(s, 0x1280u + i,
+                                       (uint16_t)(int16_t)(bit ? amplitude : -amplitude));
+                        }
+                        fprintf(stderr,
+                                "[c54x] SCHSOFT injected fn=%u polarity=%s amplitude=%d\n",
+                                cobba_rf_last_frame(), invert ? "inverted" : "normal",
+                                amplitude);
+                    }
+                    if (sch_armed && getenv("DSP54_SCHSOFT") &&
+                        (s->pc == 0x8C60 || s->pc == 0x4F0B)) {
+                        static unsigned schsoft_state_n;
+                        if (schsoft_state_n++ < 8) {
+                            fprintf(stderr,
+                                    "[c54x] SCHSOFT state pc=%04x ar2=%04x ar3=%04x sp=%04x",
+                                    s->pc, s->ar[2], s->ar[3], s->sp);
+                            for (unsigned i = 0; i < 48; i++)
+                                fprintf(stderr, " %04x", data_read(s, 0x1280u + i));
+                            fputc('\n', stderr);
+                        }
+                    }
+                    if (sch_armed && s->pc == 0x4F10 &&
+                        getenv("DSP54_SCHHARD")) {
+                        uint8_t uncoded[35];
+                        uint16_t packed[3] = { 0, 0, 0 };
+                        int lsb = atoi(getenv("DSP54_SCHHARD")) < 0;
+                        gsm_sch_uncoded(cobba_rf_last_frame(), 5u, uncoded);
+                        for (unsigned i = 0; i < 35; i++) {
+                            unsigned shift = lsb ? (i & 15u) : (15u - (i & 15u));
+                            packed[i >> 4] |= (uint16_t)(uncoded[i] << shift);
+                        }
+                        for (unsigned i = 0; i < 3; i++)
+                            data_write(s, 0x1280u + i, packed[i]);
+                        fprintf(stderr,
+                                "[c54x] SCHHARD injected fn=%u packing=%s data=%04x,%04x,%04x\n",
+                                cobba_rf_last_frame(), lsb ? "lsb" : "msb",
+                                packed[0], packed[1], packed[2]);
+                    }
+                    if (sch_armed && s->pc == 0x4F14 &&
+                        getenv("DSP54_SCHHARD"))
+                        fprintf(stderr,
+                                "[c54x] SCHCRC result=%04x a=%010llx b=%010llx data=%04x,%04x,%04x\n",
+                                data_read(s, 0x1220),
+                                (unsigned long long)(s->a & 0xFFFFFFFFFFULL),
+                                (unsigned long long)(s->b & 0xFFFFFFFFFFULL),
+                                data_read(s, 0x1280), data_read(s, 0x1281),
+                                data_read(s, 0x1282));
                     if (sch_armed) {
                         static const uint16_t desc_addr[10] = {
                             0x17A8, 0x1835, 0x1836, 0x194A, 0x194B,
@@ -10970,14 +11424,19 @@ int c54x_run(C54xState *s, int n_insns)
                             fprintf(stderr,
                                     "[c54x] SCHSTATE pc=%04x insn=%u mode=%u->%u win=%u->%u "
                                     "a=%010llx b=%010llx task=%04x 194c=%04x "
-                                    "194e=%04x 194f=%04x 1950=%04x 195b=%04x\n",
+                                    "194e=%04x 194f=%04x 1950=%04x 195b=%04x "
+                                    "rf=%u fn=%u pos=%u burst=%c\n",
                                     s->pc, (unsigned)s->insn_count,
                                     sch_last_mode, mode, sch_last_win, win,
                                     (unsigned long long)(s->a & 0xFFFFFFFFFFULL),
                                     (unsigned long long)(s->b & 0xFFFFFFFFFFULL),
                                     data_read(s, 0x06E3), data_read(s, 0x194C),
                                     data_read(s, 0x194E), data_read(s, 0x194F),
-                                    data_read(s, 0x1950), data_read(s, 0x195B));
+                                    data_read(s, 0x1950), data_read(s, 0x195B),
+                                    cobba_rf_time(), cobba_rf_last_frame(),
+                                    cobba_rf_last_pos(),
+                                    cobba_rf_last_burst() ?
+                                        cobba_rf_last_burst() : '-');
                             sch_last_mode = mode;
                             sch_last_win = win;
                         }

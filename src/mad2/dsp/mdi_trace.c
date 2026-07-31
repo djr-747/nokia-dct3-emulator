@@ -33,11 +33,23 @@ static void dump_range(const struct Mad2* m, MdiPeekFn peek, void* ctx, const ch
     if (!ring_bytes) return;
     const uint32_t ring_words = ring_bytes / 2u;
     if (!ring_words) return;
+    /*
+     * The hardware cursors are absolute HPI-window word indices, not offsets
+     * relative to this ring.  MDISND starts at word 0x00, while MDIRCV starts
+     * at word 0x80 (MCU 0x10100).  Treating an MDIRCV cursor such as 0x80 as
+     * a relative offset made the observer read 0x10138, then wrap into cursor
+     * range 0..99 and decode stale API/upload cells as hundreds of bogus
+     * records.  Keep cursor arithmetic in the absolute domain and translate
+     * to a ring-relative offset only for the memory access.
+     */
+    const uint16_t first_word = (uint16_t)((base & 0x0fffu) / 2u);
     uint16_t w = from;
     for (unsigned guard = 0; guard < ring_words && w != to; ++guard) {
-        const uint32_t off = (uint32_t)w * 2u;
-        const uint8_t  len = peek(m, ctx, base + (off % ring_bytes));
-        const uint8_t  op  = peek(m, ctx, base + ((off + 1u) % ring_bytes));
+        const uint32_t rel_word =
+            ((uint32_t)w + ring_words - (uint32_t)first_word) % ring_words;
+        const uint32_t off = rel_word * 2u;
+        const uint8_t  len = peek(m, ctx, base + off);
+        const uint8_t  op  = peek(m, ctx, base + off + 1u);
         // A {0,0} word is not a record — it is untouched ring. The cursors legitimately sweep
         // across zeroed ring at init and after a wrap, and reporting those as records buried the
         // real traffic under hundreds of empty lines. Skip them, but keep walking.
@@ -51,7 +63,8 @@ static void dump_range(const struct Mad2* m, MdiPeekFn peek, void* ctx, const ch
         // Advance past word0 + the payload, rounded up to whole words (records are word-aligned).
         uint32_t step = 1u + ((uint32_t)len + 1u) / 2u;
         if (step < 1u) step = 1u;
-        w = (uint16_t)((w + step) % ring_words);
+        w = (uint16_t)(first_word +
+            (((uint32_t)w - first_word + step) % ring_words));
     }
 }
 

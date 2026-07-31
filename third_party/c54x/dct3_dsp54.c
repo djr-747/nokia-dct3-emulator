@@ -416,6 +416,11 @@ int dsp54_interrupt_busy(const Dsp54 *d, int vec) {
     return !!((d->s->ifr & (1u << imr_bit)) || (d->s->st1 & ST1_INTM));
 }
 
+void dsp54_interrupt_clear(Dsp54 *d, int vec) {
+    if (!d || !d->s || vec < 16 || vec >= 32) return;
+    d->s->ifr &= (uint16_t)~(1u << (vec - 16));
+}
+
 void dsp54_set_port_io(Dsp54 *d,
                        uint16_t (*port_read)(void *, uint16_t),
                        void     (*port_write)(void *, uint16_t, uint16_t),

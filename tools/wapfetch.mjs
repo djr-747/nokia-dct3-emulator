@@ -16,6 +16,7 @@ import { readFileSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { compileWml } from './wmlc.mjs';
+import { gifToWbmp } from './wbmp.mjs';
 
 export const WSP_CT_WMLC = 0x14;   // application/vnd.wap.wmlc
 
@@ -243,6 +244,18 @@ export function fetchForPhone(uri, log = () => {}) {
   // which is why images and tone downloads could not work at all.
   const bare = ct.split(';')[0].trim();
   if (isOpaqueType(bare)) {
+    // GIF goes out as WBMP. The phone advertises image/gif but renders one as
+    // a solid black rectangle (measured, two different operator logos), while
+    // it draws WBMP correctly — so converting is what actually puts the image
+    // on screen, and is what period gateways did for exactly this reason.
+    if (bare === 'image/gif') {
+      const conv = gifToWbmp(buf);
+      if (conv) {
+        log(`[wapgw] converted GIF -> WBMP — ${buf.length}B in, ${conv.length}B out`);
+        return { ct: WSP_CT['image/vnd.wap.wbmp'], ctText: 'image/vnd.wap.wbmp', body: conv };
+      }
+      log('[wapgw] GIF could not be converted — passing it through as-is');
+    }
     const wk = WSP_CT[bare];
     if (wk !== undefined) {
       log(`[wapgw] passing ${bare} through untranscoded — ${buf.length}B`);

@@ -253,6 +253,7 @@ static int g_slottimer = -1;              // knob cache (-1 = unread)
 static long g_slottimer_scale = 12;       // host cycles per quarter-symbol tick
 static uint64_t g_slottimer_deadline;     // host-cycle expiry; 0 = disarmed
 static uint16_t g_slottimer_framelen;     // last port 0x0E write (frame length, informational)
+static uint32_t g_slottimer_qs;           // duration of the armed one-shot in quarter-symbols
 static unsigned long long g_slottimer_fires;
 static int g_schtimer_diag_armed;
 static void slottimer_lazy(void) {
@@ -642,6 +643,7 @@ static void c54x_port_write(void *opaque, uint16_t pa, uint16_t val) {
           // COBBA frame clock uses; dsp_steps is an instruction counter and g_host_cycle's
           // advance is backend-dependent, both drift against real time.
           g_slottimer_deadline = m->rtc_mono + ticks * (uint64_t)g_slottimer_scale;
+          g_slottimer_qs = (uint32_t)ticks;
           g_c54x_pmap_handled = 1;
           if (comm_dsp_pc() == 0x994Fu)
               g_schtimer_diag_armed = 1;
@@ -690,11 +692,32 @@ static void c54x_port_write(void *opaque, uint16_t pa, uint16_t val) {
         if (pa == 0x03) {
             uint16_t old = g_rxstream_on;
             g_rxstream_on = (uint16_t)(val & 1u);   // COBBA RX stream enable
-            if (getenv("DSP54_RFLOG") && old != g_rxstream_on)
-                fprintf(stderr, "[rf] rxstream %u->%u mode=%u dsp_pc=%04x cycle=%llu\n",
+            if (!old && g_rxstream_on && g_dsp) {
+                /* Initial SCH capture is armed directly in mode 2.  Post-SCH
+                 * xCCH windows instead enter through mode 10 and are aligned at
+                 * their later mode-10 -> mode-2 boundary in c54x_tick(). */
+                if (dsp54_data_peek(g_dsp, 0xAC) == 2u &&
+                    getenv("DSP54_RF_SCHALIGN"))
+                    cobba_rf_align_sch();
+            }
+            /*
+             * INT0 is the COBBA receive-block request while the stream is
+             * enabled. Closing the one-shot receiver also withdraws that
+             * peripheral request. A request latched during the final block
+             * ISR must not survive the port-3 clear as a spurious next block.
+             */
+            if (old && !g_rxstream_on && g_dsp)
+                dsp54_interrupt_clear(g_dsp, 16);
+            if ((getenv("DSP54_RFLOG") || getenv("DSP54_FCCHPAIRTRACE")) &&
+                old != g_rxstream_on)
+                fprintf(stderr,
+                        "[rf] rxstream %u->%u mode=%u logch=%04x sched=%04x dsp_pc=%04x cycle=%llu ifr-cleared=%u\n",
                         old, g_rxstream_on,
                         g_dsp ? dsp54_data_peek(g_dsp, 0xAC) : 0,
-                        comm_dsp_pc(), (unsigned long long)g_host_cycle);
+                        g_dsp ? dsp54_data_peek(g_dsp, 0x121F) : 0,
+                        g_dsp ? dsp54_data_peek(g_dsp, 0x194C) : 0,
+                        comm_dsp_pc(), (unsigned long long)g_host_cycle,
+                        old && !g_rxstream_on);
         }
         if (pa == 0x31) g_synth_lo = val;
         else if (pa == 0x32 && g_dsp)
@@ -1427,6 +1450,9 @@ static int c54x_write(Mad2 *m, uint32_t addr, int size, uint32_t value) {
                 for (int w = 0; w < nw; w++) {
                     uint32_t a  = addr + 2u * (uint32_t)w;
                     uint16_t hv = (size >= 4) ? (uint16_t)(value >> (16 * (1 - w))) : (uint16_t)value;
+                    uint32_t hpi_k = (a - 0x10000u) >> 1;
+                    uint16_t old_snd_tail = hpi_k == 0x52u
+                                          ? dsp54_data_peek(g_dsp, 0x0852u) : 0u;
                     // DSP54_CELLWATCH companion: stamp MCU window writes with the ARM PC + step.
                     { static int cw = -1; static unsigned lo, hi, n = 0;
                       if (cw < 0) { const char *e = getenv("DSP54_CELLWATCH");
@@ -1437,6 +1463,23 @@ static int c54x_write(Mad2 *m, uint32_t addr, int size, uint32_t value) {
                                       da, hv, m->cur_io_pc & 0xFFFFFFu,
                                       (unsigned long long)(m->dsp_steps/1000)); } } }
                     dsp54_hpi_write(g_dsp, a, hv);
+                    /* Arm xCCH from the committed MCU command, not from 0x194c:
+                     * that internal descriptor mentions 0x60 while SCH cleanup is
+                     * still active.  At the tail write the complete record is visible
+                     * at the old producer cursor and word0 is {length, opcode}. */
+                    if (hpi_k == 0x52u && hv != old_snd_tail) {
+                        uint16_t hdr = dsp54_data_peek(
+                            g_dsp, (uint16_t)(0x0800u + (old_snd_tail & 0x00ffu)));
+                        uint8_t op = (uint8_t)(hdr & 0x00ffu);
+                        uint8_t len = (uint8_t)(hdr >> 8);
+                        if (getenv("DSP54_RFLOG"))
+                            fprintf(stderr,
+                                    "[rf] MDISND commit old=%u new=%u hdr=%04x op=%02x len=%u\n",
+                                    old_snd_tail, hv, hdr, op, len);
+                        if (op == 0x02u && len >= 8u &&
+                            getenv("DSP54_RF_BCCHALIGN"))
+                            cobba_rf_arm_xcch();
+                    }
                     // CMDLEVEL inputs: MDISND tail/head (k=0x52/0x53), cmd word (0x54), mask (0x55).
                     { uint32_t k = (a - 0x10000u) >> 1;
                       if (k >= 0x52u && k <= 0x55u) cmdlevel_eval(m); }
@@ -1499,9 +1542,47 @@ static void c54x_tick(Mad2 *m) {
     {
         static int rft = -1;
         static uint16_t last_pc = 0xffff;
+        static uint16_t xcch_last_mode = 0xffff;
+        static uint16_t xcch_last_sched = 0xffff;
         static unsigned n;
         uint16_t pc = g_dsp ? comm_dsp_pc() : 0xffff;
+        uint16_t rf_mode = g_dsp ? dsp54_data_peek(g_dsp, 0xAC) : 0xffff;
         if (rft < 0) rft = getenv("DSP54_RFLOG") ? 1 : 0;
+        /* xCCH starts with a mode-10 setup window and changes to the real
+         * mode-2 burst capture without dropping port-3 stream enable.  The
+         * rising-edge hook above therefore cannot see the capture boundary.
+         * Align at the first tick that observes that exact state transition,
+         * before the next DSP slice can request an ADC block. */
+        if (g_dsp && g_rxstream_on && cobba_rf_xcch_pending() &&
+            rf_mode == 2u && xcch_last_mode != 2u) {
+            uint16_t sched = dsp54_data_peek(g_dsp, 0x194Cu);
+            /* A candidate 0x51/0x50 configure also schedules CCCH windows.
+             * They are intentionally rejected by the resident callback and
+             * must not consume the four BCCH burst alignments. */
+            if (sched == 0x0050u)
+                cobba_rf_align_next_xcch();
+        }
+        if (g_dsp && getenv("DSP54_XCCHCAP") &&
+            (rf_mode != xcch_last_mode ||
+             dsp54_data_peek(g_dsp, 0x194Cu) != xcch_last_sched)) {
+            static unsigned cap_n;
+            uint16_t sched = dsp54_data_peek(g_dsp, 0x194Cu);
+            if (cap_n++ < 4096 &&
+                (cobba_rf_xcch_pending() || sched == 0x0050u ||
+                 xcch_last_sched == 0x0050u))
+                fprintf(stderr,
+                        "[rf] XCCHCAP #%u pc=%04x mode=%u->%u rx=%u "
+                        "fn=%04x desc=%04x done=%04x flags=%04x "
+                        "read=%u airfn=%u pos=%u pending=%u\n",
+                        cap_n, pc, xcch_last_mode, rf_mode, g_rxstream_on,
+                        dsp54_data_peek(g_dsp, 0x0915), sched,
+                        dsp54_data_peek(g_dsp, 0x194Fu),
+                        dsp54_data_peek(g_dsp, 0x194Bu), cobba_rf_time(),
+                        cobba_rf_last_frame(), cobba_rf_last_pos(),
+                        cobba_rf_xcch_pending());
+            xcch_last_sched = sched;
+        }
+        xcch_last_mode = rf_mode;
         if (g_dsp &&
             ((dsp54_data_peek(g_dsp, 0x1949) & 0x0080u) ||
              (getenv("DSP54_SCHTASK2") &&
@@ -2169,6 +2250,30 @@ spleak_done:;
               else if (ft_next == 0) ft_next = g_host_cycle + (unsigned long long)ft_cur;
               else if (g_host_cycle >= ft_next) {
                   /*
+                   * Mode 2 is a one-shot COBBA capture, not a free-running
+                   * frame-clock mode. Once its port-3 request is withdrawn,
+                   * do not reinterpret an overdue deadline at the slower
+                   * idle cadence as another INT0 before foreground code has
+                   * selected a new mode/window.
+                   */
+                  if (!g_rxstream_on && dsp54_data_peek(g_dsp, 0xAC) == 2u) {
+                      ft_next = 0;
+                      goto frame_tick_done;
+                  }
+                  /*
+                   * Mode 2 stores through a linear SCH-capture pointer and closes
+                   * the stream when [0xAF] reaches zero.  Do not leave a second
+                   * INT0 pending behind the active ISR: it would execute after
+                   * 0x44B6 closes the stream and wrap the one-shot countdown.
+                   * Other modes retain the established collapsed-deadline cadence.
+                   */
+                  if (g_rxstream_on && dsp54_data_peek(g_dsp, 0xAC) == 2u) {
+                      uint16_t dsp_pc = comm_dsp_pc();
+                      if (dsp54_interrupt_busy(g_dsp, 16) ||
+                          (dsp_pc >= 0x3204u && dsp_pc <= 0x340Fu))
+                          goto frame_tick_done;
+                  }
+                  /*
                    * INT0 is a level in IFR, not a counted queue.  Collapse elapsed
                    * deadlines to the next hardware edge; the ADC model itself advances
                    * from the reads performed by the ISR.  Advancing the air clock again
@@ -2181,6 +2286,7 @@ spleak_done:;
                   if (g_log) { static unsigned n; if (++n <= 8) fprintf(stderr,
                       "[dsp54] FRAMETICK: INT0 (vec16 frame) @cycle=%llu (period=%ld cycles)\n",
                       (unsigned long long)g_host_cycle, ft_cur); }
+frame_tick_done: ;
               }
           }
         }
@@ -2332,6 +2438,17 @@ spleak_done:;
           if (g_slottimer && g_dsp_run && g_slottimer_deadline && m->rtc_mono >= g_slottimer_deadline) {
               g_slottimer_deadline = 0;
               g_slottimer_fires++;
+              /* The RF carrier runs while the burst receiver is off.  Account
+               * for the armed CTSI interval here; cobba_rf_advance subtracts
+               * samples already consumed during this same interval.  Without
+               * this hook consecutive scheduled bursts were packed back-to-back
+               * into one air frame and a four-burst xCCH block could never close. */
+              /* While port-3 streaming is asserted, ADC reads themselves are
+               * the RF clock.  Applying the one-shot's off-air remainder in
+               * the middle of that window jumps several TDMA frames inside a
+               * single burst.  Reconcile only receiver-off time. */
+              if (cobba_rf_enabled() && !g_rxstream_on)
+                  cobba_rf_advance(g_slottimer_qs);
               port_lazy();
               uint16_t req = dsp54_hpi_read(g_dsp, g_port1_addr);
               int line_was_high = g_cmdlevel_state;

@@ -76,6 +76,8 @@ void   dsp54_host_interrupt(Dsp54 *d, int vec);
 void   dsp54_interrupt_unmask(Dsp54 *d, int vec);
 /* True while this source is pending or the CPU is already servicing an interrupt. */
 int    dsp54_interrupt_busy(const Dsp54 *d, int vec);
+/* Withdraw a level-triggered external interrupt request. */
+void   dsp54_interrupt_clear(Dsp54 *d, int vec);
 
 /* DIAGNOSTIC: force the DSP program counter (e.g. jump into the superloop head 0x3000 to
  * A/B whether the frame chain runs once reached — not a faithful path; bring-up probe only). */

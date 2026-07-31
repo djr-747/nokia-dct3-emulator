@@ -68,7 +68,8 @@ static struct {
     // per frame. (999f52b's "20000" inverted the 32-reads-per-32-qs ratio and stretched
     // every model frame to 4 real frames, so the burst spacing the detector pairs on
     // could never land in the +-9-block window.)
-    int      fcch_on, rpf, fcch_step, fcch_len;
+    int      fcch_on, xcch_on, xcch_pending, xcch_next;
+    int      rpf, fcch_step, fcch_len;
     uint32_t nreads, fn, interval_reads, sync_advance, forced_fcch;
     uint32_t last_sched_pos;
     char     last_burst;
@@ -144,6 +145,63 @@ void cobba_rf_sync_fcch(uint32_t quarter_symbols_until_burst) {
     uint32_t advance = (frame30 + mf_reads - future) % mf_reads;
     cobba_rf_sync_advance(advance);
 }
+void cobba_rf_align_sch(void) {
+    cobba_rf_align_frame(1u);
+}
+void cobba_rf_arm_xcch(void) {
+    rf_lazy();
+    g_rf.xcch_pending = 1;
+    g_rf.xcch_next = 0;
+}
+int cobba_rf_xcch_pending(void) {
+    rf_lazy();
+    return g_rf.xcch_pending;
+}
+void cobba_rf_align_next_xcch(void) {
+    rf_lazy();
+    if (!g_rf.xcch_pending)
+        return;
+    unsigned frame51 = 2u + (unsigned)g_rf.xcch_next;
+    if (frame51 > 5u) {
+        g_rf.xcch_pending = 0;
+        return;
+    }
+    /* A control-channel codeword is four independently armed normal-burst
+     * windows.  Until CTSI's slot-delta table is represented exactly, bind
+     * those observed capture boundaries to the corresponding air frames.
+     * The samples remain the real encoded/modulated bursts and the DSP still
+     * owns every equalization/FEC/report decision. */
+    cobba_rf_align_frame(frame51);
+    g_rf.xcch_next++;
+    if (g_rf.xcch_next >= 4)
+        g_rf.xcch_pending = 0;
+}
+void cobba_rf_align_frame(unsigned frame51) {
+    rf_lazy();
+    if (frame51 == 2u && g_rf.xcch_on && !g_rf.xcch_pending)
+        return;                 // one alignment, then preserve burst 0/1/2/3 progression
+    if (frame51 == 2u) {
+        g_rf.xcch_on = 1;
+    }
+    const uint32_t mf_reads = 51u * (uint32_t)g_rf.rpf;
+    int32_t lead = 0;
+    const char *e = getenv(frame51 == 1u ? "DSP54_RF_SCHLEAD"
+                                         : "DSP54_RF_BCCHLEAD");
+    if (e && *e) lead = (int32_t)strtol(e, 0, 0);
+    int64_t target = (int64_t)(frame51 % 51u) * (int64_t)g_rf.rpf -
+                     (int64_t)lead;
+    target %= (int64_t)mf_reads;
+    if (target < 0) target += mf_reads;
+    const uint32_t sch_start =
+        (uint32_t)target;
+    uint32_t scheduled = (g_rf.nreads + g_rf.sync_advance) % mf_reads;
+    uint32_t delta = (sch_start + mf_reads - scheduled) % mf_reads;
+    g_rf.sync_advance = (g_rf.sync_advance + delta) % mf_reads;
+    if (g_rf.log_on || getenv("DSP54_FCCHPAIRTRACE"))
+        fprintf(stderr,
+                "[rf] aligned live RX arm to frame=%u: read=%u oldpos=%u lead=%d delta=%u advance=%u\n",
+                frame51, g_rf.nreads, scheduled, lead, delta, g_rf.sync_advance);
+}
 void cobba_rf_inject_fcch(uint32_t quarter_symbols) {
     rf_lazy();
     g_rf.forced_fcch = quarter_symbols;
@@ -156,7 +214,11 @@ uint32_t cobba_rf_last_pos(void) { return g_rf.last_sched_pos; }
 
 void cobba_rf_advance(uint32_t quarter_symbols) {
     rf_lazy();
-    if (g_rf.on && g_rf.fcch_on) {
+    /* The FCCH hunt stimulus is still calibrated against its block-read clock.
+     * Reconcile off-air CTSI intervals only after the real post-SCH xCCH command
+     * arms normal-burst reception; applying both clocks during hunt double-counts
+     * its deliberately sparse reads. */
+    if (g_rf.on && g_rf.fcch_on && g_rf.xcch_on) {
         uint32_t old_fn = g_rf.nreads / (uint32_t)g_rf.rpf;
         /*
          * One RF sample read represents one quarter-symbol, but not every enabled
@@ -309,13 +371,49 @@ uint16_t cobba_rf_sample(uint16_t cell_arfcn) {
             // d=0 -> +90 deg/symbol (+2 LUT steps per complex sample), d=1 -> -90.
             static uint32_t sb_fn = 0xFFFFFFFFu; static int8_t sb_step[148];
             if (sb_fn != g_rf.fn) { sb_fn = g_rf.fn;
-                uint8_t bits[148]; uint8_t st = 1;
+                uint8_t bits[148];
                 gsm_sch_burst(g_rf.fn, 5u /*BSIC*/, bits);
-                gsm_gmsk_phase_steps(bits, sb_step, &st);
+                uint8_t state = 0; /* preceding guard/tail bit */
+                gsm_gmsk_phase_steps(bits, sb_step, &state);
             }
             unsigned sym = pos >> 2;                       // 4 reads (2 complex) per symbol
             if (sym < 148u) step = (2 * sb_step[sym]) & 15;
             else step = -1;                                // guard tail -> noise below
+        }
+        else if (g_rf.xcch_on && bt == 'B' && pos < 592u) {
+            /*
+             * Frames 2..5 are one complete BCCH control block.  Until this branch
+             * existed the scheduler advertised `B`, but the sample source fell
+             * through to noise for all four bursts: the resident xCCH decoder had
+             * literally never been given a BCCH codeword.
+             *
+             * SI3 is deliberately a fixed, valid 23-byte L2 block for this physical
+             * layer test.  Higher layers may replace its identity later; what matters
+             * here is that the DSP itself must equalize, deinterleave, convolutionally
+             * decode and FIRE-check these 456 transmitted bits before producing MDI
+             * 0x80 len=33.
+             */
+            static const uint8_t si3_l2[23] = {
+                0x49, 0x06, 0x1B, 0x00, 0x01, 0x05, 0xF5, 0x10,
+                0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x2B, 0x2B, 0x2B, 0x2B
+            };
+            static int ready;
+            static int8_t nb_step[4][148];
+            if (!ready) {
+                uint8_t coded[4][114];
+                gsm_bcch_encode(si3_l2, coded);
+                for (unsigned b = 0; b < 4u; b++) {
+                    uint8_t bits[148];
+                    gsm_normal_burst(coded[b], 5u /* BCC from BSIC 5 */, bits);
+                    uint8_t state = 0; /* preceding guard/tail bit */
+                    gsm_gmsk_phase_steps(bits, nb_step[b], &state);
+                }
+                ready = 1;
+            }
+            unsigned burst = (unsigned)(g_rf.fn % 51u) - 2u;
+            unsigned sym = pos >> 2;
+            step = (2 * nb_step[burst][sym]) & 15;
         }
         else step = -1;
     }
