@@ -28,10 +28,10 @@ window.DCT3_SHELLS = window.DCT3_SHELLS || {};
 window.registerShell = function (name, def) { window.DCT3_SHELLS[name] = def; };
 
 // Folder names, matched against the detected model. Order = substring-match priority.
-window.DCT3_SHELL_MANIFEST = ["3310", "3410", "5210"];
+window.DCT3_SHELL_MANIFEST = ["3210", "3310", "3410", "5110", "5210", "6110", "7110", "8210"];
 // Model aliases — physically identical bodies share one shell unit (the 3330 is the
 // same case/keymat as the 3310). pickShell() consults this before the substring pass.
-window.DCT3_SHELL_ALIASES = { "3330": "3310" };
+window.DCT3_SHELL_ALIASES = { "3330": "3310", "3350": "3410" };
 // Path prefix to the web root. "" when loaded from /web/; pages nested deeper (e.g.
 // /web/next/) set window.DCT3_SHELL_PREFIX = "../" before this script so the unit +
 // asset URLs resolve. Consumers (main.js) prefix def.img/def.mask with the same value.
