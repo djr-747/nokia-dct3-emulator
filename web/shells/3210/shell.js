@@ -6,7 +6,7 @@ registerShell("3210", {
   w: 450, h: 1050,
   lcd:  { left: 80, top: 258, w: 292, h: 208, radius: 10, canvasW: 252, canvasH: 172.8},
   zones: [
-    { key: "pwr",     left: 175, top: 5, w: 100, h: 30, r: "0px 0px 10px 10px" },  // top power button
+    { key: "pwr",     left: 150, top: 5, w: 150, h: 30, r: "0px 0px 10px 10px" },  // top power button
     { key: "soft1",   left: 160,  top: 520, w: 128, h: 55, r: "50%" },              // left soft = Menu/Select
     { key: "soft2",   left: 62, top: 522, w: 78, h: 66, r: "50%" },              // right soft = Names
     { key: "up",      left: 331, top: 524, w: 56, h: 57, r: "12px 12px 4px 4px" },
